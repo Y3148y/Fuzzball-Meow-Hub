@@ -81,6 +81,11 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-redis</artifactId>
         </dependency>
+        <!-- @Cacheable / @CacheEvict 的抽象层，底层实现由 RedisConfig 里的 CacheManager 决定 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-cache</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-pool2</artifactId>
@@ -120,6 +125,13 @@
         </dependency>
 
         <!-- ============ 鉴权 ============ -->
+        <!-- 只引入 crypto 模块拿 BCryptPasswordEncoder，不引整个 spring-boot-starter-security：
+             后者会自动给所有接口加一层认证，需求只是「加密口令」不值得背这个包。
+             版本由 spring-boot-dependencies 托管（6.5.1） -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-crypto</artifactId>
+        </dependency>
         <dependency>
             <groupId>io.jsonwebtoken</groupId>
             <artifactId>jjwt-api</artifactId>

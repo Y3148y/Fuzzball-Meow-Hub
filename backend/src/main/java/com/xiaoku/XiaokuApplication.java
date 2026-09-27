@@ -3,6 +3,7 @@ package com.xiaoku;
 import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.cache.annotation.EnableCaching;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.transaction.annotation.EnableTransactionManagement;
 
@@ -14,6 +15,11 @@ import org.springframework.transaction.annotation.EnableTransactionManagement;
 @SpringBootApplication
 @EnableTransactionManagement
 @EnableScheduling
+// 必须显式开启：Spring Boot 只会自动配置 CacheManager（RedisCacheManager），
+// 但「注册 CacheInterceptor 切面」这一步要靠 @EnableCaching。
+// 漏掉它时不会报任何错，@Cacheable 只是静默失效 —— 缓存没生效却毫无提示，
+// 是排查缓存问题时最容易被忽略的一个坑。
+@EnableCaching
 @MapperScan("com.xiaoku.**.mapper")
 public class XiaokuApplication {
 

@@ -13,7 +13,7 @@
 |---|---|---|
 | P0 | 环境编排 + 工程骨架 | ✅ 已完成 `v0.1-env-skeleton` |
 | P1 | 统一响应 / 全局异常 / 参数校验 / 雪花 ID | ✅ 已完成 |
-| P2 | 用户模块 + JWT 鉴权 | ⬜ 未开始 |
+| P2 | 用户模块 + JWT 鉴权 | ✅ 已完成 `v0.2-user-jwt` |
 | P3 | 笔记发布 + 图片上传 | ⬜ 未开始 |
 | P4 | 前端页面（登录 / 首页 / 发布 / 详情 / 我的） | ⬜ 未开始 |
 | P5 | 点赞 / 收藏 / 评论 + Redis 计数一致性 | ⬜ 未开始 |
@@ -116,8 +116,9 @@ red-book/
 ├── backend/                # Spring Boot 服务
 │   └── src/main/
 │       ├── java/com/xiaoku/
-│       │   ├── common/     # 统一响应、异常、常量、配置、工具
-│       │   └── controller/ # 接口层
+│       │   ├── common/     # 统一响应、异常、常量、配置、工具、上下文、拦截器
+│       │   ├── controller/ # 系统接口
+│       │   └── module/     # 业务模块（按领域分包：user / note / interaction ...）
 │       └── resources/      # application*.yml
 └── frontend/               # Vue 3 应用
     └── src/
@@ -126,6 +127,40 @@ red-book/
         ├── stores/         # Pinia
         └── views/          # 页面
 ```
+
+业务模块统一按 `module/{领域}/{controller,service,mapper,entity,dto,vo,converter}` 分包，
+领域之间只能通过 `service` 层互相调用，不允许跨模块直接摸对方的 `mapper`。
+
+---
+
+## P2 交付内容
+
+### 接口
+
+| 方法 | 路径 | 鉴权 | 说明 |
+|---|---|---|---|
+| POST | `/api/user/register` | 免 | 注册，用户名唯一 |
+| POST | `/api/user/login` | 免 | 登录，返回 accessToken(2h) + refreshToken(30d) |
+| POST | `/api/user/refresh?refreshToken=` | 免 | 用 refreshToken 换新的 accessToken |
+| GET | `/api/user/me` | 需 | 当前登录用户（走 Redis 缓存） |
+| PUT | `/api/user/profile` | 需 | 部分更新个人资料 |
+| GET | `/api/user/me/context` | 需 | 调试用：查看 ThreadLocal 注入的登录上下文 |
+
+演示账号：`xiaoku_demo` / `Xk@123456`、`xiaoku_test` / `Xk@123456`
+（仅 `dev` / `test` profile 下由 `DevDataInitializer` 创建）
+
+### 关键设计
+
+1. **白名单原则**：`AuthInterceptor` 只注册在非白名单路径上，缺 token 直接拒绝。
+   白名单是「收紧的例外」，而不是「逐个加保护」——后者漏一个就是越权漏洞。
+2. **access / refresh 分离**：短期 access 顶请求、长期 refresh 只用于换签；
+   `typ` claim 强制校验类型，防止 refresh 被当 access 使用。
+3. **BCrypt 存口令**：自适应代价 + 内嵌随机盐，同一口令每次密文都不同；
+   登录失败时「用户不存在」与「口令错误」返回**同一个**错误码，避免被用来枚举用户。
+4. **Entity 不出 Service**：Controller 一律返回 VO，`UserConverter` 显式转换，
+   杜绝 `password` 意外泄漏到响应体。
+5. **缓存只放读路径**：`UserQueryService` 独立承载 `@Cacheable` / `@CacheEvict`，
+   写路径「先改库、再删缓存」。
 
 ---
 
@@ -140,3 +175,18 @@ red-book/
 5. **Spring 6.1 的 404**：`NoResourceFoundException` 不再继承 `NoHandlerFoundException`，需单独处理，否则 404 会被兜底分支吞成「系统繁忙」。
 6. **Lombok `@Data` 多出字段**：`isSuccess()` 会被 Jackson 当成属性序列化，需 `@JsonIgnore`。
 7. **Docker Hub 直连不通**：已通过 `.env` 的 `REGISTRY_PREFIX` 走镜像源。
+8. **Spring 6.2 移除 `setCacheErrorHandler`**：`AbstractCacheManager` 上已无该方法，
+   `CacheErrorHandler` 改由 `CachingConfigurer#errorHandler()` 提供。
+9. **`RedisCacheManagerBuilder` 没有 `disableCachingNullValues()`**：
+   该配置只在 `RedisCacheConfiguration` 上，builder 上的同名方法在 3.5.x 已移除。
+10. **漏写 `@EnableCaching` 的代价**：Spring Boot 只自动配置 `CacheManager`，
+    注册 `CacheInterceptor` 要靠这个注解。漏掉时**不报错、不告警**，`@Cacheable` 静默失效。
+11. **Lombok `@Builder` 会顶掉 `@Data` 的构造器**：`@Data + @Builder` 的类**没有无参构造**，
+    Jackson 无法反序列化，缓存「写得进、读不出」。凡是被 Redis / MQ 序列化的类都要显式补 `@NoArgsConstructor`。
+12. **`transactionAware()` 对「删缓存」策略是负收益**：它把 evict 延迟到事务提交，
+    导致同一事务内「改库 → 删缓存 → 读缓存」读到旧值，接口返回没生效的改动。
+    它只在「更新缓存」策略下才有意义。
+13. **`selectCount` 返回 0 而不是 null**：`if (count != null)` 判重永远为真，
+    所有注册都会误报「用户名已被占用」。必须写 `count != null && count > 0`。
+14. **同类自调用绕过 Spring 代理**：类内 `this.getUserVO()` 不会触发 `@Cacheable`，
+    带缓存注解的方法要抽到独立 Bean 里。

@@ -1,0 +1,43 @@
+# ===== Java / Maven =====
+target/
+!.mvn/wrapper/maven-wrapper.jar
+*.class
+*.jar
+!.mvn/wrapper/maven-wrapper.jar
+*.war
+*.log
+logs/
+*.iml
+*.ipr
+*.iws
+.idea/
+!.idea/compiler.xml
+!.idea/misc.xml
+!.idea/modules.xml
+.vscode/
+!.vscode/extensions.json
+
+# ===== Node =====
+node_modules/
+dist/
+dist-ssr/
+.vite/
+*.local
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ===== 运行时数据 =====
+backend/uploads/
+backend/data/
+*.log
+
+# ===== 系统 =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== 本地敏感配置（MySQL / Redis / OSS 密钥等）=====
+# application.yml 中只放占位符，真实值写在这里；此文件不入库
+.env.local
+backend/src/main/resources/application-local.yml

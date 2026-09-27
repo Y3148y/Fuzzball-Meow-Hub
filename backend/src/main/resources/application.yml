@@ -1,0 +1,229 @@
+# =====================================================================
+#  小哭猫 Xiaoku —— 主配置
+#  敏感信息一律走 ${ENV:默认值} 形式，真实值写进环境变量，不要提交进仓库
+# =====================================================================
+server:
+  port: ${XK_SERVER_PORT:8088}
+  servlet:
+    encoding:
+      charset: UTF-8
+      force: true
+  # 单次请求体最大 20MB（笔记最多 9 张图，够用）
+  max-http-request-header-size: 16KB
+  tomcat:
+    threads:
+      max: 200
+      min-spare: 20
+    max-connections: 8192
+    accept-count: 100
+    connection-timeout: 20000
+
+spring:
+  application:
+    name: xiaoku-backend
+
+  profiles:
+    active: ${XK_PROFILE:dev}
+
+  # ---------------- 序列化 ----------------
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: GMT+8
+    default-property-inclusion: non_null
+    serialization:
+      write-dates-as-timestamps: false
+      fail-on-empty-beans: false
+
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 100MB
+
+  # ---------------- 数据源 ----------------
+  # 端口 3309 对应 docker-compose.yml 里的 MySQL（宿主机 3306 已被本机原生 MySQL 占用）
+  datasource:
+    type: com.alibaba.druid.pool.DruidDataSource
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://${XK_MYSQL_HOST:127.0.0.1}:${XK_MYSQL_PORT:3309}/${XK_MYSQL_DB:xiaoku_db}?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&rewriteBatchedStatements=true
+    username: ${XK_MYSQL_USER:root}
+    password: ${XK_MYSQL_PASSWORD:}
+    druid:
+      # 初始连接数 / 最小空闲 / 最大活跃
+      initial-size: 5
+      min-idle: 10
+      max-active: 30
+      # 获取连接的最大等待毫秒数；-1 表示无限等待（不设会导致线程堆积直到 OOM）
+      max-wait: 6000
+      # 连接超过 30 分钟被数据库或驱动回收，需从池中剔除
+      max-evictable-idle-time: 1800000
+      time-between-eviction-runs-millis: 60000
+      min-evictable-idle-time-millis: 300000
+      validation-query: SELECT 1
+      test-while-idle: true
+      test-on-borrow: false
+      test-on-return: false
+      pool-prepared-statements: true
+      max-pool-prepared-statement-per-connection-size: 20
+      # 慢 SQL 阈值，面试可讲 Druid 相比 p6spy 的优势是自带 SQL 解析与防注入 WallFilter
+      filters: stat,wall
+      filter:
+        stat:
+          enabled: true
+          log-slow-sql: true
+          slow-sql-millis: 1000
+          merge-sql: true
+        wall:
+          enabled: true
+          config:
+            multi-statement-allow: false
+
+  # ---------------- MyBatis-Plus ----------------
+  mybatis-plus:
+    mapper-locations: classpath*:/mapper/**/*.xml
+    type-aliases-package: com.xiaoku.module.entity
+    configuration:
+      map-underscore-to-camel-case: true
+      cache-enabled: false
+      # 开发期打印 SQL；生产环境请改为 org.apache.ibatis.logging.nologging.NoLoggingImpl
+      log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+    global-config:
+      banner: false
+      db-config:
+        id-type: assign_id
+        logic-delete-field: deleted
+        logic-delete-value: 1
+        logic-not-delete-value: 0
+        insert-strategy: not_null
+        update-strategy: not_null
+
+  # ---------------- Redis ----------------
+  data:
+    redis:
+      host: ${XK_REDIS_HOST:127.0.0.1}
+      port: ${XK_REDIS_PORT:6379}
+      password: ${XK_REDIS_PASSWORD:}
+      # 与其他项目隔离，避免 key 互相覆盖
+      database: ${XK_REDIS_DB:3}
+      timeout: 5s
+      lettuce:
+        pool:
+          max-active: 16
+          max-idle: 8
+          min-idle: 2
+          max-wait: 3s
+        shutdown-timeout: 200ms
+
+  # ---------------- Kafka ----------------
+  kafka:
+    # IDEA 里的后端连宿主机映射出来的端口；
+    # 若后端也跑在 compose 网络内，改成 kafka:29092（broker 对内 advertise 的地址）
+    bootstrap-servers: ${XK_KAFKA_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      acks: all
+      retries: 3
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 5
+        spring.json.add.type.headers: false
+    consumer:
+      group-id: ${XK_KAFKA_GROUP:xk-consumer}
+      auto-offset-reset: latest
+      # 关闭自动提交，改由监听器在处理成功后手动提交，保证 at-least-once
+      enable-auto-commit: false
+      max-poll-records: 50
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+    listener:
+      # 单条消息处理失败时的重试次数，用尽后进入死信（由我们自己定义 DLT 逻辑）
+      missing-topics-fatal: false
+    admin:
+      # 自动创建 application.yml 中通过 NewTopic Bean 声明的 topic
+      fail-fast: true
+
+  # ---------------- Elasticsearch ----------------
+  elasticsearch:
+    uris: ${XK_ES_URIS:http://127.0.0.1:9250}
+    connection-timeout: 5s
+    socket-timeout: 30s
+    # 本项目 ES 未开 security，所以用户名密码留空
+    username: ${XK_ES_USERNAME:}
+    password: ${XK_ES_PASSWORD:}
+
+# =====================================================================
+#  业务自定义配置
+# =====================================================================
+xiaoku:
+  snowflake:
+    # 机器ID：0~1023。多实例部署时必须保证唯一，
+    # 生产环境应由 ZNODES / Redis 分配而不是手写配置文件
+    machine-id: ${XK_MACHINE_ID:1}
+
+  jwt:
+    # 生产环境务必用环境变量注入；密钥泄漏 = 任何人都能伪造任意用户的 token
+    secret: ${XK_JWT_SECRET:CHANGE_ME_CHANGE_ME_CHANGE_ME_CHANGE_ME_CHANGE_ME}
+    access-token-ttl-minutes: 120
+    refresh-token-ttl-days: 30
+    issuer: xiaoku
+    # 请求头名称
+    header: Authorization
+    # token 前缀，留空表示前端直接传裸 token
+    token-prefix: "Bearer "
+
+  storage:
+    # local = 本地磁盘（开发默认）；s3 = 任意 S3 兼容服务
+    type: ${XK_STORAGE_TYPE:local}
+    local-path: uploads
+    local-url-prefix: /static/uploads
+    endpoint: ${XK_S3_ENDPOINT:}
+    region: ${XK_S3_REGION:cn-hangzhou}
+    access-key: ${XK_S3_ACCESS_KEY:}
+    secret-key: ${XK_S3_SECRET_KEY:}
+    bucket: ${XK_S3_BUCKET:xiaoku}
+    path-style-access: true
+
+  kafka:
+    note-topic: xk_note_event
+    partitions: 3
+    replicas: 1
+
+  search:
+    # 笔记索引名，索引名全小写（ES 规范）
+    note-index: xk_note
+
+# =====================================================================
+#  接口文档
+# =====================================================================
+springdoc:
+  api-docs:
+    enabled: true
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    tags-sorter: alpha
+    operations-sorter: alpha
+  default-flat-param-object: true
+
+knife4j:
+  enable: true
+  setting:
+    language: zh_cn
+    swagger-model-name: 数据模型
+    enable-footer: false
+    enable-open-api: false
+    enable-group: true
+
+# =====================================================================
+#  日志
+# =====================================================================
+logging:
+  level:
+    root: info
+    com.xiaoku: debug
+    # 打印 SQL
+    com.xiaoku.module.mapper: debug
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+  file:
+    name: ${XK_LOG_FILE:logs/xiaoku-backend.log}

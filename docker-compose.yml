@@ -1,0 +1,132 @@
+# ==========================================================
+#  中间件编排：Kafka + Elasticsearch
+#  用法： docker compose up -d
+#  说明： MySQL / Redis 复用宿主机已有的服务，不在本文件内编排
+# ==========================================================
+name: xiaoku
+
+services:
+  # ---------------------------------------------------------
+  # MySQL 8.4 —— 项目自带，保证「clone 下来就能跑」
+  #   宿主机 3309（本机原生 MySQL 已占 3306，另有 community 3308 / new 3307）
+  #   首次启动会自动执行 sql/schema.sql 建库建表
+  # ---------------------------------------------------------
+  mysql:
+    image: ${REGISTRY_PREFIX}mysql:8.4
+    container_name: xiaoku-mysql
+    restart: unless-stopped
+    ports:
+      - "${MYSQL_HOST_PORT:-3309}:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-<请自行设置> }
+      MYSQL_DATABASE: xiaoku_db
+      # 关闭 binlog：本地开发不需要，省一半磁盘 IO
+      MYSQL_LOG_BIN: "0"
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_general_ci
+      - --default-time-zone=+08:00
+      - --max-connections=300
+    volumes:
+      - mysql-data:/var/lib/mysql
+      # 首次容器创建时按文件名顺序执行，schema.sql 会 CREATE DATABASE IF NOT EXISTS，
+      # 因此与上面的 MYSQL_DATABASE 重复设置也不会报错
+      - ./sql/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
+    networks:
+      - xiaoku-net
+
+  # ---------------------------------------------------------
+  # Kafka —— KRaft 模式（无 ZooKeeper）
+  #   容器内 PLAINTEXT        : kafka:9092    给「同在 compose 网络内」的服务用
+  #   容器内 PLAINTEXT_HOST   : 0.0.0.0:29092 映射到宿主机 9092，给 IDEA 里的后端用
+  #   advertised listeners 双配置，避免 P9 把后端也塞进容器时出现连不上 broker 的坑
+  # ---------------------------------------------------------
+  kafka:
+    image: ${REGISTRY_PREFIX}apache/kafka:3.9.2
+    container_name: xiaoku-kafka
+    restart: unless-stopped
+    ports:
+      - "${KAFKA_HOST_PORT:-9092}:29094"
+    environment:
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      # --- KRaft 角色与节点 ---
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      # --- 监听器 ---
+      # 三个监听器的 name 集合必须严格一致，否则 Kafka 启动时直接报
+      # "advertised.listeners listener names must be equal to or a subset of the ones defined in listeners"
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:29093,PLAINTEXT_HOST://0.0.0.0:29094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:${KAFKA_HOST_PORT:-9092}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      # --- 单节点场景必须把副本因子全设为 1，否则 topic 创建会失败 ---
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # 单节点内存有限，压小堆
+      KAFKA_HEAP_OPTS: "-Xms512m -Xmx512m"
+      # 允许 PLAINTEXT 明文（本项目仅本地开发使用）
+      KAFKA_ALLOW_UNAUTHENTICATED_LOGIN: "true"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:29092 --list >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 40s
+    networks:
+      - xiaoku-net
+
+  # ---------------------------------------------------------
+  # Elasticsearch 8.17 —— 单节点，关闭安全认证
+  #   宿主机端口 9250（本机 9200 已被 cpolar 占用）
+  #   Spring Data Elasticsearch 5.5.x 官方对齐 ES 8.x，勿用 9.x
+  # ---------------------------------------------------------
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.6
+    container_name: xiaoku-elasticsearch
+    restart: unless-stopped
+    ports:
+      - "${ES_HOST_PORT:-9250}:9200"
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      xpack.security.enrollment.enabled: "false"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:9200/_cluster/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 40s
+    networks:
+      - xiaoku-net
+
+volumes:
+  mysql-data:
+  kafka-data:
+  es-data:
+
+networks:
+  xiaoku-net:
+    name: xiaoku-net
+    driver: bridge

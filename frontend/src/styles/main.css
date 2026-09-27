@@ -1,0 +1,28 @@
+:root {
+  /* 主题色：P9 定稿品牌后在此处统一替换 */
+  --xk-primary: #ff8f3f;
+  --xk-primary-light: #fff2e6;
+  --xk-bg: #f7f7f9;
+  --xk-text-primary: #1f1f1f;
+  --xk-text-secondary: #969799;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--xk-bg);
+  color: var(--xk-text-primary);
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}

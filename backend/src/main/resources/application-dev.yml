@@ -1,0 +1,30 @@
+# =====================================================================
+#  开发环境覆盖配置
+#  生产环境请用 application-prod.yml，并且所有敏感项走环境变量注入
+# =====================================================================
+
+spring:
+  # 首次启动时自动执行 schema.sql 建表。
+  # 因为表都带 DROP TABLE IF EXISTS，误开这个开关会清空数据，只在开发期使用
+  sql:
+    init:
+      mode: never
+
+  datasource:
+    # 与仓库根目录 .env 的 MYSQL_ROOT_PASSWORD 保持一致。
+    # 这个口令只用于本地 docker-compose，不对应任何真实环境；
+    # 部署时用 XK_MYSQL_PASSWORD 环境变量覆盖即可，无需改代码
+    password: ${XK_MYSQL_PASSWORD:<请自行设置> }
+
+logging:
+  level:
+    com.xiaoku: debug
+    org.springframework.kafka: info
+    org.apache.kafka.clients: warn
+    # 开发期把 ES 的请求日志打开，方便 P7 调搜索同步
+    co.elastic.clients: info
+
+xiaoku:
+  jwt:
+    # 仅本地开发用的弱密钥，上线必须换掉
+    secret: dev_only_secret_key_please_change_me_before_production_2026

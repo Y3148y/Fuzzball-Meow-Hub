@@ -11,10 +11,18 @@ spring:
       mode: never
 
   datasource:
-    # 口令不写兜底值：没有默认值时 Spring 会在启动阶段直接抛
-    # "Could not resolve placeholder 'XK_MYSQL_PASSWORD'" 而快速失败，
-    # 这比留一个公开的默认口令（等同把开发库口令写进仓库）安全得多。
+    # 口令不写兜底值，避免"默认值 = 公开的开发库口令"。
     # 启动前先设好同名环境变量，取值与 .env 的 MYSQL_ROOT_PASSWORD 保持一致。
+    #
+    # 实测（2026-09-27，dev profile + 去掉 application.yml 的空串兜底后逐个试过）：
+    #   变量未设置 -> 启动失败，报 "Access denied for user 'root'@'172.20.0.1'"
+    #   变量为空串 -> 同上
+    #   变量正确   -> 正常启动
+    # 全程**没有**出现 "Could not resolve placeholder 'XK_MYSQL_PASSWORD'"，
+    # 即未解析的占位符在属性绑定阶段被当作空值放过了。
+    # 安全目标（绝不带着默认口令把服务起起来）达到了，但报错信息指向
+    # "口令不对"而不是"口令没配"，第一次排查时很容易误判成口令写错。
+    # 自检：启动前先 `echo $env:XK_MYSQL_PASSWORD` 确认非空，比看日志快。
     password: ${XK_MYSQL_PASSWORD}
 
 logging:

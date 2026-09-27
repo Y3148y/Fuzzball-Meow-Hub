@@ -39,5 +39,8 @@ desktop.ini
 
 # ===== 本地敏感配置（MySQL / Redis / OSS 密钥等）=====
 # application.yml 中只放占位符，真实值写在这里；此文件不入库
+# 注意：.env 必须一并忽略 —— 它含明文 MYSQL_ROOT_PASSWORD，
+# 只有 .env.example（无敏感值）才允许入库
+.env
 .env.local
 backend/src/main/resources/application-local.yml

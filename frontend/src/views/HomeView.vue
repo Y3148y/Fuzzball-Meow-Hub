@@ -1,81 +1,252 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { get } from '@/api/request'
+import type { PingVO } from '@/api/types'
+import { useUserStore } from '@/stores/user'
+import ThemeToggle from '@/components/ThemeToggle.vue'
 
-interface PingVO {
-  applicationName: string
-  machineId: number
-  snowflakeId: number
-  snowflakeParsed: string
-  serverTime: string
-}
+const router = useRouter()
+const userStore = useUserStore()
 
-const loading = ref(true)
 const ping = ref<PingVO | null>(null)
-const errorMsg = ref('')
+const envLoading = ref(false)
 
 async function fetchPing() {
-  loading.value = true
-  errorMsg.value = ''
+  envLoading.value = true
   try {
     ping.value = await get<PingVO>('/system/ping')
-  } catch (e) {
-    errorMsg.value = e instanceof Error ? e.message : String(e)
+  } catch {
+    ping.value = null
   } finally {
-    loading.value = false
+    envLoading.value = false
   }
 }
 
-onMounted(fetchPing)
+async function logout() {
+  userStore.logout()
+  await router.replace('/login')
+}
+
+// 进来先把用户信息拉齐（守卫只校验 token 有没有，资料还是要后端给）
+void userStore.loadProfile().catch(() => {
+  // token 失效时拦截器已经跳登录页
+})
+void fetchPing()
 </script>
 
 <template>
   <main class="page">
-    <header class="hero">
-      <h1>小哭猫 Xiaoku</h1>
-      <p class="subtitle">P0 环境与工程骨架自检</p>
+    <header class="top">
+      <span class="brand">小哭猫</span>
+      <ThemeToggle />
     </header>
 
-    <van-loading v-if="loading" class="block">正在请求后端…</van-loading>
+    <section class="card xk-card">
+      <div class="who">
+        <img class="avatar" src="/mascot/m02.webp" alt="" />
+        <div class="names">
+          <h1 class="nickname">{{ userStore.displayName || '加载中…' }}</h1>
+          <p class="username">@{{ userStore.userInfo?.username }}</p>
+        </div>
+      </div>
 
-    <van-notice-bar v-else-if="errorMsg" color="#ee0a24" :text="errorMsg" wrapable />
+      <p v-if="userStore.userInfo?.bio" class="bio">{{ userStore.userInfo.bio }}</p>
 
-    <van-cell-group v-else-if="ping" inset>
-      <van-cell title="applicationName" :value="ping.applicationName" />
-      <van-cell title="machineId" :value="String(ping.machineId)" />
-      <van-cell title="snowflakeId" :value="String(ping.snowflakeId)" />
-      <van-cell title="雪花ID解析" :value="ping.snowflakeParsed" />
-      <van-cell title="serverTime" :value="ping.serverTime" />
-    </van-cell-group>
+      <dl class="stats">
+        <div class="stat">
+          <dt>关注</dt>
+          <dd>{{ userStore.userInfo?.followCount ?? 0 }}</dd>
+        </div>
+        <div class="stat">
+          <dt>粉丝</dt>
+          <dd>{{ userStore.userInfo?.fansCount ?? 0 }}</dd>
+        </div>
+        <div class="stat">
+          <dt>获赞</dt>
+          <dd>{{ userStore.userInfo?.likeReceivedCount ?? 0 }}</dd>
+        </div>
+      </dl>
 
-    <van-button class="block" type="primary" block @click="fetchPing">重新请求</van-button>
+      <button class="xk-btn xk-btn--ghost" type="button" @click="logout">退出登录</button>
+    </section>
+
+    <section class="card xk-card xk-card--flat env">
+      <div class="env-head">
+        <h2>环境自检</h2>
+        <button class="again" type="button" :disabled="envLoading" @click="fetchPing">
+          {{ envLoading ? '请求中…' : '重新请求' }}
+        </button>
+      </div>
+      <dl v-if="ping" class="kv">
+        <div><dt>applicationName</dt><dd>{{ ping.applicationName }}</dd></div>
+        <div><dt>machineId</dt><dd>{{ ping.machineId }}</dd></div>
+        <div><dt>snowflakeId</dt><dd>{{ ping.snowflakeId }}</dd></div>
+        <div><dt>雪花ID解析</dt><dd>{{ ping.snowflakeParsed }}</dd></div>
+        <div><dt>serverTime</dt><dd>{{ ping.serverTime }}</dd></div>
+      </dl>
+      <p v-else class="env-empty">后端没响应，确认 8088 端口的服务已启动</p>
+    </section>
+
+    <p class="foot">笔记模块 P3 接入后，这里会变成信息流</p>
   </main>
 </template>
 
 <style scoped>
 .page {
-  padding: 24px 16px;
-  max-width: 640px;
+  min-height: 100%;
+  padding: calc(16px + env(safe-area-inset-top)) 20px calc(24px + env(safe-area-inset-bottom));
+  max-width: 480px;
   margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 
-.hero {
-  text-align: center;
-  padding: 32px 0 24px;
+.top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 
-.hero h1 {
+.brand {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--xk-text-2);
+}
+
+.card {
+  padding: 18px;
+}
+
+.who {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.avatar {
+  width: 62px;
+  height: 62px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+.names {
+  min-width: 0;
+}
+
+.nickname {
   margin: 0;
-  font-size: 26px;
+  font-size: 21px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.subtitle {
-  margin: 8px 0 0;
-  color: var(--xk-text-secondary);
+.username {
+  margin: 3px 0 0;
+  color: var(--xk-text-3);
+  font-size: 13px;
+}
+
+.bio {
+  margin: 14px 0 0;
+  color: var(--xk-text-2);
   font-size: 14px;
+  line-height: 1.6;
 }
 
-.block {
-  margin: 16px 0;
+.stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin: 18px 0;
+  padding: 0;
+}
+
+.stat {
+  padding: 10px 6px;
+  border: var(--xk-stroke-w) solid var(--xk-border);
+  border-radius: var(--xk-radius-blob-sm);
+  background: var(--xk-surface-2);
+  text-align: center;
+}
+
+.stat dt {
+  color: var(--xk-text-3);
+  font-size: 12px;
+}
+
+.stat dd {
+  margin: 4px 0 0;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.env-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.env-head h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.again {
+  padding: 5px 12px;
+  border: var(--xk-stroke-w) solid var(--xk-border);
+  border-radius: 999px;
+  background: var(--xk-surface-2);
+  color: var(--xk-text-2);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.again:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.kv {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.kv > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.kv dt {
+  color: var(--xk-text-3);
+}
+
+.kv dd {
+  margin: 0;
+  color: var(--xk-text-2);
+  text-align: right;
+  word-break: break-all;
+}
+
+.env-empty {
+  margin: 0;
+  color: var(--xk-text-3);
+  font-size: 13px;
+}
+
+.foot {
+  margin: 0;
+  text-align: center;
+  color: var(--xk-text-3);
+  font-size: 12px;
 }
 </style>

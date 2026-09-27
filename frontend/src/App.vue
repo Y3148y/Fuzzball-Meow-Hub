@@ -1,5 +1,14 @@
 <script setup lang="ts">
-// 根组件：只做布局，具体页面由 router-view 承载
+import { onMounted } from 'vue'
+import { useUserStore } from '@/stores/user'
+
+// 根组件：负责布局与「冷启动恢复登录态」，具体页面由 router-view 承载
+const userStore = useUserStore()
+
+// 刷新页面 / 重新打开标签页时内存里没有用户信息，靠这里补一次 /me
+onMounted(() => {
+  void userStore.restore()
+})
 </script>
 
 <template>

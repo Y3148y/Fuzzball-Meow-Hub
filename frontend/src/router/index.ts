@@ -1,4 +1,6 @@
 import { createRouter, createWebHashHistory, type RouteRecordRaw } from 'vue-router'
+import { pinia } from '@/stores'
+import { useUserStore } from '@/stores/user'
 
 /**
  * 用 hash 模式而不是 history 模式：
@@ -11,13 +13,13 @@ const routes: RouteRecordRaw[] = [
     path: '/',
     name: 'home',
     component: () => import('@/views/HomeView.vue'),
-    meta: { title: '小哭猫' },
+    meta: { title: '小哭猫', requiresAuth: true },
   },
   {
     path: '/login',
     name: 'login',
     component: () => import('@/views/LoginView.vue'),
-    meta: { title: '登录' },
+    meta: { title: '登录', guestOnly: true },
   },
   {
     // 兜底放最后，防止前面所有路径被吃掉
@@ -30,6 +32,30 @@ const router = createRouter({
   history: createWebHashHistory(),
   routes,
   scrollBehavior: () => ({ top: 0 }),
+})
+
+/**
+ * 登录守卫。
+ *
+ * 为什么判断依据放在 localStorage 而不是内存里的 store：
+ * accessToken 由 Axios 拦截器在刷新时直接改写 localStorage，
+ * 内存里的那份不会跟着变。以 localStorage 为准才能保证
+ * 「token 被清掉」和「界面认为是登出」这两件事永远一致。
+ */
+router.beforeEach((to) => {
+  const userStore = useUserStore(pinia)
+
+  if (to.meta.requiresAuth && !userStore.isLogin) {
+    // 带上来源，登录完可以跳回原来想去的页面
+    return { name: 'login', query: to.fullPath === '/' ? {} : { redirect: to.fullPath } }
+  }
+
+  // 已登录还去登录页，直接送回首页
+  if (to.meta.guestOnly && userStore.isLogin) {
+    return { name: 'home' }
+  }
+
+  return true
 })
 
 router.afterEach((to) => {

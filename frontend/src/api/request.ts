@@ -1,20 +1,30 @@
-import axios, { type AxiosInstance, type AxiosRequestConfig } from 'axios'
+import axios, {
+  type AxiosInstance,
+  type AxiosRequestConfig,
+  type InternalAxiosRequestConfig,
+} from 'axios'
 import { showFailToast } from 'vant'
-import { CODE_SUCCESS, ErrorCode, type Result } from './types'
+import { accessToken, clearTokens, refreshToken, setTokens } from './token'
+import { AUTH_ERROR_CODES, CODE_SUCCESS, type Result } from './types'
 
-/**
- * token 存取集中在这里。
- * 之所以用 localStorage 而不是 Cookie：
- * - 实现简单，前端可读，方便在 Axios 拦截器里拼 Authorization 头
- * - 代价是 XSS 风险：如果前端有注入漏洞，token 会被同源脚本读到
- * 生产项目更倾向 HttpOnly Cookie + CSRF Token，这里为了贴近校招项目选前者。
- */
-const TOKEN_KEY = 'xk_token'
+/** 带业务错误码的异常，让页面能按 code 分支处理，而不只是拿到一句话 */
+export class BizError extends Error {
+  readonly code: number
 
-export const tokenStore = {
-  get: () => localStorage.getItem(TOKEN_KEY) ?? '',
-  set: (token: string) => localStorage.setItem(TOKEN_KEY, token),
-  clear: () => localStorage.removeItem(TOKEN_KEY),
+  constructor(code: number, message: string) {
+    super(message)
+    this.name = 'BizError'
+    this.code = code
+  }
+}
+
+interface XkConfig extends InternalAxiosRequestConfig {
+  /** 已经重放过一次，避免鉴权失败时无限循环 */
+  _xkRetried?: boolean
+  /** 刷新接口自己要用，不能再触发刷新 */
+  _xkSkipAuth?: boolean
+  /** 静默：不弹全局 toast，由调用方自己展示（如登录表单内联报错） */
+  _xkSilent?: boolean
 }
 
 const http: AxiosInstance = axios.create({
@@ -25,18 +35,92 @@ const http: AxiosInstance = axios.create({
 
 http.interceptors.request.use(
   (config) => {
-    const token = tokenStore.get()
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`
+    if (accessToken.value) {
+      config.headers.Authorization = `Bearer ${accessToken.value}`
     }
     return config
   },
   (error) => Promise.reject(error),
 )
 
+/**
+ * 正在进行的刷新任务。
+ *
+ * 为什么要「单飞」：access token 过期时，页面往往同时有好几个请求在飞
+ * （用户信息、笔记列表、评论数……），它们会一起撞上 401。
+ * 如果每个请求各自去刷新，就会并发打出 N 个 refresh 请求，
+ * 而后端的 refresh token 是会轮换的 —— 并发刷新时只有第一个能成功，
+ * 其余全部失败，反而把用户踢下线。
+ * 所以用一个共享的 Promise 排队，后到的请求等同一个结果。
+ */
+let refreshTask: Promise<boolean> | null = null
+
+function clearLoginAndRedirect() {
+  clearTokens()
+  if (!location.hash.startsWith('#/login')) {
+    location.hash = '#/login'
+  }
+}
+
+/** 刷新接口的响应体（后端 LoginVO） */
+interface RefreshPayload {
+  accessToken: string
+  refreshToken: string
+}
+
+/**
+ * 专供「刷新 token」这一个接口使用的裸 client。
+ *
+ * 为什么不复用 http：
+ * 1. http 的响应拦截器会把 { code, data } 解包成 data，刷新这里需要看到完整信封
+ *    才能判断 code / message，早期版本就是踩了这个坑 —— 解包后又去读 .data，
+ *    拿到 undefined，于是一次成功刷新被误判成失败，用户在 access 正常过期时
+ *    被直接踢下线，正好是这个机制要防的事。
+ * 2. 刷新请求不能带可能已失效的 access token，也不该弹全局 toast。
+ * 所以这里刻意绕开所有拦截器，自己解析信封。
+ */
+const rawHttp = axios.create({
+  baseURL: import.meta.env.VITE_API_BASE ?? '/api',
+  timeout: 15000,
+})
+
+function refreshAccessToken(): Promise<boolean> {
+  if (refreshTask) return refreshTask
+
+  const rt = refreshToken.value
+  if (!rt) {
+    clearLoginAndRedirect()
+    return Promise.resolve(false)
+  }
+
+  refreshTask = rawHttp
+    // refreshToken 走 query：后端是 @RequestParam，放 body 拿不到
+    .post<Result<RefreshPayload>>('/user/refresh', null, { params: { refreshToken: rt } })
+    .then((res) => {
+      const body = res.data
+      if (body?.code === CODE_SUCCESS && body.data?.accessToken) {
+        // 后端会轮换 refreshToken，必须一起覆盖，否则旧的下次就废了
+        setTokens(body.data.accessToken, body.data.refreshToken || rt)
+        return true
+      }
+      clearLoginAndRedirect()
+      return false
+    })
+    .catch(() => {
+      clearLoginAndRedirect()
+      return false
+    })
+    .finally(() => {
+      refreshTask = null
+    })
+
+  return refreshTask
+}
+
 http.interceptors.response.use(
-  (response) => {
+  async (response) => {
     const body = response.data as Result
+    const config = response.config as XkConfig
 
     // 文件流等非 Result 结构的响应直接透传
     if (body === null || typeof body !== 'object' || !('code' in body)) {
@@ -47,24 +131,37 @@ http.interceptors.response.use(
       return body.data
     }
 
-    // token 失效：清空本地登录态并跳登录页。
-    // 这里不做「自动刷新 token」——刷新逻辑放在 P2 的 AuthStore 里统一处理
-    if (body.code === ErrorCode.UNAUTHORIZED || body.code === ErrorCode.TOKEN_INVALID) {
-      tokenStore.clear()
-      if (!location.hash.startsWith('#/login')) {
-        location.hash = '#/login'
+    // 鉴权失败：先尝试静默刷新一次，成功就把原请求重放掉，用户无感
+    if (
+      AUTH_ERROR_CODES.includes(body.code) &&
+      !config._xkSkipAuth &&
+      !config._xkRetried &&
+      refreshToken.value
+    ) {
+      if (await refreshAccessToken()) {
+        config._xkRetried = true
+        return http.request(config) as unknown as Promise<unknown>
       }
-      return Promise.reject(new Error(body.message))
     }
 
-    showFailToast(body.message || '操作失败')
-    return Promise.reject(new Error(body.message))
+    if (AUTH_ERROR_CODES.includes(body.code)) {
+      clearLoginAndRedirect()
+      return Promise.reject(new BizError(body.code, body.message))
+    }
+
+    if (!config._xkSilent) {
+      showFailToast(body.message || '操作失败')
+    }
+    return Promise.reject(new BizError(body.code, body.message))
   },
   (error) => {
     // 网络层错误：超时、断网、后端 5xx
     const message =
       error.code === 'ECONNABORTED' ? '请求超时，请稍后重试' : error.message || '网络异常'
-    showFailToast(message)
+    const config = (error.config ?? {}) as XkConfig
+    if (!config._xkSilent) {
+      showFailToast(message)
+    }
     return Promise.reject(error)
   },
 )
@@ -73,8 +170,16 @@ export function get<T>(url: string, params?: object, config?: AxiosRequestConfig
   return http.get(url, { params, ...config }) as unknown as Promise<T>
 }
 
-export function post<T>(url: string, data?: object, config?: AxiosRequestConfig): Promise<T> {
+export function post<T>(
+  url: string,
+  data?: object,
+  config?: AxiosRequestConfig,
+): Promise<T> {
   return http.post(url, data, config) as unknown as Promise<T>
+}
+
+export function put<T>(url: string, data?: object, config?: AxiosRequestConfig): Promise<T> {
+  return http.put(url, data, config) as unknown as Promise<T>
 }
 
 export default http

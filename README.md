@@ -15,7 +15,7 @@
 | P1 | 统一响应 / 全局异常 / 参数校验 / 雪花 ID | ✅ 已完成 |
 | P2 | 用户模块 + JWT 鉴权 | ✅ 已完成 `v0.2-user-jwt` |
 | P3 | 笔记发布 + 图片上传 | ⬜ 未开始 |
-| P4 | 前端页面（登录 / 首页 / 发布 / 详情 / 我的） | ⬜ 未开始 |
+| P4 | 前端页面（登录 / 首页 / 发布 / 详情 / 我的） | 🔄 进行中：登录 + 首页已提前完成，发布 / 详情 / 我的未开始 |
 | P5 | 点赞 / 收藏 / 评论 + Redis 计数一致性 | ⬜ 未开始 |
 | P6 | 关注关系 + 关注流 | ⬜ 未开始 |
 | P7 | Elasticsearch 搜索 + Kafka 异步同步 | ⬜ 未开始 |
@@ -190,3 +190,76 @@ red-book/
     所有注册都会误报「用户名已被占用」。必须写 `count != null && count > 0`。
 14. **同类自调用绕过 Spring 代理**：类内 `this.getUserVO()` 不会触发 `@Cacheable`，
     带缓存注解的方法要抽到独立 Bean 里。
+15. **`computed` 里读 `localStorage` 会永久缓存**：Vue 的 `computed` 只在被追踪的响应式源变化时重算，
+    而 `localStorage` 不是响应式源，`computed(() => localStorage.getItem('token'))` 算一次就再也不更新 ——
+    表现为「登录成功后立刻被路由守卫弹回登录页」。正解是把 token 放进 `ref`，
+    用 `watch` 负责持久化，让状态源本身变成响应式。
+16. **Axios 响应拦截器解包后，调用方不能再读 `res.data`**：拦截器里 `return body.data` 已经把信封拆了，
+    业务代码再 `res.data` 恒为 `undefined`。这个坑最隐蔽的地方在于「成功被当成失败」——
+    刷新 token 明明成功，却走进失败分支把用户踢下线，正好是该机制要防的事。
+    解法：给刷新接口单独开一个不带拦截器的裸 client，自己解析 `{code, data}`。
+17. **提交按钮 `disabled` 却不给理由**：把「字段长度不够」也算进 `canSubmit`，
+    用户点了没反应，也永远看不到「密码长度要在 8~20 之间」到底错在哪。按钮应只在 `loading` 时禁用。
+18. **Vite 8 / Rollup 5 的 `manualChunks` 只保留函数签名**：`{ vue: ['vue'] }` 对象写法运行时仍可用，
+    但 `vue-tsc` 报 TS2769，会让 `npm run build` 整体失败。改成函数形式。
+19. **`erasableSyntaxOnly` 禁用构造函数参数属性**：`class X { constructor(readonly a: number) {} }`
+    在 TS 6 下报 TS1294，字段要拆成显式声明 + 赋值。
+20. **逻辑删除不释放唯一索引**：`user.uk_username` 不含 `deleted` 列，
+    所以 `UPDATE user SET deleted=1` 之后**用户名仍被占用**，再注册同名会先撞判重、否则撞唯一索引。
+    清理测试数据要用物理 `DELETE`。
+
+---
+
+## 前端登录链路复盘
+
+> 登录/首页原本排在 P4，为了尽早验证「鉴权闭环」提前做了。
+> P4 仍需补发布、详情、我的等页面。
+
+### 三个真实 bug
+
+这三个都是**读代码看不出来、真机点出来才暴露**的，且都通过了 `vue-tsc` 与生产构建。
+
+| # | 现象 | 根因 | 为什么静态检查抓不到 |
+|---|---|---|---|
+| 1 | 登录成功后被守卫弹回登录页 | `isLogin` 是 `computed(() => localStorage…)`，而 `localStorage` 非响应式源，`computed` 算一次就永久缓存 | TS 只管类型，`localStorage` 读取完全合法 |
+| 2 | access token 正常过期时用户被踢下线 | 响应拦截器已解包成 `body.data`，刷新逻辑又读 `res.data` 得 `undefined` → 走失败分支 | 成功路径和失败路径类型都是合法的 |
+| 3 | 填错密码时点登录毫无反应 | `canSubmit` 把「长度不够」也算作按钮 `disabled` | 不是错误，是设计选择 |
+
+**防复发**：登录链路一旦改动，跑 `npm run test:ui`（26 条断言，见下）。第 1、2 条都有对应用例。
+
+### 测试基建：`npm run test:ui`
+
+用 Node 22 自带的 `WebSocket` 直接说 Chrome DevTools 协议驱动真实浏览器，
+不引入 Playwright（为几条断言拉几十 MB 依赖不划算）。
+
+| 脚本 | 覆盖 |
+|---|---|
+| `npm run test:ui:smoke` | 守卫拦截、吉祥物解码、CSS token、演示登录、双 token 落库、刷新保持登录、深浅模式与持久化、退出、注册、前端校验 |
+| `npm run test:ui:refresh` | 坏 access 自动 refresh + 重放原请求、双 token 同步轮换、双 token 失效清理、无 refresh 安全降级 |
+| `npm run test:ui` | 两者全跑（26 条） |
+
+**验证 refresh 链路的做法**：把 `localStorage` 里的 `xk_token` 改成垃圾串后**整页重载**。
+冷启动时 token 的 `ref` 会读到这个坏值，`isLogin` 仍为 `true`，
+于是 `/me` 必然返回 10006，正好触发「刷新 → 重放」这条路径。
+
+写这类测试时踩到的三个坑（都写进了 `scripts/ui-cdp.mjs` 的注释）：
+
+1. **`Page.navigate` 到完全相同的 URL 只做 hash 片段跳转，不会重新执行文档。**
+   一开始没做强制重载，导致「改 localStorage 制造冷启动」完全无效，
+   整个 refresh 用例是**假通过**。现在先跳 `about:blank` 再跳回来。
+2. **断言「元素非空」会中计**：昵称未加载时是占位符「加载中…」，同样是非空文本。
+   必须断言等于真实昵称，否则会在往返完成之前就误判成功。
+3. **Windows 上 `kill()` 后立刻删临时目录必然失败**：文件锁还没释放，`rmSync` 静默失败，
+   跑一次漏一个几十 MB 目录。现在等进程真正退出再删，并带重试。
+
+### 测试账号策略
+
+注册冒烟用**固定**用户名 `xk_ui_smoke`（不用时间戳），
+后端返回 `10003 用户名已被占用` 时同样判为通过 —— 请求确实打到了后端并走完校验与唯一索引。
+这样库里恒为一条常驻 fixture 可供后续复用，不会随运行次数无上限增长。
+
+### 素材
+
+`frontend/public/mascot/m01..m11.webp` 由 `frontend/scripts/mascot-cutout.py` 生成
+（切比雪夫距离抠图 + 400px 裁剪 + WebP 压缩 92），脚本内置自检：
+主体内部零误删、残留背景像素 ≤ 0.71%，不达标直接退出非零。

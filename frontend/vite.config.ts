@@ -43,12 +43,22 @@ export default defineConfig(({ mode }) => {
     },
     build: {
       outDir: 'dist',
-      // 生产环境把 Vue 等体积大的依赖拆成独立 chunk，利用浏览器长期缓存
+      // 生产环境把 Vue 等体积大的依赖拆成独立 chunk，利用浏览器长期缓存。
+      // 用函数形式而不是对象形式：Rollup 5 的类型只保留了函数签名，
+      // 对象写法虽然运行时还能用，但 vue-tsc 会报错。
       rollupOptions: {
         output: {
-          manualChunks: {
-            vue: ['vue', 'vue-router', 'pinia'],
-            vant: ['vant'],
+          manualChunks(id) {
+            // 先判 vant，否则 'vant' 里的路径不会命中上面两条，顺序不能换
+            if (id.includes('node_modules/vant')) return 'vant'
+            if (
+              id.includes('node_modules/vue') ||
+              id.includes('node_modules/@vue') ||
+              id.includes('node_modules/pinia')
+            ) {
+              return 'vue'
+            }
+            return null
           },
         },
       },

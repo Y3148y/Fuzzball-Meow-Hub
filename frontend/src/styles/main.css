@@ -1,10 +1,136 @@
+/**
+ * 设计 token 与深浅双模式。
+ *
+ * 色板全部取自参考图（11 张小猫插画）的像素采样，不是凭感觉配的：
+ * - 背景深靛蓝 #444A71：11 张四角采样完全一致
+ * - 猫身冷白 #D7E5FE、描边纯黑、暖黄点缀 #F0C060、米色 #D8C090、银灰 #A8B2CE
+ *
+ * 两个刻意的决定：
+ *
+ * 1. 行动色用暖黄 #F0C060，不用深靛蓝。
+ *    参考图里深靛蓝是「背景」，暖黄是画面里唯一的点缀（门缝光、金币、月亮）。
+ *    如果把登录按钮做成深蓝，它在深色主题的深蓝底上会直接消失；
+ *    而暖黄压深蓝底对比度极高，这正是参考图自己示范的用法。
+ *
+ * 2. 描边色随主题反转。
+ *    插画的黑色描边能看见，是因为它压在浅色的猫身上。
+ *    但纯黑描边压在深色卡面(#4E5478)上几乎不可见，所以暗色模式把描边
+ *    换成浅长春花蓝，等于「粉笔线」，保持手绘轮廓的识别度。
+ *
+ * 主题切换：Vant 的暗色是纯 .van-theme-dark class 驱动，
+ * 源码里没有 prefers-color-scheme 自动匹配（已验证 0 处），
+ * 所以双模式必须由 src/composables/useTheme.ts 自己桥接 matchMedia。
+ */
+
 :root {
-  /* 主题色：P9 定稿品牌后在此处统一替换 */
-  --xk-primary: #ff8f3f;
-  --xk-primary-light: #fff2e6;
-  --xk-bg: #f7f7f9;
-  --xk-text-primary: #1f1f1f;
-  --xk-text-secondary: #969799;
+  color-scheme: light;
+
+  /* 底层背景与卡片 */
+  --xk-bg: #f4f6fb;
+  --xk-bg-soft: #e9edf8;
+  --xk-surface: #ffffff;
+  --xk-surface-2: #f6f8fd;
+
+  /* 文字 */
+  --xk-text: #1a1e35;
+  --xk-text-2: #596080;
+  --xk-text-3: #8b91ae;
+
+  /* 线条 */
+  --xk-border: #dbe1f0;
+  --xk-stroke: #14172b;
+  --xk-stroke-w: 2px;
+  --xk-shadow-hard: 4px 4px 0 var(--xk-stroke);
+  --xk-shadow-hard-sm: 3px 3px 0 var(--xk-stroke);
+
+  /* 点缀（两套主题共用，取自参考图） */
+  --xk-amber: #f0c060;
+  --xk-amber-press: #dda23c;
+  --xk-amber-ink: #1a1e35;
+  --xk-cat: #d7e5fe;
+  --xk-sand: #d8c090;
+  --xk-steel: #a8b2ce;
+  --xk-danger: #e5484d;
+  --xk-success: #2f9e73;
+
+  /* 手绘感：刻意不对称的圆角，模拟手绘轮廓 */
+  --xk-radius-blob: 22px 26px 20px 28px / 26px 20px 28px 22px;
+  --xk-radius-blob-sm: 14px 17px 13px 18px / 17px 13px 18px 14px;
+
+  /* 桥接 Vant：让组件库跟着品牌色走 */
+  --van-primary-color: var(--xk-amber);
+  --van-background: var(--xk-bg);
+  --van-background-2: var(--xk-surface);
+  --van-background-3: var(--xk-surface-2);
+  --van-text-color: var(--xk-text);
+  --van-text-color-2: var(--xk-text-2);
+  --van-text-color-3: var(--xk-text-3);
+  --van-border-color: var(--xk-border);
+  --van-active-color: var(--xk-bg-soft);
+  --van-cell-background: var(--xk-surface);
+  --van-cell-border-color: var(--xk-border);
+  --van-cell-text-color: var(--xk-text);
+  --van-cell-value-color: var(--xk-text-2);
+  --van-field-input-text-color: var(--xk-text);
+  --van-field-placeholder-text-color: var(--xk-text-3);
+  --van-button-primary-background: var(--xk-amber);
+  --van-button-primary-border-color: var(--xk-amber);
+  --van-button-border-radius: 14px;
+  --van-button-default-border-color: var(--xk-border);
+  --van-tabs-bottom-bar-color: var(--xk-amber);
+  --van-tabs-text-color: var(--xk-text-3);
+  --van-tabs-active-text-color: var(--xk-text);
+  --van-notice-bar-background: var(--xk-cat);
+  --van-notice-bar-text-color: var(--xk-text);
+  --van-empty-description-color: var(--xk-text-3);
+  --van-toast-background: var(--xk-text);
+  --van-overlay-background: var(--xk-stroke);
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  /* 直接沿用插画背景色，暗色模式不是「另配一套灰」，而是参考图本身 */
+  --xk-bg: #444a71;
+  --xk-bg-soft: #3c4266;
+  --xk-surface: #4e5478;
+  --xk-surface-2: #575e85;
+
+  --xk-text: #eef2ff;
+  --xk-text-2: #b6bdda;
+  --xk-text-3: #8d94b8;
+
+  --xk-border: #666d99;
+  --xk-stroke: #c9d2f2;
+  --xk-shadow-hard: 4px 4px 0 rgba(12, 14, 28, 0.55);
+  --xk-shadow-hard-sm: 3px 3px 0 rgba(12, 14, 28, 0.55);
+
+  --xk-amber-press: #e6ae4a;
+  --xk-amber-ink: #1a1e35;
+  --xk-sand: #d8c090;
+  --xk-steel: #a8b2ce;
+  --xk-danger: #ff6b6f;
+  --xk-success: #4cc79a;
+
+  /* Vant 自己的 .van-theme-dark 用的是近黑(#000/#1c1c1e)，
+     压在我们这个靛蓝底上会脏，所以整套换成靛蓝色阶。
+     优先级高于 Vant 的 .van-theme-dark（单类），不会被覆盖。 */
+  --van-background: #444a71;
+  --van-background-2: #4e5478;
+  --van-background-3: #575e85;
+  --van-text-color: #eef2ff;
+  --van-text-color-2: #b6bdda;
+  --van-text-color-3: #8d94b8;
+  --van-border-color: #666d99;
+  --van-active-color: #3c4266;
+  --van-cell-background: #4e5478;
+  --van-cell-border-color: #666d99;
+  --van-cell-text-color: #eef2ff;
+  --van-cell-value-color: #b6bdda;
+  --van-notice-bar-background: #d7e5fe;
+  --van-notice-bar-text-color: #1a1e35;
+  --van-toast-background: #eef2ff;
+  --van-overlay-background: #14172b;
 }
 
 * {
@@ -20,9 +146,100 @@ body,
 
 body {
   background: var(--xk-bg);
-  color: var(--xk-text-primary);
+  color: var(--xk-text);
   font-family:
     -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
     'Microsoft YaHei', sans-serif;
   -webkit-font-smoothing: antialiased;
+  /* 主题切换时让背景色跟着渐变，而不是硬切 */
+  transition:
+    background-color 0.2s ease,
+    color 0.2s ease;
+}
+
+/* 贴纸卡：手绘描边 + 硬阴影（没有模糊，模仿马克笔压印） */
+.xk-card {
+  background: var(--xk-surface);
+  border: var(--xk-stroke-w) solid var(--xk-stroke);
+  border-radius: var(--xk-radius-blob);
+  box-shadow: var(--xk-shadow-hard);
+}
+
+.xk-card--flat {
+  box-shadow: none;
+}
+
+/* 主行动按钮：暖黄底 + 深色字，压在深蓝底上才够跳 */
+.xk-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 48px;
+  padding: 12px 20px;
+  border: var(--xk-stroke-w) solid var(--xk-stroke);
+  border-radius: var(--xk-radius-blob-sm);
+  background: var(--xk-amber);
+  color: var(--xk-amber-ink);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  box-shadow: var(--xk-shadow-hard-sm);
+  transition:
+    transform 0.12s ease,
+    box-shadow 0.12s ease,
+    background-color 0.12s ease;
+}
+
+.xk-btn:active:not(:disabled) {
+  /* 按下去时把硬阴影收掉，模拟压印 */
+  transform: translate(3px, 3px);
+  box-shadow: 0 0 0 var(--xk-stroke);
+}
+
+.xk-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  box-shadow: var(--xk-shadow-hard-sm);
+}
+
+.xk-btn--ghost {
+  background: var(--xk-surface);
+  color: var(--xk-text);
+}
+
+.xk-input {
+  width: 100%;
+  min-height: 48px;
+  padding: 12px 14px;
+  border: var(--xk-stroke-w) solid var(--xk-border);
+  border-radius: var(--xk-radius-blob-sm);
+  background: var(--xk-surface-2);
+  color: var(--xk-text);
+  font-size: 15px;
+  outline: none;
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease;
+}
+
+.xk-input::placeholder {
+  color: var(--xk-text-3);
+}
+
+.xk-input:focus {
+  border-color: var(--xk-amber);
+  background: var(--xk-surface);
+}
+
+/* 尊重系统的「减少动态效果」设置 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }

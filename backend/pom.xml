@@ -15,7 +15,7 @@
     <artifactId>xiaoku-backend</artifactId>
     <version>0.1.0-SNAPSHOT</version>
     <name>xiaoku-backend</name>
-    <description>小哭猫 - 后端服务</description>
+    <description>毛球喵社 Fuzzball-Meow-Hub - 后端服务</description>
 
     <properties>
         <java.version>17</java.version>

@@ -38,7 +38,7 @@ void fetchPing()
 <template>
   <main class="page">
     <header class="top">
-      <span class="brand">小哭猫</span>
+      <span class="brand">毛球喵社</span>
       <ThemeToggle />
     </header>
 

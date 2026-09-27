@@ -105,13 +105,13 @@ async function submit() {
 <template>
   <main class="login">
     <header class="top">
-      <span class="brand">小哭猫</span>
+      <span class="brand">毛球喵社</span>
       <ThemeToggle />
     </header>
 
     <section class="intro">
       <img class="mascot" src="/mascot/m05.webp" alt="小哭猫" />
-      <h1 class="title">小哭猫 Xiaoku</h1>
+      <h1 class="title">毛球喵社</h1>
       <p class="tagline">记下来，就不算白忙</p>
     </section>
 

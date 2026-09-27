@@ -1,5 +1,5 @@
 -- =====================================================================
---  小哭猫 Xiaoku —— 初始化脚本
+--  毛球喵社 Fuzzball-Meow-Hub —— 初始化脚本
 --  执行： mysql -u root -p < schema.sql
 --  字符集说明： utf8mb4 + utf8mb4_general_ci
 --    不用 utf8mb4_0900_ai_ci，因为后者仅 MySQL 8.0+ 支持，

@@ -29,10 +29,10 @@ public class OpenApiConfig {
     public OpenAPI xiaokuOpenAPI() {
         return new OpenAPI()
                 .info(new Info()
-                        .title("小哭猫 Xiaoku API")
+                        .title("毛球喵社 API")
                         .version("0.1.0")
                         .description("""
-                                小哭猫 —— 个人学习项目，用于准备后端开发岗位面试。
+                                毛球喵社 —— 个人学习项目，用于准备后端开发岗位面试。
 
                                 本项目与任何商业平台无任何关联，所有名称、界面与数据均为原创。
                                 """)

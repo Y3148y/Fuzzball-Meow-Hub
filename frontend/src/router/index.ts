@@ -13,7 +13,7 @@ const routes: RouteRecordRaw[] = [
     path: '/',
     name: 'home',
     component: () => import('@/views/HomeView.vue'),
-    meta: { title: '小哭猫', requiresAuth: true },
+    meta: { title: '毛球喵社', requiresAuth: true },
   },
   {
     path: '/login',
@@ -60,7 +60,7 @@ router.beforeEach((to) => {
 
 router.afterEach((to) => {
   const title = to.meta.title as string | undefined
-  document.title = title ? `${title} · 小哭猫` : '小哭猫'
+  document.title = title ? `${title} · 毛球喵社` : '毛球喵社'
 })
 
 export default router

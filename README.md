@@ -286,11 +286,61 @@ red-book/
 3. **Windows 上 `kill()` 后立刻删临时目录必然失败**：文件锁还没释放，`rmSync` 静默失败，
    跑一次漏一个几十 MB 目录。现在等进程真正退出再删，并带重试。
 
+### 后端契约测试：`node backend/scripts/contract-test.mjs`
+
+P2 那 7 条断言原本是临时脚本，跑完就丢了，`git log` 里看不出「怎么测的」。
+现在固化成落盘的契约快照，44 条：
+
+```bash
+cd backend
+node scripts/contract-test.mjs          # 默认打 localhost:8088
+XK_API_BASE=http://ip:8088 node scripts/contract-test.mjs   # 换地址
+```
+
+**为什么不用 JUnit / RestAssured / Testcontainers**：
+这一层要验的是「HTTP 报文长什么样」——业务码、错误码、双 token 轮换、鉴权白名单、
+VO 有没有漏出敏感字段。裸 HTTP 打一遍最直接，零依赖意味着任何人不装 Maven 插件、
+不起容器也能跑。service 层的分支测试留给后续按需引入 Mockito。
+
+覆盖的 5 组：
+
+| 组 | 断言要点 |
+|---|---|
+| 鉴权 | 白名单（ping/register/login/refresh）免 token；其余默认全部 10005；坏 token 10006 |
+| 参数校验 | 用户名长度/字符集、口令长度、昵称超长、性别越界 → 100001 且 message 具体 |
+| 登录 | 口令错与用户不存在**返回同一个码和同一句提示**（防用户名枚举） |
+| token | 双 token 签发、access 拒当 refresh 用、refresh 轮换、access 当 refresh 用被拒 |
+| 契约形状 | `UserVO` 不含 `password` / `status` / `deleted`，未传 nickname 回落 username |
+
+最后一条是安全断言：Entity 有 `password`，靠 `@JsonIgnore` 兜底属于「靠注解赌后人不忘」，
+断言字段名才能在有人不小心把 Entity 直接返回时立刻炸出来。
+
+**写这个脚本时踩到的坑**：一开始断言「登录口令过短返回 100001」，
+用 `Xk@1234567`（10 位）实际落在 8~20 区间内，校验通过后走到 service 层返回 10002 ——
+断言写错了，不是代码错了。改 6 位才真正命中校验分支。
+
 ### 测试账号策略
 
 注册冒烟用**固定**用户名 `xk_ui_smoke`（不用时间戳），
 后端返回 `10003 用户名已被占用` 时同样判为通过 —— 请求确实打到了后端并走完校验与唯一索引。
 这样库里恒为一条常驻 fixture 可供后续复用，不会随运行次数无上限增长。
+
+后端契约测试相反：它需要每次一个**全新**账号（否则撞 `10003` 就测不到注册成功分支），
+所以用 `ct_<时间戳>` 随机后缀，代价是每次跑留 2 条数据。脚本结束时会直接打出清理 SQL：
+
+```sql
+DELETE FROM xiaoku_db.user WHERE username REGEXP '^ct2?_[a-z0-9]+$';
+```
+
+批量清：
+
+```bash
+docker exec -e MYSQL_PWD=<root口令> xiaoku-mysql mysql -uroot \
+  -e "DELETE FROM xiaoku_db.user WHERE username REGEXP '^ct2?_[a-z0-9]+$';"
+```
+
+> 踩坑：MySQL 里 `LIKE 'ct_%'` 的 `_` 是**单字符通配符**，会误删 `ct2_xxx` 之外的行，
+> 所以上面统一用 `REGEXP` 而不是 `LIKE`。
 
 ### 素材
 

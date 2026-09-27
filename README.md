@@ -51,7 +51,21 @@
 - Docker Desktop
 - Node.js 20+
 
-### 1. 启动中间件
+### 1. 准备 `.env`
+
+仓库不提供 `.env`（里面有口令），先从模板复制一份：
+
+```bash
+cp .env.example .env
+```
+
+然后填上 `MYSQL_ROOT_PASSWORD`（自己取一个值）。
+
+> 为什么口令必须由你自己定：本项目的 MySQL 端口曾以硬编码默认口令启动，
+> 仓库一旦公开就等于公开了开发库口令。现在 compose 用 `${VAR:?提示}` 语法，
+> 未设置会**直接启动失败并打印提示**，不会静默套用弱口令。
+
+### 2. 启动中间件
 
 ```bash
 docker compose up -d
@@ -62,7 +76,7 @@ docker compose ps
 
 | 服务 | 宿主机端口 | 说明 |
 |---|---|---|
-| MySQL | `3309` | 首次启动自动执行 `sql/schema.sql` 建库建表 |
+| MySQL | `3309` | 首次启动自动执行 `sql/schema.sql` 建库建表；**仅绑定 `127.0.0.1`** |
 | Kafka | `9092` | KRaft 模式单节点 |
 | Elasticsearch | `9250` | 单节点，关闭安全认证 |
 
@@ -72,7 +86,19 @@ docker compose ps
 > **国内网络拉取 Docker Hub 镜像：** 根目录 `.env` 里的 `REGISTRY_PREFIX` 已配置为
 > `docker.m.daocloud.io/`。海外环境把它置空即可。
 
-### 2. 启动后端
+### 3. 启动后端
+
+后端**不会**内置库口令，启动前需把它作为环境变量传进来（取值同 `.env` 的 `MYSQL_ROOT_PASSWORD`）：
+
+```powershell
+# Windows PowerShell
+$env:XK_MYSQL_PASSWORD = "<你在 .env 里填的值>"
+```
+
+```bash
+# macOS / Linux
+export XK_MYSQL_PASSWORD="<你在 .env 里填的值>"
+```
 
 ```bash
 cd backend
@@ -84,6 +110,10 @@ mvnw.cmd spring-boot:run
 ./mvnw spring-boot:run
 ```
 
+> 忘记设会怎样：启动阶段直接失败并报
+> `Could not resolve placeholder 'XK_MYSQL_PASSWORD'`，不会静默连上或连错库。
+> 运行后端测试（`mvn test`）同理需要这个变量。
+
 > IDEA 里请把 **Project SDK 设为 17**，**Maven 选 "Bundled"（3.9.6+）**。
 > 系统自带的 Maven 3.6.1 低于 Spring Boot 3 要求的 3.6.3，会报错。
 
@@ -92,7 +122,7 @@ mvnw.cmd spring-boot:run
 - 接口文档 <http://localhost:8088/doc.html>
 - 健康自检 <http://localhost:8088/api/system/ping>
 
-### 3. 启动前端
+### 4. 启动前端
 
 ```bash
 cd frontend

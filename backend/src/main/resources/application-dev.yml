@@ -11,10 +11,11 @@ spring:
       mode: never
 
   datasource:
-    # 与仓库根目录 .env 的 MYSQL_ROOT_PASSWORD 保持一致。
-    # 这个口令只用于本地 docker-compose，不对应任何真实环境；
-    # 部署时用 XK_MYSQL_PASSWORD 环境变量覆盖即可，无需改代码
-    password: ${XK_MYSQL_PASSWORD:<请自行设置> }
+    # 口令不写兜底值：没有默认值时 Spring 会在启动阶段直接抛
+    # "Could not resolve placeholder 'XK_MYSQL_PASSWORD'" 而快速失败，
+    # 这比留一个公开的默认口令（等同把开发库口令写进仓库）安全得多。
+    # 启动前先设好同名环境变量，取值与 .env 的 MYSQL_ROOT_PASSWORD 保持一致。
+    password: ${XK_MYSQL_PASSWORD}
 
 logging:
   level:

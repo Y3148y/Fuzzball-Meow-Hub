@@ -16,9 +16,13 @@ services:
     container_name: xiaoku-mysql
     restart: unless-stopped
     ports:
-      - "${MYSQL_HOST_PORT:-3309}:3306"
+      # 只绑定回环地址：本机原生 MySQL 之外不对局域网暴露，
+      # 免得开发库的弱口令被同网段直接爆破。需要在别的设备上连时改成 "0.0.0.0:${MYSQL_HOST_PORT:-3309}:3306"
+      - "127.0.0.1:${MYSQL_HOST_PORT:-3309}:3306"
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-<请自行设置> }
+      # 用 `:?` 而不是 `:-<默认值>`：不给兜底值，未设置时 compose 直接报错退出。
+      # 之前这里硬编码过一个默认口令，仓库一公开就等于告诉所有人开发库口令。
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?未设置 MYSQL_ROOT_PASSWORD，请复制 .env.example 为 .env 并填写}
       MYSQL_DATABASE: xiaoku_db
       # 关闭 binlog：本地开发不需要，省一半磁盘 IO
       MYSQL_LOG_BIN: "0"

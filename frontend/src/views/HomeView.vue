@@ -69,6 +69,9 @@ void fetchPing()
       </dl>
 
       <button class="xk-btn xk-btn--ghost" type="button" @click="logout">退出登录</button>
+      <button class="xk-btn publish-entry" type="button" data-test="go-publish" @click="router.push('/publish')">
+        发布笔记
+      </button>
     </section>
 
     <section class="card xk-card xk-card--flat env">
@@ -164,6 +167,11 @@ void fetchPing()
   gap: 10px;
   margin: 18px 0;
   padding: 0;
+}
+
+.publish-entry {
+  width: 100%;
+  margin-bottom: 8px;
 }
 
 .stat {

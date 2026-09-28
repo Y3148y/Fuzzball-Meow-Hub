@@ -18,8 +18,8 @@
 | P0 | 环境编排 + 工程骨架 | ✅ 已完成 `v0.1-env-skeleton` |
 | P1 | 统一响应 / 全局异常 / 参数校验 / 雪花 ID | ✅ 已完成 |
 | P2 | 用户模块 + JWT 鉴权 | ✅ 已完成 `v0.2-user-jwt` |
-| P3 | 笔记发布 + 图片上传 | ⬜ 未开始 |
-| P4 | 前端页面（登录 / 首页 / 发布 / 详情 / 我的） | 🔄 进行中：登录 + 首页已提前完成，发布 / 详情 / 我的未开始 |
+| P3 | 笔记发布 + 图片上传 | ✅ 已完成 |
+| P4 | 前端页面（登录 / 首页 / 发布 / 详情 / 我的） | 🔄 进行中：登录 / 首页 / 发布 / 详情已提前完成，仅「我的」未开始 |
 | P5 | 点赞 / 收藏 / 评论 + Redis 计数一致性 | ⬜ 未开始 |
 | P6 | 关注关系 + 关注流 | ⬜ 未开始 |
 | P7 | Elasticsearch 搜索 + Kafka 异步同步 | ⬜ 未开始 |
@@ -259,7 +259,7 @@ red-book/
 | 2 | access token 正常过期时用户被踢下线 | 响应拦截器已解包成 `body.data`，刷新逻辑又读 `res.data` 得 `undefined` → 走失败分支 | 成功路径和失败路径类型都是合法的 |
 | 3 | 填错密码时点登录毫无反应 | `canSubmit` 把「长度不够」也算作按钮 `disabled` | 不是错误，是设计选择 |
 
-**防复发**：登录链路一旦改动，跑 `npm run test:ui`（26 条断言，见下）。第 1、2 条都有对应用例。
+**防复发**：登录链路一旦改动，跑 `npm run test:ui`（43 条断言，见下）。第 1、2 条都有对应用例。
 
 ### 测试基建：`npm run test:ui`
 
@@ -270,7 +270,8 @@ red-book/
 |---|---|
 | `npm run test:ui:smoke` | 守卫拦截、吉祥物解码、CSS token、演示登录、双 token 落库、刷新保持登录、深浅模式与持久化、退出、注册、前端校验 |
 | `npm run test:ui:refresh` | 坏 access 自动 refresh + 重放原请求、双 token 同步轮换、双 token 失效清理、无 refresh 安全降级 |
-| `npm run test:ui` | 两者全跑（26 条） |
+| `npm run test:ui:note` | 发布页守卫、空表单禁用、字数计数、本地预览、9 张上限、发布跳详情、详情图片**真实解码**（非碎图） |
+| `npm run test:ui` | 三者全跑（43 条） |
 
 **验证 refresh 链路的做法**：把 `localStorage` 里的 `xk_token` 改成垃圾串后**整页重载**。
 冷启动时 token 的 `ref` 会读到这个坏值，`isLogin` 仍为 `true`，
@@ -286,10 +287,43 @@ red-book/
 3. **Windows 上 `kill()` 后立刻删临时目录必然失败**：文件锁还没释放，`rmSync` 静默失败，
    跑一次漏一个几十 MB 目录。现在等进程真正退出再删，并带重试。
 
+### P3 笔记域：踩过的两个坑
+
+**1. 雪花 ID 必须是字符串（契约测试抓出来的真实缺陷）**
+
+```
+后端 ID  = 362756654342606850      10^17 量级
+JS 解析后 = 362756654342606848      JSON.parse 静默四舍五入
+```
+
+JS 的 `Number.MAX_SAFE_INTEGER` 只有 `9007199254740991`（约 9.007×10^15），
+超出后**不抛错、不告警**，只是数悄悄变了。表现是「发布成功了，
+拿返回的 id 查详情却提示笔记不存在」——因为回传的根本是另一个数。
+
+修法是 `JacksonConfig` 把 `Long` 一律序列化成字符串，配套三点：
+
+- **只定制 Spring MVC 的 `ObjectMapper`。** `RedisObjectMapperProvider` 是另一个实例
+  且带 `activateDefaultTyping`，缓存里落成字符串后反序列化回 `UserVO` 会类型不匹配。
+- **非 ID 的数值别用 `Long`。** `LoginVO.expiresIn` 原本是 `Long`，被这条规则波及成了
+  字符串，改成 `Integer` 才对——它是时长不是 ID。
+- 前端 `types.ts` 用 `SnowflakeId = string`，赋值时不要 `Number()` / `parseInt`。
+
+**2. 图片不能一次性和正文一起提交**
+
+「multipart 一次带正文 + 9 张图」看着省事，但图片存到第 5 张失败时，
+已经落盘的前 4 张没法回滚，只能留成孤儿文件。
+所以拆成两步：`POST /api/note/image` 先换 URL，`POST /api/note/publish` 再提交 URL 列表。
+「上传了但没发布」产生的孤儿文件，由 P9 的定时任务清理，不阻塞主流程。
+
+顺带两个安全细节：上传文件名**一律服务端生成 UUID**、扩展名按 content type 白名单反推
+（原始文件名是用户可控输入，直接拼路径会同时踩到路径穿越和扩展名伪装）；
+发布时校验图片地址只放行站内相对路径与 `http(s)`，否则 `javascript:` 存进库后
+渲染成 `<img src>` 就是 XSS。
+
 ### 后端契约测试：`node backend/scripts/contract-test.mjs`
 
 P2 那 7 条断言原本是临时脚本，跑完就丢了，`git log` 里看不出「怎么测的」。
-现在固化成落盘的契约快照，44 条：
+现在固化成落盘的契约快照，76 条（P2 44 + P3 32）：
 
 ```bash
 cd backend
@@ -302,7 +336,7 @@ XK_API_BASE=http://ip:8088 node scripts/contract-test.mjs   # 换地址
 VO 有没有漏出敏感字段。裸 HTTP 打一遍最直接，零依赖意味着任何人不装 Maven 插件、
 不起容器也能跑。service 层的分支测试留给后续按需引入 Mockito。
 
-覆盖的 5 组：
+覆盖的 6 组：
 
 | 组 | 断言要点 |
 |---|---|
@@ -311,6 +345,7 @@ VO 有没有漏出敏感字段。裸 HTTP 打一遍最直接，零依赖意味�
 | 登录 | 口令错与用户不存在**返回同一个码和同一句提示**（防用户名枚举） |
 | token | 双 token 签发、access 拒当 refresh 用、refresh 轮换、access 当 refresh 用被拒 |
 | 契约形状 | `UserVO` 不含 `password` / `status` / `deleted`，未传 nickname 回落 username |
+| P3 笔记域 | 图片类型白名单、空文件、**落盘文件名由服务端生成**、静态资源可回读、9 张边界两侧、10 张越界用专用码 20004、`javascript:`/`data:` URL 被拒、未登录三接口、查无此笔记 20001 |
 
 最后一条是安全断言：Entity 有 `password`，靠 `@JsonIgnore` 兜底属于「靠注解赌后人不忘」，
 断言字段名才能在有人不小心把 Entity 直接返回时立刻炸出来。
@@ -326,17 +361,19 @@ VO 有没有漏出敏感字段。裸 HTTP 打一遍最直接，零依赖意味�
 这样库里恒为一条常驻 fixture 可供后续复用，不会随运行次数无上限增长。
 
 后端契约测试相反：它需要每次一个**全新**账号（否则撞 `10003` 就测不到注册成功分支），
-所以用 `ct_<时间戳>` 随机后缀，代价是每次跑留 2 条数据。脚本结束时会直接打出清理 SQL：
+所以用 `ct_<时间戳>` 随机后缀，代价是每次跑留 2 个账号和它们的笔记。
+脚本结束时会直接打出带具体 id 的清理 SQL。批量清（**顺序有讲究**）：
 
 ```sql
+-- 必须先子表后父表：note_image 依赖 note，note 依赖 user
+DELETE FROM xiaoku_db.note_image WHERE note_id IN (SELECT id FROM xiaoku_db.note);
+DELETE FROM xiaoku_db.note;
 DELETE FROM xiaoku_db.user WHERE username REGEXP '^ct2?_[a-z0-9]+$';
 ```
 
-批量清：
-
 ```bash
-docker exec -e MYSQL_PWD=<root口令> xiaoku-mysql mysql -uroot \
-  -e "DELETE FROM xiaoku_db.user WHERE username REGEXP '^ct2?_[a-z0-9]+$';"
+# 图片文件是落盘在 backend/uploads/ 的，删库不会删文件
+rm -rf backend/uploads
 ```
 
 > 踩坑：MySQL 里 `LIKE 'ct_%'` 的 `_` 是**单字符通配符**，会误删 `ct2_xxx` 之外的行，

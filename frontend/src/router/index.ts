@@ -22,6 +22,20 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '登录', guestOnly: true },
   },
   {
+    path: '/publish',
+    name: 'publish',
+    component: () => import('@/views/PublishView.vue'),
+    meta: { title: '发布笔记', requiresAuth: true },
+  },
+  {
+    // id 是雪花 ID，必须按字符串透传。这里写 :id(\\d+) 只是收窄非法路径，
+    // 不要写成 :id(\\d{1,15}) —— 那样真笔记的 17~18 位 ID 反而进不来。
+    path: '/note/:id(\\d+)',
+    name: 'note-detail',
+    component: () => import('@/views/NoteDetailView.vue'),
+    meta: { title: '笔记详情', requiresAuth: true },
+  },
+  {
     // 兜底放最后，防止前面所有路径被吃掉
     path: '/:pathMatch(.*)*',
     redirect: '/',

@@ -57,6 +57,9 @@ public class NoteVO implements Serializable {
     @Schema(description = "当前登录用户是否已点赞，前端据此决定按钮初始态，省一次请求")
     private Boolean liked;
 
+    @Schema(description = "当前登录用户是否已收藏")
+    private Boolean collected;
+
     @Schema(description = "作者昵称")
     private String authorNickname;
 

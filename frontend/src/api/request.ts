@@ -182,4 +182,15 @@ export function put<T>(url: string, data?: object, config?: AxiosRequestConfig):
   return http.put(url, data, config) as unknown as Promise<T>
 }
 
+/**
+ * DELETE。
+ *
+ * 取消点赞 / 取消收藏 / 删除评论都走它，参数放 query 而不是 body：
+ * 这些接口没有请求体，用 body 反而会让某些网关和 CDN 对 DELETE 的处理
+ * 出现分歧（有的会丢弃 body）。
+ */
+export function del<T>(url: string, config?: AxiosRequestConfig): Promise<T> {
+  return http.delete(url, config) as unknown as Promise<T>
+}
+
 export default http

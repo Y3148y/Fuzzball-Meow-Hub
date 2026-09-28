@@ -13,6 +13,12 @@ import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 
+import java.util.Collection;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.stream.Collectors;
+
 /**
  * 用户<b>读</b>侧组件，专门承载缓存逻辑。
  *
@@ -80,5 +86,31 @@ public class UserQueryService {
     @CacheEvict(cacheNames = CacheNames.USER_INFO, key = "#userId")
     public void evictUserVO(Long userId) {
         log.debug("已清理用户缓存 userId={}", userId);
+    }
+
+    /**
+     * 批量取用户信息，<b>刻意不加 {@code @Cacheable}</b>。
+     *
+     * <p>缓存注解是按<b>单个 key</b> 工作的。一页 20 条评论可能涉及 20 个不同的用户，
+     * 要让它们各自命中缓存就只能一个一个调 {@link #findUserVO(Long)}，
+     * 那又回到了 N+1（而且每次都带一次 Redis 往返，未必比一条 IN 查询划算）。
+     * 批量场景的正确做法是一条 {@code IN} 查库，把 N 次往返压成 1 次。
+     *
+     * <p>返回 Map 而不是 List 是为了让调用方按 id O(1) 取；
+     * 查不到的用户<b>不在 Map 里</b>，调用方需用 {@code get()} 并处理 null
+     * （对应「作者已注销」）。
+     *
+     * @param userIds 用户ID集合，会自动去重并忽略 null
+     */
+    public Map<Long, UserVO> findUserVOMap(Collection<Long> userIds) {
+        if (userIds == null || userIds.isEmpty()) {
+            return Map.of();
+        }
+        List<Long> distinct = userIds.stream().filter(Objects::nonNull).distinct().toList();
+        if (distinct.isEmpty()) {
+            return Map.of();
+        }
+        return userMapper.selectBatchIds(distinct).stream()
+                .collect(Collectors.toMap(UserEntity::getId, UserConverter::toVO));
     }
 }

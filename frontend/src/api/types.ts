@@ -33,6 +33,14 @@ export const ErrorCode = {
   NOTE_STATUS_ILLEGAL: 20002,
   NOTE_UPLOAD_FAILED: 20003,
   NOTE_IMAGE_LIMIT_EXCEED: 20004,
+  // 30xxx 互动域（点赞 / 收藏 / 评论）
+  NOTE_ALREADY_LIKED: 30001,
+  NOTE_NOT_LIKED: 30002,
+  NOTE_ALREADY_COLLECTED: 30003,
+  NOTE_NOT_COLLECTED: 30004,
+  COMMENT_NOT_FOUND: 30005,
+  COMMENT_TOO_LONG: 30006,
+  CANNOT_COMMENT_SELF_NOTE: 30007,
 } as const
 
 /**
@@ -55,6 +63,23 @@ export const AUTH_ERROR_CODES: readonly number[] = [
  * 所以类型必须写 string，赋值时也不要用 Number()/parseInt 转换。
  */
 export type SnowflakeId = string
+
+/**
+ * <b>后端配了 {@code default-property-inclusion: non_null}，
+ * 所以「值为 null」在 JSON 里表现为「字段整个不存在」。</b>
+ *
+ * <p>也就是说你在这边看到的所有 {@code xxx: string | null}，
+ * 运行时拿到的其实是 {@code undefined}，不是 {@code null}。
+ * JSON 里长这样：
+ * <pre>{ "id": "123", "avatar": null }   →  { "id": "123" }</pre>
+ *
+ * <p><b>因此判断「有没有值」必须用 {@code == null} 或真值判断，
+ * 不能用 {@code === null}，也不能用 {@code 'avatar' in obj}。</b>
+ * 同一个值在 TypeScript 里声明成 {@code | null} 只是为了提醒「这里可能没值」，
+ * 模板里 {@code {{ user.avatar }}} 和 {@code v-if="user.avatar"} 两者表现一致，
+ * 所以统一按这个风格写，不为了 undefined 再单独开一套 optional 类型。
+ */
+export type Nullable<T> = T | null
 
 /** 用户信息，对应后端 UserVO */
 export interface UserVO {
@@ -128,6 +153,8 @@ export interface NoteVO {
   commentCount: number
   /** 当前登录用户是否已点赞 */
   liked: boolean
+  /** 当前登录用户是否已收藏（P5 新增，和 liked 是两套独立关系） */
+  collected: boolean
   authorNickname: string
   authorAvatar: string | null
   /** 按上传顺序返回 */
@@ -147,4 +174,70 @@ export interface NotePublishDTO {
 /** 上传单张图片的返回体 */
 export interface ImageUploadVO {
   url: string
+}
+
+/**
+ * 分页返回体，对应后端 PageVO。
+ *
+ * <p>total / page / size 是 <b>JSON number 不是字符串</b>。
+ * 这不是随便定的：JacksonConfig 会把 Long 序列化成字符串（为了雪花 ID），
+ * 而 PageVO 最初用 long 写 total，于是接口返回的是 {@code "1"}，
+ * 前端 {@code total === 1} 恒为 false、分页器算不出总页数。
+ * 改成 Integer 之后才是数字，所以 {@code page === 1} 可以直接用。
+ */
+export interface PageVO<T> {
+  list: T[]
+  total: number
+  /** 从 1 开始 */
+  page: number
+  size: number
+}
+
+/** 一条评论，对应后端 CommentVO */
+export interface CommentVO {
+  id: SnowflakeId
+  noteId: SnowflakeId
+  nickname: string
+  avatar: Nullable<string>
+  content: string
+  likeCount: number
+  /**
+   * 父评论 ID，一级评论为「无」。
+   *
+   * <p>后端数据库里用 0 当哨兵，但 {@code CommentConverter} 会把 0 转成
+   * {@code null} 再输出——刻意不让前端看到 {@code "0"}：
+   * 0 既可能被误当成合法 ID，又因为是 Long 而变成字符串，
+   * 前端得写 {@code === '0'} 才能判断，而它<b>不能</b>用 {@code Number()}
+   * 转（非零时是 17 位雪花 ID，一转就丢精度）。
+   * 加上 non_null 省略规则，实际运行时这里是 {@code undefined}，
+   * 所以判断一律用 {@code !comment.parentId}。
+   */
+  parentId: Nullable<SnowflakeId>
+  /** 根评论 ID，一级评论为「无」，语义同 parentId */
+  rootCommentId: Nullable<SnowflakeId>
+  /** 被回复者昵称，非回复为「无」 */
+  replyNickname: Nullable<string>
+  /** 当前登录用户是否已点赞 */
+  liked: boolean
+  /** 是否是自己发的，前端据此显示删除按钮 */
+  mine: boolean
+  createTime: string
+  /** 子回复列表，只有一级评论会带这个字段 */
+  replies: CommentVO[]
+  /**
+   * 子回复<b>总数</b>，可能大于 {@code replies.length}。
+   *
+   * <p>后端每根评论最多返回 3 条子回复（MAX_REPLIES_PER_ROOT），
+   * 所以要判断「还有更多回复」必须看这个字段，
+   * 不能只看 {@code replies.length === 3}——正好 3 条时也会误判成有更多。
+   */
+  replyTotal: number
+}
+
+/** 发表评论请求体，对应后端 CommentCreateDTO */
+export interface CommentCreateDTO {
+  noteId: SnowflakeId
+  content: string
+  /** 回复某条评论时传，被回复的父评论 ID；发一级评论不传 */
+  parentId?: SnowflakeId
 }

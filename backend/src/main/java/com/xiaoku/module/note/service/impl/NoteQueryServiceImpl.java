@@ -8,8 +8,10 @@ import com.xiaoku.module.note.converter.NoteConverter;
 import com.xiaoku.module.note.entity.NoteEntity;
 import com.xiaoku.module.note.entity.NoteImageEntity;
 import com.xiaoku.module.note.entity.NoteLikeEntity;
+import com.xiaoku.module.note.entity.NoteCollectEntity;
 import com.xiaoku.module.note.mapper.NoteImageMapper;
 import com.xiaoku.module.note.mapper.NoteLikeMapper;
+import com.xiaoku.module.note.mapper.NoteCollectMapper;
 import com.xiaoku.module.note.mapper.NoteMapper;
 import com.xiaoku.module.note.service.NoteQueryService;
 import com.xiaoku.module.note.vo.NoteVO;
@@ -33,6 +35,7 @@ public class NoteQueryServiceImpl implements NoteQueryService {
     private final NoteMapper noteMapper;
     private final NoteImageMapper noteImageMapper;
     private final NoteLikeMapper noteLikeMapper;
+    private final NoteCollectMapper noteCollectMapper;
     private final UserQueryService userQueryService;
 
     /**
@@ -77,6 +80,10 @@ public class NoteQueryServiceImpl implements NoteQueryService {
                 .eq(NoteLikeEntity::getUserId, currentUserId)
                 .eq(NoteLikeEntity::getNoteId, noteId)) > 0;
 
-        return NoteConverter.toVO(note, userQueryService.findUserVO(note.getUserId()), images, liked);
+        boolean collected = noteCollectMapper.selectCount(Wrappers.<NoteCollectEntity>lambdaQuery()
+                .eq(NoteCollectEntity::getUserId, currentUserId)
+                .eq(NoteCollectEntity::getNoteId, noteId)) > 0;
+
+        return NoteConverter.toVO(note, userQueryService.findUserVO(note.getUserId()), images, liked, collected);
     }
 }

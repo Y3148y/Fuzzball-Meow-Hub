@@ -107,28 +107,44 @@ $env:XK_MYSQL_PASSWORD = "<.env 里的 MYSQL_ROOT_PASSWORD>"   # 不设就起不
 改后端接口 → 必须跑契约测试；改前端 → 必须跑 CDP 测试。**别攒到最后一起跑。**
 
 ```bash
-# 后端（需后端已在 8088 运行）→ 76 条
+# 后端（需后端已在 8088 运行）→ 134 条
 cd backend && node scripts/contract-test.mjs
 # 换地址：XK_API_BASE=http://ip:8088 node scripts/contract-test.mjs
 
-# 前端（需前端 5180 + 后端 8088 同时在跑）→ 18 + 8 + 17 + 26 = 69 条
+# 前端（需前端 5180 + 后端 8088 同时在跑）→ 18 + 8 + 17 + 26 + 41 = 110 条
 cd frontend && npm run test:ui
+
+# 单跑某一组：:smoke / :refresh / :note / :profile / :interaction
+cd frontend && npm run test:ui:interaction
 
 # 前端类型 / 构建
 cd frontend && npm run typecheck && npm run build
 ```
 
-契约测试每次跑会新建 `ct_<时间戳>` / `ct2_<时间戳>` 两个账号（必须随机，
-固定账号会撞 `10003` 就测不到注册成功分支），**并留下它们的笔记和图片**。
-清理**必须用 `REGEXP` 而不是 `LIKE`** —— MySQL 里 `LIKE 'ct_%'` 的 `_` 是
-单字符通配符，会误删：
+契约测试每次跑会新建 `ct_<时间戳>` / `ct2_<时间戳>` / `ct3_<时间戳>` 三个账号
+（必须随机，固定账号会撞 `10003` 就测不到注册成功分支），**并留下它们的笔记和图片**。
+
+清理有**两个**坑，第二个比第一个危险得多：
 
 ```sql
--- 顺序有讲究：先子表后父表
-DELETE FROM xiaoku_db.note_image WHERE note_id IN (SELECT id FROM xiaoku_db.note);
+-- 1) 顺序：先子表后父表。P5 之后有四张表挂在 note 下面，
+--    comment_like 又挂在 comment 下面，少删一张就留孤儿行
+DELETE FROM xiaoku_db.comment_like
+  WHERE comment_id IN (SELECT id FROM xiaoku_db.comment WHERE note_id IN (SELECT id FROM xiaoku_db.note));
+DELETE FROM xiaoku_db.comment   WHERE note_id IN (SELECT id FROM xiaoku_db.note);
+DELETE FROM xiaoku_db.note_like   WHERE note_id IN (SELECT id FROM xiaoku_db.note);
+DELETE FROM xiaoku_db.note_collect WHERE note_id IN (SELECT id FROM xiaoku_db.note);
+DELETE FROM xiaoku_db.note_image  WHERE note_id IN (SELECT id FROM xiaoku_db.note);
 DELETE FROM xiaoku_db.note;
-DELETE FROM xiaoku_db.user WHERE username REGEXP '^ct2?_[a-z0-9]+$';
+DELETE FROM xiaoku_db.user WHERE username REGEXP '^ct[0-9]?_[a-z0-9]+$';
 ```
+
+1. **`REGEXP` 而不是 `LIKE`**：MySQL 里 `LIKE 'ct_%'` 的 `_` 是单字符通配符，会误删。
+   正则里的 `[0-9]?` 也不能省 —— 写成 `^ct2?_` 匹配不到 `ct3_`，每跑一次漏一个常驻垃圾账号。
+2. **每条 `DELETE` 都必须带 `WHERE`**：库里还有 `xiaoku_demo`、`xk_ui_smoke`、
+   `xk_ui_interact` 这些常驻 fixture 的笔记和评论。`DELETE FROM xiaoku_db.comment;`
+   这种全表清空会把它们一起删掉，而脚本跑完只显示「清理成功」，
+   **没有任何迹象表明你顺手删了别的东西**。先 `SELECT id FROM note` 缩到测试笔记再删。
 
 删库不会删文件，图片还在 `backend/uploads/`（已 gitignore），要清就整个删掉。
 
@@ -167,20 +183,48 @@ JS 的 `Number.MAX_SAFE_INTEGER` 只有 `9007199254740991`（约 9.007×10^15）
 - `JacksonConfig` 只对 **Spring MVC 的 ObjectMapper** 注册 `ToStringSerializer`
 - **不要**改 `RedisObjectMapperProvider`：那是另一个 ObjectMapper 且带
   `activateDefaultTyping`，缓存里落成字符串后反序列化回 `UserVO` 会类型不匹配
-- 非 ID 的数值别用 `Long`：`LoginVO.expiresIn` 已改成 `Integer`
+- 非 ID 的数值别用 `Long`：`LoginVO.expiresIn` 已改成 `Integer`，
+  `PageVO.total/page/size` 也已改成 `Integer`（P5 踩过同一个坑：它被序列化成
+  `"1"`，前端 `total === 1` 恒为 false）
 - 前端 `types.ts` 用 `SnowflakeId = string`，赋值时不要 `Number()` / `parseInt`
 - 契约测试里有两条断言专门钉这件事（类型必须是 string、BigInt 必须 > MAX_SAFE_INTEGER）
+
+## 6.1 `non_null`：`null` 字段在 JSON 里是「不存在」
+
+`application.yml` 配了 `default-property-inclusion: non_null`，
+所以**值为 null 的字段会整个从 JSON 里消失**，前端拿到的是 `undefined` 不是 `null`。
+
+```
+VO { id: "123", avatar: null }   →   { "id": "123" }
+```
+
+因此判断「有没有值」必须用 `== null` 或真值判断，
+写 `=== null` 会永远走进「有值」那个分支，用 `'avatar' in obj` 同理。
+前端 `types.ts` 里的 `Nullable<T>` 就是这个约定。
+
+## 6.2 前端 `request.ts` 的 `get(url, params, config)`
+
+**第二个形参直接就是 query 参数本身，不是 axios config。**
+
+```ts
+get('/comment/list', { noteId, page, size })          // ✅
+get('/comment/list', { params: { noteId, page } })    // ❌ 发出 ?params[noteId]=...
+```
+
+后者语法合法、`vue-tsc` 也不报错，但 axios 会把整个对象当**一个**参数序列化，
+后端收到「缺少必要参数：noteId」。**契约测试抓不到**，因为它走裸 HTTP
+绕开了整个前端封装层，只有真机点一下才会暴露。
 
 ## 7. 已完成状态（2026-09-27）
 
 - P0 环境编排 / P1 统一响应与异常 / P2 用户模块 + JWT / P4 部分（登录 + 首页）已合并推送
 - 品牌改名已落地（`62ed4c5`），测试通过且未改任何测试断言
-- 契约测试已落盘（`f8f412c`），现为 **76 条断言**（P2 44 条 + P3 32 条）
+- 契约测试已落盘（`f8f412c`），现为 **134 条断言**（P2 44 条 + P3 32 条 + P5 58 条）
 - 口令兜底修正 + 注释订正（`cf93b22`）
 - AGENTS.md 本身已提交（`3978ed0`）
 - P3 后端已推送（`fd4140e`），含雪花 ID 精度修复
-- P4 前端已完工（登录 / 首页 / 发布 / 详情 / 我的五页 + 69 条断言），
-  **下一步：P5 点赞 / 收藏 / 评论**
+- P4 前端已完工（登录 / 首页 / 发布 / 详情 / 我的五页 + 69 条断言）
+- P5 互动域已完工并推送：点赞 / 收藏 / 评论 + 契约 134 条 + CDP 110 条
   - `module/note/` 发布 / 详情已实现；`common/storage/` 抽出 `ImageStorage`
     抽象，`type=local` 落本地盘、`type=s3` 走 S3 协议
   - 上传文件名**一律服务端生成 UUID**，扩展名按 content type 白名单反推，
@@ -206,3 +250,20 @@ JS 的 `Number.MAX_SAFE_INTEGER` 只有 `9007199254740991`（约 9.007×10^15）
   前者是保持原值，后者是清空。改资料时 `bio` 必须无条件提交，别写
   `if (bio) patch.bio = bio`（那会让用户永远清不掉简介）。
   推论：`bio` 一旦是 `''` 就再也回不到 `NULL`。
+
+### P5 已知缺口（不是遗漏，是当前阶段做不到）
+
+- **「下架笔记上取消点赞/收藏」会连带回滚**：`NoteInteractionServiceImpl.unlike`
+  删关系 + 减计数之后调 `getDetail`，对 `status != 1` 抛 20002，
+  `@Transactional` 把已成功的删除一起回滚。注释里写清了来龙去脉，
+  要修得给「非本人可见的未发布内容」造一个内部旁路 —— 牵扯「路人有没有权
+  在取消时读到草稿」的权限语义，留到做管理端时一并定。
+  目前 P5 没有下架/编辑接口，这条分支**造不出来也没测过**。
+- **契约测试只验 HTTP 报文，验不了前端封装层**：`get(url, params, config)`
+  写错（把 `{ params: {..} }` 塞进 params）契约测试照样全绿，
+  只有真机 CDP 才炸（已踩，见第 6.2 节）。改 `request.ts` / `api/*` 必须跑 CDP。
+- **评论的 `comment_like` 只读不写**：回填了 `liked` 字段、schema 里有表，
+  但 P5 没有评论点赞接口，前端也用不到 —— 别以为它「已经实现」。
+- **S3ImageStorage 仍未实测**（同 P3，本机无 S3 端点）。
+- **固定账号 xk_ui_interact**：`ui-interaction.mjs` 的常驻评论者，
+  撞 `10003` 判通过，和 `xk_ui_smoke` 一样**不要清理**。

@@ -20,7 +20,7 @@
 | P2 | 用户模块 + JWT 鉴权 | ✅ 已完成 `v0.2-user-jwt` |
 | P3 | 笔记发布 + 图片上传 | ✅ 已完成 |
 | P4 | 前端页面（登录 / 首页 / 发布 / 详情 / 我的） | ✅ 已完成 |
-| P5 | 点赞 / 收藏 / 评论 + Redis 计数一致性 | ⬜ 未开始 |
+| P5 | 点赞 / 收藏 / 评论（Redis 计数一致性推到 P8） | ✅ 已完成 |
 | P6 | 关注关系 + 关注流 | ⬜ 未开始 |
 | P7 | Elasticsearch 搜索 + Kafka 异步同步 | ⬜ 未开始 |
 | P8 | 缓存三件套 / 布隆过滤器 / 分布式锁 / 限流 | ⬜ 未开始 |
@@ -259,7 +259,7 @@ red-book/
 | 2 | access token 正常过期时用户被踢下线 | 响应拦截器已解包成 `body.data`，刷新逻辑又读 `res.data` 得 `undefined` → 走失败分支 | 成功路径和失败路径类型都是合法的 |
 | 3 | 填错密码时点登录毫无反应 | `canSubmit` 把「长度不够」也算作按钮 `disabled` | 不是错误，是设计选择 |
 
-**防复发**：登录链路一旦改动，跑 `npm run test:ui`（69 条断言，见下）。第 1、2 条都有对应用例。
+**防复发**：登录链路一旦改动，跑 `npm run test:ui`（110 条断言，见下）。第 1、2 条都有对应用例。
 
 ### 测试基建：`npm run test:ui`
 
@@ -272,7 +272,8 @@ red-book/
 | `npm run test:ui:refresh` | 坏 access 自动 refresh + 重放原请求、双 token 同步轮换、双 token 失效清理、无 refresh 安全降级 |
 | `npm run test:ui:note` | 发布页守卫、空表单禁用、字数计数、本地预览、9 张上限、发布跳详情、详情图片**真实解码**（非碎图） |
 | `npm run test:ui:profile` | 我的页守卫、资料回填、昵称超长前端拦截、保存后**回查后端**确认落库、取消不写库、演示账号自还原 |
-| `npm run test:ui` | 四者全跑（69 条） |
+| `npm run test:ui:interaction` | 点赞/收藏开关往返、两者互不影响、跨账号评论、回复嵌套与被回复者昵称、删根评论的确认弹窗与子树级联 |
+| `npm run test:ui` | 五者全跑（110 条） |
 
 **验证 refresh 链路的做法**：把 `localStorage` 里的 `xk_token` 改成垃圾串后**整页重载**。
 冷启动时 token 的 `ref` 会读到这个坏值，`isLogin` 仍为 `true`，
@@ -355,10 +356,48 @@ store 对象，怎么都"对"。所以 `ui-profile.mjs` 改完之后**重新 GET
 清理不该依赖被测对象本身，否则哪天保存逻辑坏了，UI 清理会跟着一起失败，
 留下一条昵称被改坏的 fixture 污染后面所有测试（`ui-smoke` 断言的就是「小哭猫」）。
 
+### P5 互动域：三个只有真机点出来才发现的问题
+
+**1. `get()` 的第二个形参不是 axios config**
+
+`request.ts` 里的封装是 `get(url, params, config)` —— **第二个形参直接就是 query 参数**。
+写 `get('/comment/list', { params: { noteId, page, size } })` 语法完全合法、
+`vue-tsc` 也不会报错，但 axios 会把整个 `{ params: {...} }` 当成**一个** query 参数序列化，
+实际发出的是 `?params[noteId]=...&params[page]=...`，
+后端收到的就是「缺少必要参数：noteId」。
+
+契约测试**抓不到**这个错，因为它走裸 HTTP 绕开了整个前端封装层。
+只有真正驱动浏览器点「发评论」才会暴露。已写进 `api/comment.ts` 的注释里。
+
+**2. `PageVO` 的 `total` 用 `long` 会被序列化成字符串**
+
+P3 为了雪花 ID 定了「`Long` 一律序列化成字符串」的全局规则，
+它连计数一起波及了：`total` 原本是 `long`，于是接口返回 `{"total": "1"}`，
+前端 `total === 1` 恒为 false、分页器算不出总页数。改成 `Integer` 才是数字。
+（`IPage.getTotal()` 是 `long`，用 `Math.toIntExact` 收——强转会静默截断成 0。）
+
+**3. `non_null` 让「null」在 JSON 里变成「字段不存在」**
+
+`application.yml` 配了 `default-property-inclusion: non_null`，
+所以评论 VO 里「无父级」的 `parentId` 实际在 JSON 里**整个消失**，
+前端拿到的是 `undefined` 而不是 `null`。判断「有没有值」必须用 `== null`，
+写 `=== null` 会永远走进「有值」那个分支。已记进 `types.ts` 的 `Nullable<T>`。
+
+顺带两个设计决定：
+
+- **DB 是计数的唯一权威，Redis 计数一致性推到 P8。** 计数用
+  `UPDATE note SET like_count = like_count + 1` 原子自增，不做读-改-写；
+  「先查有没有点赞再 insert」那种 check-then-act 会被并发打穿，
+  这里只 insert、让 `uk_user_note` 唯一索引当唯一裁判。
+- **`0` 哨兵不往外暴露。** 库里 `parent_id` 用 `0` 表示「无父级」，
+  但这两个字段是 `Long`，序列化后是字符串 `"0"`，前端既不能 `Number()` 转
+  （非零时是 17 位雪花 ID，一转丢精度），又容易和「ID 就是 0」混淆。
+  所以 `CommentConverter` 读出来就转 `null`。
+
 ### 后端契约测试：`node backend/scripts/contract-test.mjs`
 
 P2 那 7 条断言原本是临时脚本，跑完就丢了，`git log` 里看不出「怎么测的」。
-现在固化成落盘的契约快照，76 条（P2 44 + P3 32）：
+现在固化成落盘的契约快照，134 条（P2 44 + P3 32 + P5 58）：
 
 ```bash
 cd backend
@@ -381,6 +420,8 @@ VO 有没有漏出敏感字段。裸 HTTP 打一遍最直接，零依赖意味�
 | token | 双 token 签发、access 拒当 refresh 用、refresh 轮换、access 当 refresh 用被拒 |
 | 契约形状 | `UserVO` 不含 `password` / `status` / `deleted`，未传 nickname 回落 username |
 | P3 笔记域 | 图片类型白名单、空文件、**落盘文件名由服务端生成**、静态资源可回读、9 张边界两侧、10 张越界用专用码 20004、`javascript:`/`data:` URL 被拒、未登录三接口、查无此笔记 20001 |
+| P5 互动域 | 点赞/收藏各自开关往返、重复与未互动用专用码 30001~30004、**两套关系互不影响**、下架/草稿笔记拒绝互动 |
+| P5 评论域 | 不能评论自己的笔记 30007、回复拉平到同一根评论、**子回复截断到 3 条但 replyTotal 给真实总数**、级联删根评论且计数一次退完、非作者删除返回 30005 |
 
 最后一条是安全断言：Entity 有 `password`，靠 `@JsonIgnore` 兜底属于「靠注解赌后人不忘」，
 断言字段名才能在有人不小心把 Entity 直接返回时立刻炸出来。
@@ -396,23 +437,33 @@ VO 有没有漏出敏感字段。裸 HTTP 打一遍最直接，零依赖意味�
 这样库里恒为一条常驻 fixture 可供后续复用，不会随运行次数无上限增长。
 
 后端契约测试相反：它需要每次一个**全新**账号（否则撞 `10003` 就测不到注册成功分支），
-所以用 `ct_<时间戳>` 随机后缀，代价是每次跑留 2 个账号和它们的笔记。
-脚本结束时会直接打出带具体 id 的清理 SQL。批量清（**顺序有讲究**）：
+所以用 `ct_<时间戳>` 随机后缀，代价是每次跑留 3 个账号和它们的笔记。
+脚本结束时会直接打出带具体 id 的清理 SQL。批量清（**顺序和范围都有讲究**）：
 
 ```sql
--- 必须先子表后父表：note_image 依赖 note，note 依赖 user
-DELETE FROM xiaoku_db.note_image WHERE note_id IN (SELECT id FROM xiaoku_db.note);
+-- 1) 先子表后父表。P5 之后有四张表挂在 note 下面，
+--    comment_like 又挂在 comment 下面，少删一张就留孤儿行
+DELETE FROM xiaoku_db.comment_like
+  WHERE comment_id IN (SELECT id FROM xiaoku_db.comment WHERE note_id IN (SELECT id FROM xiaoku_db.note));
+DELETE FROM xiaoku_db.comment WHERE note_id IN (SELECT id FROM xiaoku_db.note);
+DELETE FROM xiaoku_db.note_like   WHERE note_id IN (SELECT id FROM xiaoku_db.note);
+DELETE FROM xiaoku_db.note_collect WHERE note_id IN (SELECT id FROM xiaoku_db.note);
+DELETE FROM xiaoku_db.note_image  WHERE note_id IN (SELECT id FROM xiaoku_db.note);
 DELETE FROM xiaoku_db.note;
-DELETE FROM xiaoku_db.user WHERE username REGEXP '^ct2?_[a-z0-9]+$';
+DELETE FROM xiaoku_db.user WHERE username REGEXP '^ct[0-9]?_[a-z0-9]+$';
 ```
 
-```bash
-# 图片文件是落盘在 backend/uploads/ 的，删库不会删文件
-rm -rf backend/uploads
-```
+> **必须用 `REGEXP` 而不是 `LIKE`**：MySQL 里 `LIKE 'ct_%'` 的 `_` 是**单字符通配符**，
+> 会误删 `ct2_xxx` / `ct3_xxx` 之外的行。
 
-> 踩坑：MySQL 里 `LIKE 'ct_%'` 的 `_` 是**单字符通配符**，会误删 `ct2_xxx` 之外的行，
-> 所以上面统一用 `REGEXP` 而不是 `LIKE`。
+> **正则里的 `[0-9]?` 不能省**：P5 引入了第三个契约账号 `ct3_<时间戳>`，
+> 写成 `^ct2?_` 匹配不到它，每次跑都会漏一个常驻垃圾账号在库里躺着。
+
+> **`DELETE` 一律要带 `WHERE`**：库里有 `xiaoku_demo`、`xk_ui_smoke`、`xk_ui_interact`
+> 这些常驻 fixture 也在 `xiaoku_db.note` / `comment` 里。一条 `DELETE FROM xiaoku_db.comment;`
+> 会把它们一起清掉，而脚本跑完只显示「清理成功」，**没人会发现顺手删了别的东西**。
+> 上面的写法先 `SELECT id FROM note` 把范围缩到测试笔记，正是这个原因。
+> `xk_ui_*` 与 `xiaoku_demo` 是常驻 fixture，任何清理都不要碰。
 
 ### 素材
 

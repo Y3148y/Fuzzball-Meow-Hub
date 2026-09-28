@@ -73,6 +73,7 @@ async function call(method, path, { token, body, raw } = {}) {
 const get = (p, o) => call('GET', p, o)
 const post = (p, o) => call('POST', p, o)
 const put = (p, o) => call('PUT', p, o)
+const del = (p, o) => call('DELETE', p, o)
 
 /** 1x1 透明 PNG，用来测图片上传 */
 const TINY_PNG = Buffer.from(
@@ -414,7 +415,235 @@ async function main() {
     codeIs('未登录不能看笔记详情（10005，默认全部需要登录）', json, 10005)
   }
 
-  // ---- 13. 不支持的方法
+  // ---- 13. P5 互动域：点赞 / 收藏
+  //
+  // 需要第三个账号：note 的作者是 ct_，而规则禁止评论自己的笔记（30007），
+  // 点赞/收藏也要一个「非作者」来点，否则测不到 30007 这条规则。
+  let actorAuth = null
+  let actorName = `ct3_${stamp}`
+  {
+    const reg = await post('/api/user/register', { body: { username: actorName, password: P } })
+    codeIs('互动测试账号注册成功', reg.json, 0)
+    const login = await post('/api/user/login', { body: { username: actorName, password: P } })
+    actorAuth = `Bearer ${login.json?.data?.accessToken}`
+    check('互动测试账号登录成功', typeof actorAuth === 'string' && actorAuth.length > 5)
+  }
+
+  // 点赞：幂等 + 计数
+  {
+    const { json } = await put(`/api/note/${noteId}/like`, { token: actorAuth })
+    codeIs('点赞成功', json, 0)
+    eq('点赞后 likeCount=1', json?.data?.likeCount, 1)
+    eq('点赞后 liked=true', json?.data?.liked, true)
+  }
+  {
+    const { json } = await put(`/api/note/${noteId}/like`, { token: actorAuth })
+    codeIs('重复点赞返回 30001（靠唯一索引，不是先查后插）', json, 30001)
+  }
+  {
+    // 重复点赞失败后计数不能被带偏，这是最容易出错的地方：
+    // 如果实现是「先判存在再返回错误」而忘了回滚，计数会多一次
+    const { json } = await get(`/api/note/${noteId}`, { token: actorAuth })
+    eq('重复点赞失败后计数没有被动过', json?.data?.likeCount, 1)
+  }
+  {
+    const { json } = await del(`/api/note/${noteId}/like`, { token: actorAuth })
+    codeIs('取消点赞成功', json, 0)
+    eq('取消后 likeCount=0', json?.data?.likeCount, 0)
+    eq('取消后 liked=false', json?.data?.liked, false)
+  }
+  {
+    const { json } = await del(`/api/note/${noteId}/like`, { token: actorAuth })
+    codeIs('没点赞却取消返回 30002（不静默成功，否则前端会以为真取消了）', json, 30002)
+  }
+
+  // 收藏：语义与点赞同构
+  {
+    const { json } = await put(`/api/note/${noteId}/collect`, { token: actorAuth })
+    codeIs('收藏成功', json, 0)
+    eq('收藏后 collectCount=1', json?.data?.collectCount, 1)
+    eq('收藏后 collected=true', json?.data?.collected, true)
+  }
+  {
+    const { json } = await put(`/api/note/${noteId}/collect`, { token: actorAuth })
+    codeIs('重复收藏返回 30003', json, 30003)
+  }
+  {
+    const { json } = await del(`/api/note/${noteId}/collect`, { token: actorAuth })
+    codeIs('取消收藏成功', json, 0)
+    eq('取消后 collectCount=0', json?.data?.collectCount, 0)
+  }
+  {
+    const { json } = await del(`/api/note/${noteId}/collect`, { token: actorAuth })
+    codeIs('没收藏却取消返回 30004', json, 30004)
+  }
+  {
+    // 点赞和收藏是两套独立关系，任何一边都不该动另一边的计数。
+    // 先收藏让 collectCount 变成 1，再点赞，回来时 collectCount 必须仍是 1
+    // ——如果实现里两边共用了同一个字段或同一个自增语句，这里就会变成 0 或 2
+    const c1 = await put(`/api/note/${noteId}/collect`, { token: actorAuth })
+    eq('先收藏，collectCount=1', c1.json?.data?.collectCount, 1)
+    const l1 = await put(`/api/note/${noteId}/like`, { token: actorAuth })
+    eq('点赞没有动 collectCount', l1.json?.data?.collectCount, 1)
+    eq('点赞后 likeCount=1', l1.json?.data?.likeCount, 1)
+    eq('点赞没有动 collected 状态', l1.json?.data?.collected, true)
+    await del(`/api/note/${noteId}/like`, { token: actorAuth })
+    await del(`/api/note/${noteId}/collect`, { token: actorAuth })
+  }
+  {
+    const { json } = await put('/api/note/123456789012345/like', { token: actorAuth })
+    codeIs('给不存在的笔记点赞返回 20001（不能留下指向虚空的脏关系）', json, 20001)
+  }
+  {
+    const { json } = await put(`/api/note/${noteId}/like`)
+    codeIs('未登录点赞被拒（10005）', json, 10005)
+  }
+
+  // ---- 14. P5 评论
+  let commentId = null
+  let replyId = null
+  {
+    const { json } = await post('/api/comment', {
+      token: auth,
+      body: { noteId, content: '作者评论自己的笔记' },
+    })
+    codeIs('不能评论自己的笔记（30007，兑现 P0 定下的规则）', json, 30007)
+  }
+  {
+    const { json } = await post('/api/comment', {
+      token: actorAuth,
+      body: { noteId, content: '   ' },
+    })
+    codeIs('纯空白评论被拦（100001）', json, 100001)
+  }
+  {
+    const { json } = await post('/api/comment', {
+      token: actorAuth,
+      body: { noteId, content: '字'.repeat(501) },
+    })
+    codeIs('评论超 500 字被拦（100001）', json, 100001)
+  }
+  {
+    const { json } = await post('/api/comment', {
+      token: actorAuth,
+      body: { noteId: '123456789012345', content: '给不存在的笔记评论' },
+    })
+    codeIs('给不存在的笔记评论返回 20001', json, 20001)
+  }
+  {
+    const { json } = await post('/api/comment', {
+      token: actorAuth,
+      body: { noteId, content: '这篇写得不错' },
+    })
+    codeIs('发表评论成功', json, 0)
+    eq('评论内容回显', json?.data?.content, '这篇写得不错')
+    eq('自己发的评论 mine=true', json?.data?.mine, true)
+    // parentId / rootCommentId 是 Long，0 哨兵已在 CommentConverter 里转成 null。
+    //
+    // 用 == null 而不是 === null：application.yml 配了
+    // default-property-inclusion: non_null，null 字段会被**整个从 JSON 里删掉**，
+    // 前端拿到的是 undefined 而不是 null。两种都算通过，
+    // 关键是这个字段绝不能是 0 或 "0"。
+    check('一级评论 rootCommentId 不是 0 哨兵', json?.data?.rootCommentId == null,
+      `实际 ${JSON.stringify(json?.data?.rootCommentId)}`)
+    check('一级评论 parentId 不是 0 哨兵', json?.data?.parentId == null,
+      `实际 ${JSON.stringify(json?.data?.parentId)}`)
+    commentId = json?.data?.id
+    check('评论 ID 是字符串（雪花 ID 不能当数字）', typeof commentId === 'string' && /^\d+$/.test(commentId),
+      `commentId=${commentId}`)
+  }
+  {
+    const { json } = await get(`/api/note/${noteId}`, { token: actorAuth })
+    eq('评论后 note.commentCount=1', json?.data?.commentCount, 1)
+  }
+  {
+    const { json } = await post('/api/comment', {
+      token: actorAuth,
+      body: { noteId, content: '补充一句', parentId: commentId },
+    })
+    codeIs('回复评论成功', json, 0)
+    eq('回复的 rootCommentId 指向根评论', json?.data?.rootCommentId, commentId)
+    eq('回复的 parentId 指向被回复的评论', json?.data?.parentId, commentId)
+    replyId = json?.data?.id
+  }
+  {
+    // 两层封顶：回复"回复的回复"要被拉平到同一个根评论下，
+    // 否则会出现没人看得懂的无限楼中楼
+    const { json } = await post('/api/comment', {
+      token: actorAuth,
+      body: { noteId, content: '回复的回复', parentId: replyId },
+    })
+    codeIs('回复的回复成功', json, 0)
+    eq('楼中楼被拉平到同一个根评论', json?.data?.rootCommentId, commentId)
+    const { json: j2 } = await get(`/api/note/${noteId}`, { token: actorAuth })
+    eq('三级回复仍各算一条评论', j2?.data?.commentCount, 3)
+  }
+  {
+    // 跨笔记回复必须拦，否则两篇笔记的评论数会互相污染
+    const other = await post('/api/note/publish', {
+      token: auth,
+      body: { title: '另一篇', content: '另一篇的正文' },
+    })
+    const otherId = other.json?.data?.id
+    createdNoteIds.push(otherId)
+    const { json } = await post('/api/comment', {
+      token: actorAuth,
+      body: { noteId: otherId, content: '跨笔记回复', parentId: commentId },
+    })
+    codeIs('跨笔记回复被拒（30005，否则两篇笔记的评论数互相污染）', json, 30005)
+  }
+  {
+    const { json } = await get(`/api/comment/list?noteId=${noteId}&page=1&size=10`, { token: actorAuth })
+    codeIs('评论列表查询成功', json, 0)
+    // total/page/size 是 Integer 才是 JSON number。PageVO 最初用 long，
+    // 会被 JacksonConfig 序列化成字符串，前端 total === 1 恒为 false
+    eq('total 是 JSON number 而不是字符串', typeof json?.data?.total, 'number')
+    eq('分页 total 只数一级评论', json?.data?.total, 1)
+    eq('列表长度 1', json?.data?.list?.length, 1)
+    const root = json?.data?.list?.[0]
+    eq('子回复挂在根评论下', root?.replies?.length, 2)
+    eq('replyTotal 是子回复总数', root?.replyTotal, 2)
+    check('子回复带上了昵称', typeof root?.replies?.[0]?.nickname === 'string' && root.replies[0].nickname.length > 0,
+      `nickname=${root?.replies?.[0]?.nickname}`)
+    eq('子回复的 rootCommentId 指向根评论', root?.replies?.[0]?.rootCommentId, commentId)
+  }
+  {
+    // MAX_REPLIES_PER_ROOT = 3 的截断必须有覆盖：
+    // 只造 2 条子回复的话「replies 被截断」这条路径一次都走不到，
+    // 阈值调成 10 也照样全绿
+    for (let i = 0; i < 4; i++) {
+      await post('/api/comment', {
+        token: actorAuth,
+        body: { noteId, content: `补一条回复 ${i}`, parentId: commentId },
+      })
+    }
+    const { json } = await get(`/api/comment/list?noteId=${noteId}&page=1&size=10`, { token: actorAuth })
+    const root = json?.data?.list?.[0]
+    eq('子回复超过 3 条时只返回前 3 条', root?.replies?.length, 3)
+    eq('replyTotal 仍然是真实总数 6', root?.replyTotal, 6)
+    const { json: j2 } = await get(`/api/note/${noteId}`, { token: actorAuth })
+    eq('6 条子回复都计入了 commentCount', j2?.data?.commentCount, 7)
+  }
+  {
+    // 别人的评论一律按「不存在」处理，不能靠错误码差异探测评论是否存在
+    const { json } = await del(`/api/comment/${commentId}`, { token: auth })
+    codeIs('删别人的评论返回 30005（不泄露存在性）', json, 30005)
+  }
+  {
+    const { json } = await del('/api/comment/123456789012345', { token: actorAuth })
+    codeIs('删不存在的评论返回 30005', json, 30005)
+  }
+  {
+    // 删根评论要连子树一起删，计数一次性退掉，不能循环减
+    const { json } = await del(`/api/comment/${commentId}`, { token: actorAuth })
+    codeIs('删除自己的评论成功', json, 0)
+    const { json: j2 } = await get(`/api/note/${noteId}`, { token: actorAuth })
+    eq('删根评论后 commentCount 退到 0（自己 + 6 条子回复一次退完）', j2?.data?.commentCount, 0)
+    const { json: j3 } = await get(`/api/comment/list?noteId=${noteId}`, { token: actorAuth })
+    eq('列表里不再有孤儿子回复', j3?.data?.total, 0)
+  }
+
+  // ---- 15. 不支持的方法
   {
     const { json } = await call('DELETE', '/api/user/login')
     codeIs('不支持的请求方法被统一处理（100002）', json, 100002)
@@ -429,12 +658,29 @@ async function main() {
   }
   // 本脚本只走 HTTP，没有删用户/删笔记接口，跑完会留下测试账号与测试笔记。
   // 这里直接把清理 SQL 打出来，省得下次翻聊天记录找。
+  //
+  // 顺序有讲究：先子表后父表。comment_like 依赖 comment，comment 又依赖 note。
+  //
+  // 正则写成 ^ct[0-9]?_ 而不是 ^ct2?_：P5 起有第三个互动账号 ct3_，
+  // 原来的正则匹配不到它，会漏一个常驻垃圾账号。
+  //
+  // <b>所有涉及笔记的删除都必须带 note_id IN (...)</b>，不能写成
+  // `DELETE FROM xiaoku_db.comment;` 那种全表清空。
+  // 本地库里同时还有演示账号和 xk_ui_* 常驻 fixture 的数据，
+  // 一条无 WHERE 的 DELETE 会把它们一起清掉，而这种误删是<b>不可逆</b>的：
+  // 脚本跑完只看得到「清理成功」，不会有人发现顺手删掉了别的东西。
   const noteList = createdNoteIds.filter((n) => typeof n === 'string').join(', ')
-  console.log(`\n测试账号 ${U} / ct2_${stamp} 与笔记 ${noteList} 已留在库里，清理：`)
+  console.log(`\n测试账号 ${U} / ct2_${stamp} / ${actorName} 与笔记 ${noteList} 已留在库里，清理：`)
+  console.log(`  -- 先子表，comment_like 依赖 comment`)
+  console.log(`  DELETE FROM xiaoku_db.comment_like WHERE comment_id IN (SELECT id FROM xiaoku_db.comment WHERE note_id IN (${noteList}));`)
+  console.log(`  DELETE FROM xiaoku_db.comment WHERE note_id IN (${noteList});`)
+  console.log(`  DELETE FROM xiaoku_db.note_like WHERE note_id IN (${noteList});`)
+  console.log(`  DELETE FROM xiaoku_db.note_collect WHERE note_id IN (${noteList});`)
   console.log(`  DELETE FROM xiaoku_db.note_image WHERE note_id IN (${noteList});`)
   console.log(`  DELETE FROM xiaoku_db.note WHERE id IN (${noteList});`)
-  console.log(`  DELETE FROM xiaoku_db.user WHERE username IN ('${U}', 'ct2_${stamp}');`)
+  console.log(`  DELETE FROM xiaoku_db.user WHERE username REGEXP '^ct[0-9]?_[a-z0-9]+$';`)
   console.log(`  图片文件在 backend/uploads/（已 gitignore），要清就整个删掉该目录`)
+  console.log(`  注意：xk_ui_smoke / xk_ui_interact / xiaoku_demo 是常驻 fixture，别删`)
 }
 
 main().catch((e) => {

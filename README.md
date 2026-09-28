@@ -19,7 +19,7 @@
 | P1 | 统一响应 / 全局异常 / 参数校验 / 雪花 ID | ✅ 已完成 |
 | P2 | 用户模块 + JWT 鉴权 | ✅ 已完成 `v0.2-user-jwt` |
 | P3 | 笔记发布 + 图片上传 | ✅ 已完成 |
-| P4 | 前端页面（登录 / 首页 / 发布 / 详情 / 我的） | 🔄 进行中：登录 / 首页 / 发布 / 详情已提前完成，仅「我的」未开始 |
+| P4 | 前端页面（登录 / 首页 / 发布 / 详情 / 我的） | ✅ 已完成 |
 | P5 | 点赞 / 收藏 / 评论 + Redis 计数一致性 | ⬜ 未开始 |
 | P6 | 关注关系 + 关注流 | ⬜ 未开始 |
 | P7 | Elasticsearch 搜索 + Kafka 异步同步 | ⬜ 未开始 |
@@ -259,7 +259,7 @@ red-book/
 | 2 | access token 正常过期时用户被踢下线 | 响应拦截器已解包成 `body.data`，刷新逻辑又读 `res.data` 得 `undefined` → 走失败分支 | 成功路径和失败路径类型都是合法的 |
 | 3 | 填错密码时点登录毫无反应 | `canSubmit` 把「长度不够」也算作按钮 `disabled` | 不是错误，是设计选择 |
 
-**防复发**：登录链路一旦改动，跑 `npm run test:ui`（43 条断言，见下）。第 1、2 条都有对应用例。
+**防复发**：登录链路一旦改动，跑 `npm run test:ui`（69 条断言，见下）。第 1、2 条都有对应用例。
 
 ### 测试基建：`npm run test:ui`
 
@@ -271,7 +271,8 @@ red-book/
 | `npm run test:ui:smoke` | 守卫拦截、吉祥物解码、CSS token、演示登录、双 token 落库、刷新保持登录、深浅模式与持久化、退出、注册、前端校验 |
 | `npm run test:ui:refresh` | 坏 access 自动 refresh + 重放原请求、双 token 同步轮换、双 token 失效清理、无 refresh 安全降级 |
 | `npm run test:ui:note` | 发布页守卫、空表单禁用、字数计数、本地预览、9 张上限、发布跳详情、详情图片**真实解码**（非碎图） |
-| `npm run test:ui` | 三者全跑（43 条） |
+| `npm run test:ui:profile` | 我的页守卫、资料回填、昵称超长前端拦截、保存后**回查后端**确认落库、取消不写库、演示账号自还原 |
+| `npm run test:ui` | 四者全跑（69 条） |
 
 **验证 refresh 链路的做法**：把 `localStorage` 里的 `xk_token` 改成垃圾串后**整页重载**。
 冷启动时 token 的 `ref` 会读到这个坏值，`isLogin` 仍为 `true`，
@@ -319,6 +320,40 @@ JS 的 `Number.MAX_SAFE_INTEGER` 只有 `9007199254740991`（约 9.007×10^15）
 （原始文件名是用户可控输入，直接拼路径会同时踩到路径穿越和扩展名伪装）；
 发布时校验图片地址只放行站内相对路径与 `http(s)`，否则 `javascript:` 存进库后
 渲染成 `<img src>` 就是 XSS。
+
+### P4「我的」页：空串不是 null
+
+改资料时我先按"只发改动的字段"的直觉写了提交逻辑：
+
+```ts
+if (trimmedBio) patch.bio = trimmedBio   // ← 错
+```
+
+结果**用户永远清不掉自己的简介**。后端 `UserServiceImpl.updateProfile` 用的是
+MyBatis-Plus 的 `update-strategy: not_null`，所以这里有两种完全不同的语义：
+
+| 前端发的东西 | 落到 UPDATE 里 | 效果 |
+|---|---|---|
+| 不传 `bio`（undefined → JSON 里没有这个 key） | 字段被剔除 | **保持**原简介 |
+| `bio: null` | 字段被剔除（`not_null` 剔的是 null） | **保持**原简介 |
+| `bio: ''` | 字段保留 | **清空**简介 |
+
+改法是 `bio` 无条件提交（含空串），只有 `nickname` 才做非空判断（昵称本来就必填）。
+
+顺带一个推论值得记住：**`bio` 一旦被写成 `''` 就再也回不到 `NULL` 了**，
+因为传 `null` 会被 `not_null` 剔掉。列是 `VARCHAR(255) DEFAULT NULL`，
+UI 上两者都是 falsy 不影响显示，但 fixture 的初始状态确实会被测试改掉，
+所以 `ui-profile.mjs` 的还原是拿原值比对的，不是硬写空串。
+
+### 断言要落在"后端"上，不是"页面上"
+
+保存资料后立刻断言页面显示对不对是没意义的 —— 页面上显示的就是刚 set 进去的那个
+store 对象，怎么都"对"。所以 `ui-profile.mjs` 改完之后**重新 GET 一次 `/user/me`**，
+比对 nickname / bio / gender 三个字段是否真的进了 MySQL。
+
+同理，测试收尾的还原动作**刻意走接口而不是再点一遍表单**：
+清理不该依赖被测对象本身，否则哪天保存逻辑坏了，UI 清理会跟着一起失败，
+留下一条昵称被改坏的 fixture 污染后面所有测试（`ui-smoke` 断言的就是「小哭猫」）。
 
 ### 后端契约测试：`node backend/scripts/contract-test.mjs`
 

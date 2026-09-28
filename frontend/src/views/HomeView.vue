@@ -68,9 +68,22 @@ void fetchPing()
         </div>
       </dl>
 
-      <button class="xk-btn xk-btn--ghost" type="button" @click="logout">退出登录</button>
-      <button class="xk-btn publish-entry" type="button" data-test="go-publish" @click="router.push('/publish')">
-        发布笔记
+      <div class="acts">
+        <button class="xk-btn" type="button" data-test="go-publish" @click="router.push('/publish')">
+          发布笔记
+        </button>
+        <button
+          class="xk-btn xk-btn--ghost"
+          type="button"
+          data-test="go-profile"
+          @click="router.push('/profile')"
+        >
+          我的
+        </button>
+      </div>
+
+      <button class="logout" type="button" data-test="home-logout" @click="logout">
+        退出登录
       </button>
     </section>
 
@@ -169,11 +182,6 @@ void fetchPing()
   padding: 0;
 }
 
-.publish-entry {
-  width: 100%;
-  margin-bottom: 8px;
-}
-
 .stat {
   padding: 10px 6px;
   border: var(--xk-stroke-w) solid var(--xk-border);
@@ -191,6 +199,29 @@ void fetchPing()
   margin: 4px 0 0;
   font-size: 18px;
   font-weight: 700;
+}
+
+.acts {
+  display: flex;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.acts .xk-btn {
+  flex: 1;
+}
+
+.logout {
+  display: block;
+  width: 100%;
+  margin-top: 14px;
+  padding-top: 14px;
+  border: 0;
+  border-top: var(--xk-stroke-w) solid var(--xk-border);
+  background: none;
+  color: var(--xk-text-3);
+  font-size: 13px;
+  cursor: pointer;
 }
 
 .env-head {

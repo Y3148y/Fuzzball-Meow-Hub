@@ -1,6 +1,6 @@
 import type { AxiosRequestConfig } from 'axios'
 import { post, get, put } from './request'
-import type { LoginDTO, LoginVO, RegisterDTO, UserVO } from './types'
+import type { LoginDTO, LoginVO, ProfilePatch, RegisterDTO, UserVO } from './types'
 
 /**
  * 用户模块接口。
@@ -37,6 +37,6 @@ export function getCurrentUser() {
 }
 
 /** 部分更新个人资料 */
-export function updateProfile(data: Partial<Pick<UserVO, 'nickname' | 'avatar' | 'bio' | 'gender'>>) {
+export function updateProfile(data: ProfilePatch) {
   return put<UserVO>('/user/profile', data)
 }

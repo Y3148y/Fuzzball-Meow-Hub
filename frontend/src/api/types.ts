@@ -72,6 +72,15 @@ export interface UserVO {
   createTime: string
 }
 
+/**
+ * 修改个人资料的请求体，对应后端 UserProfileUpdateDTO。
+ *
+ * 字段全 optional：只传要改的，后端不会把没传的字段覆盖掉。
+ * 上限要跟后端 @Size 对齐（昵称 32 / 简介 255），
+ * 超了后端会回 100001，这里先拦一道省得白跑一趟。
+ */
+export type ProfilePatch = Partial<Pick<UserVO, 'nickname' | 'avatar' | 'bio' | 'gender'>>
+
 /** 登录结果，对应后端 LoginVO */
 export interface LoginVO {
   accessToken: string

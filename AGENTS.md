@@ -111,7 +111,7 @@ $env:XK_MYSQL_PASSWORD = "<.env 里的 MYSQL_ROOT_PASSWORD>"   # 不设就起不
 cd backend && node scripts/contract-test.mjs
 # 换地址：XK_API_BASE=http://ip:8088 node scripts/contract-test.mjs
 
-# 前端（需前端 5180 + 后端 8088 同时在跑）→ 18 + 8 + 17 = 43 条
+# 前端（需前端 5180 + 后端 8088 同时在跑）→ 18 + 8 + 17 + 26 = 69 条
 cd frontend && npm run test:ui
 
 # 前端类型 / 构建
@@ -179,8 +179,8 @@ JS 的 `Number.MAX_SAFE_INTEGER` 只有 `9007199254740991`（约 9.007×10^15）
 - 口令兜底修正 + 注释订正（`cf93b22`）
 - AGENTS.md 本身已提交（`3978ed0`）
 - P3 后端已推送（`fd4140e`），含雪花 ID 精度修复
-- P3 前端已完工（发布页 + 详情页 + `ui-note.mjs` 17 条断言），
-  **下一步：P4 剩余的「我的」页面**，之后 P5
+- P4 前端已完工（登录 / 首页 / 发布 / 详情 / 我的五页 + 69 条断言），
+  **下一步：P5 点赞 / 收藏 / 评论**
   - `module/note/` 发布 / 详情已实现；`common/storage/` 抽出 `ImageStorage`
     抽象，`type=local` 落本地盘、`type=s3` 走 S3 协议
   - 上传文件名**一律服务端生成 UUID**，扩展名按 content type 白名单反推，
@@ -201,3 +201,8 @@ JS 的 `Number.MAX_SAFE_INTEGER` 只有 `9007199254740991`（约 9.007×10^15）
 - **笔记详情需要登录**：`/api/note/{id}` 带路径变量，无法用 `MvcConfig` 的
   精确匹配白名单放行；改前缀匹配会同时让发布/上传的语义变模糊。
   保持「默认全部需要登录」，取舍写在 `NoteQueryServiceImpl` 的注释里。
+- **`bio` 清空后回不到 `NULL`**：MyBatis-Plus 配的是 `update-strategy: not_null`，
+  只有 `null` 会被剔除，`''` 会真的写进去。所以「不传字段」和「传空串」语义完全不同：
+  前者是保持原值，后者是清空。改资料时 `bio` 必须无条件提交，别写
+  `if (bio) patch.bio = bio`（那会让用户永远清不掉简介）。
+  推论：`bio` 一旦是 `''` 就再也回不到 `NULL`。

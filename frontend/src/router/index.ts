@@ -22,6 +22,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '登录', guestOnly: true },
   },
   {
+    path: '/profile',
+    name: 'profile',
+    component: () => import('@/views/ProfileView.vue'),
+    meta: { title: '我的', requiresAuth: true },
+  },
+  {
     path: '/publish',
     name: 'publish',
     component: () => import('@/views/PublishView.vue'),

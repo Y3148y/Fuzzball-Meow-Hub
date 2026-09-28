@@ -1,9 +1,12 @@
 package com.xiaoku.module.note.service.impl;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.xiaoku.common.context.UserContextHolder;
 import com.xiaoku.common.exception.BizException;
 import com.xiaoku.common.result.ErrorCodeEnum;
+import com.xiaoku.common.result.PageVO;
+import com.xiaoku.module.follow.service.UserFollowQueryService;
 import com.xiaoku.module.note.converter.NoteConverter;
 import com.xiaoku.module.note.entity.NoteEntity;
 import com.xiaoku.module.note.entity.NoteImageEntity;
@@ -14,8 +17,10 @@ import com.xiaoku.module.note.mapper.NoteLikeMapper;
 import com.xiaoku.module.note.mapper.NoteCollectMapper;
 import com.xiaoku.module.note.mapper.NoteMapper;
 import com.xiaoku.module.note.service.NoteQueryService;
+import com.xiaoku.module.note.vo.NoteListItemVO;
 import com.xiaoku.module.note.vo.NoteVO;
 import com.xiaoku.module.user.service.UserQueryService;
+import com.xiaoku.module.user.vo.UserVO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -37,6 +42,7 @@ public class NoteQueryServiceImpl implements NoteQueryService {
     private final NoteLikeMapper noteLikeMapper;
     private final NoteCollectMapper noteCollectMapper;
     private final UserQueryService userQueryService;
+    private final UserFollowQueryService userFollowQueryService;
 
     /**
      * <b>笔记详情需要登录。</b>
@@ -84,6 +90,38 @@ public class NoteQueryServiceImpl implements NoteQueryService {
                 .eq(NoteCollectEntity::getUserId, currentUserId)
                 .eq(NoteCollectEntity::getNoteId, noteId)) > 0;
 
-        return NoteConverter.toVO(note, userQueryService.findUserVO(note.getUserId()), images, liked, collected);
+        // 自己是作者时恒为 false：40003 挡住了关注自己，这里同构地输出 false
+        boolean authorFollowed = userFollowQueryService.isFollowing(currentUserId, note.getUserId());
+
+        return NoteConverter.toVO(note, userQueryService.findUserVO(note.getUserId()), images,
+                liked, collected, authorFollowed);
+    }
+
+    @Override
+    public PageVO<NoteListItemVO> pageUserNotes(Long userId, int page, int size) {
+        Long currentUserId = UserContextHolder.requireUserId();
+
+        // 目标不存在（含逻辑删除）直接 10001，否则「TA 没有笔记」和「TA 不存在」无法区分
+        UserVO author = userQueryService.findUserVO(userId);
+        if (author == null) {
+            throw new BizException(ErrorCodeEnum.USER_NOT_FOUND);
+        }
+
+        Page<NoteEntity> pageInfo = new Page<>(page, size);
+        Page<NoteEntity> result = noteMapper.selectPage(pageInfo,
+                Wrappers.<NoteEntity>lambdaQuery()
+                        .eq(NoteEntity::getUserId, userId)
+                        .eq(NoteEntity::getStatus, STATUS_PUBLISHED)
+                        .orderByDesc(NoteEntity::getCreateTime)
+                        .orderByDesc(NoteEntity::getId));
+
+        // 这一页全是同一个作者的笔记，authorFollowed 算一次即可
+        boolean authorFollowed = userFollowQueryService.isFollowing(currentUserId, userId);
+        List<NoteListItemVO> voList = result.getRecords().stream()
+                .map(note -> NoteConverter.toListItemVO(note, author, authorFollowed))
+                .toList();
+
+        return PageVO.of(voList, result.getTotal(), Math.toIntExact(result.getCurrent()),
+                    Math.toIntExact(result.getSize()));
     }
 }

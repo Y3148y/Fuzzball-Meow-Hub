@@ -14,8 +14,13 @@ import java.util.List;
 /**
  * 笔记详情 VO。
  *
- * <p>刻意<b>不返回</b> {@code userId}：对外只暴露昵称头像，
- * 内部 ID 属于用户域，没有对外暴露的必要。
+ * <p>字段里带 {@code authorId} 是 <b>P6 的刻意反转</b>：P3 曾坚持不暴露 userId
+ * （内部 ID 属于用户域），但 P6 要支持「详情页直接关注作者」，前端必须能拿到
+ * 作者的可寻址 ID 才能发 PUT /api/follow/{id}——不暴露就得为详情页单独加一个
+ * 「查作者身份」的往返接口，得不偿失。
+ *
+ * <p>{@code authorFollowed} 是「依赖当前浏览者」的视图态，
+ * 按请求现算，绝不进按 userId 缓存的 {@code UserVO}（见 NoteQueryServiceImpl）。
  */
 @Data
 @Builder
@@ -60,11 +65,17 @@ public class NoteVO implements Serializable {
     @Schema(description = "当前登录用户是否已收藏")
     private Boolean collected;
 
+    @Schema(description = "作者ID（P6 起暴露，用以支持详情页直接关注）")
+    private Long authorId;
+
     @Schema(description = "作者昵称")
     private String authorNickname;
 
     @Schema(description = "作者头像")
     private String authorAvatar;
+
+    @Schema(description = "当前登录用户是否已关注作者")
+    private Boolean authorFollowed;
 
     @Schema(description = "图片URL列表，按 sort 升序")
     private List<String> images;

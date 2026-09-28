@@ -1,10 +1,12 @@
 package com.xiaoku.module.note.controller;
 
+import com.xiaoku.common.result.PageVO;
 import com.xiaoku.common.result.Result;
 import com.xiaoku.module.note.dto.NotePublishDTO;
 import com.xiaoku.module.note.service.NoteInteractionService;
 import com.xiaoku.module.note.service.NoteQueryService;
 import com.xiaoku.module.note.service.NoteService;
+import com.xiaoku.module.note.vo.NoteListItemVO;
 import com.xiaoku.module.note.vo.NoteVO;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -49,6 +51,18 @@ public class NoteController {
     @GetMapping("/{id}")
     public Result<NoteVO> detail(@Parameter(description = "笔记ID") @PathVariable Long id) {
         return Result.success(noteQueryService.getDetail(id));
+    }
+
+    @Operation(summary = "某用户的笔记列表",
+            description = "作者主页用：只返回已发布笔记，按发布时间倒序分页")
+    @GetMapping("/user/{userId}")
+    public Result<PageVO<NoteListItemVO>> userNotes(
+            @Parameter(description = "作者ID") @PathVariable Long userId,
+            @Parameter(description = "页码，从 1 开始") @RequestParam(defaultValue = "1") long page,
+            @Parameter(description = "每页条数") @RequestParam(defaultValue = "20") long size) {
+        int safeSize = (int) Math.min(Math.max(size, 1L), 100L);
+        int safePage = (int) Math.max(page, 1L);
+        return Result.success(noteQueryService.pageUserNotes(userId, safePage, safeSize));
     }
 
     // ------------------------------------------------------------------

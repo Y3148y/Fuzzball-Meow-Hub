@@ -3,6 +3,8 @@ package com.xiaoku.module.user.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.xiaoku.module.user.entity.UserEntity;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Update;
 
 /**
  * 用户 Mapper。
@@ -14,4 +16,17 @@ import org.apache.ibatis.annotations.Mapper;
  */
 @Mapper
 public interface UserMapper extends BaseMapper<UserEntity> {
+
+    /**
+     * 关注数 ±1。
+     *
+     * <p>同 NoteMapper 的理由：原子 SQL，不先查后写，避免并发丢计数。
+     * {@code GREATEST(0, ...)} 兜底防止并发下把计数压成负数。
+     */
+    @Update("UPDATE `user` SET follow_count = GREATEST(0, follow_count + #{delta}) WHERE id = #{userId}")
+    int updateFollowCount(@Param("userId") Long userId, @Param("delta") int delta);
+
+    /** 粉丝数 ±1，理由同上 */
+    @Update("UPDATE `user` SET fans_count = GREATEST(0, fans_count + #{delta}) WHERE id = #{userId}")
+    int updateFansCount(@Param("userId") Long userId, @Param("delta") int delta);
 }

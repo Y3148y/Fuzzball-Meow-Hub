@@ -349,8 +349,14 @@ async function main() {
     eq('图片列表原样返回', JSON.stringify(json?.data?.images), JSON.stringify([imageUrl]))
     eq('作者昵称带出', json?.data?.authorNickname, '改名后')
     eq('未点赞时 liked 为 false', json?.data?.liked, false)
-    const keys = Object.keys(json?.data ?? {})
-    check('NoteVO 没有漏出内部字段 userId', !keys.includes('userId'), `字段=${keys.join(',')}`)
+    // P6 起 NoteVO 刻意暴露 authorId：详情页要做「关注作者」按钮，前端必须拿得到
+    // 作者的可寻址 ID。这是对 P3「不暴露 userId」决定的刻意反转，动机写在 NoteVO 注释里。
+    check('NoteVO 带 authorId（P6 起暴露，用于详情页关注作者）',
+      typeof json?.data?.authorId === 'string' && /^\d+$/.test(json?.data?.authorId),
+      `authorId=${json?.data?.authorId}`)
+    check('authorId 是字符串且精度未截断（雪花 ID 不能当数字）',
+      BigInt(json?.data?.authorId) > 9007199254740991n, `BigInt=${json?.data?.authorId}`)
+    eq('自己看自己的笔记，authorFollowed=false', json?.data?.authorFollowed, false)
   }
   {
     const { json } = await post('/api/note/publish', { token: auth, body: { title: '', content: 'c' } })
@@ -643,7 +649,200 @@ async function main() {
     eq('列表里不再有孤儿子回复', j3?.data?.total, 0)
   }
 
-  // ---- 15. 不支持的方法
+  // ---- 15. P6 关注域：关注 / 取关 / 关注流 / 作者主页
+  //
+  // 关系图（这轮刻意做成「互关 + 单向」两边都覆盖）：
+  //   ct   → 关注 → ct2、ct3        （ct 是看关注流的人，也是笔记作者）
+  //   ct2  → 关注 → ct               （互关，测「viewer 已关注 TA 时 followed=true」）
+  //   ct3  → 谁都不关注               （测「另一边视角 followed=false」和空关注流）
+  // 用到的账号：ct_<stamp>（main auth）、ct2_<stamp>、ct3_<stamp>（actorAuth）。
+  const ct2Login = await post('/api/user/login', { body: { username: `ct2_${stamp}`, password: P } })
+  const ct2Auth = `Bearer ${ct2Login.json?.data?.accessToken}`
+  const ct2Me = await get('/api/user/me', { token: ct2Auth })
+  const ct2Id = ct2Me.json?.data?.id
+  check('引导账号 ct2 登录可用（关注流需要「关注的人也有笔记」）', typeof ct2Auth === 'string' && ct2Auth.length > 5)
+  check('拿到 ct2 的 ID', typeof ct2Id === 'string' && /^\d+$/.test(ct2Id), `ct2Id=${ct2Id}`)
+  const actorMe = await get('/api/user/me', { token: actorAuth })
+  const actorId = actorMe.json?.data?.id
+
+  {
+    const { json } = await put(`/api/follow/${userId}`, { token: auth })
+    codeIs('不能关注自己（40003）', json, 40003)
+  }
+  {
+    const { json } = await put('/api/follow/123456789012345', { token: auth })
+    codeIs('关注不存在的用户返回 10001（不能留下指向虚空的关注关系）', json, 10001)
+  }
+  {
+    const { json } = await put(`/api/follow/${ct2Id}`, { token: auth })
+    codeIs('关注 ct2 成功', json, 0)
+    eq('返回的是被关注者的行', json?.data?.id, ct2Id)
+    eq('返回行 followed=true', json?.data?.followed, true)
+    check('FollowUserVO 没有漏 password',
+      !Object.keys(json?.data ?? {}).includes('password'))
+  }
+  {
+    const { json } = await put(`/api/follow/${ct2Id}`, { token: auth })
+    codeIs('重复关注返回 40001（靠唯一索引，不是先查后插）', json, 40001)
+  }
+  {
+    const { json } = await put(`/api/follow/${actorId}`, { token: auth })
+    codeIs('关注 ct3 成功', json, 0)
+    const me = await get('/api/user/me', { token: auth })
+    eq('ct 的 followCount=2', me.json?.data?.followCount, 2)
+    const ct2After = await get('/api/user/me', { token: ct2Auth })
+    eq('ct2 的 fansCount=1', ct2After.json?.data?.fansCount, 1)
+  }
+  {
+    const { json } = await put(`/api/follow/${actorId}`, { token: auth })
+    codeIs('重复关注 ct3 也返回 40001', json, 40001)
+  }
+
+  // 被关注者发笔记，作为关注流的内容源
+  let ct2NoteId = null
+  let ct3NoteId = null
+  {
+    const n2 = await post('/api/note/publish', { token: ct2Auth, body: { title: '关注流测试一', content: 'ct2 的正文' } })
+    codeIs('ct2 发布笔记成功', n2.json, 0)
+    ct2NoteId = n2.json?.data?.id
+    createdNoteIds.push(ct2NoteId)
+    const n3 = await post('/api/note/publish', { token: actorAuth, body: { title: '关注流测试二', content: 'ct3 的正文' } })
+    codeIs('ct3 发布笔记成功', n3.json, 0)
+    ct3NoteId = n3.json?.data?.id
+    createdNoteIds.push(ct3NoteId)
+  }
+
+  // 详情页关注按钮依赖 authorId + authorFollowed
+  {
+    const { json } = await get(`/api/note/${ct2NoteId}`, { token: auth })
+    codeIs('看 ct2 的笔记详情成功', json, 0)
+    eq('authorId 带出作者', json?.data?.authorId, ct2Id)
+    check('authorId 是字符串且精度未截断', BigInt(json?.data?.authorId) > 9007199254740991n)
+    eq('已关注作者的笔记 authorFollowed=true', json?.data?.authorFollowed, true)
+  }
+
+  // 关注流：只含已关注作者的已发布笔记，按时间倒序
+  {
+    const { json } = await get('/api/feed/follow?page=1&size=10', { token: auth })
+    codeIs('关注流查询成功', json, 0)
+    eq('关注流 total 是 JSON number', typeof json?.data?.total, 'number')
+    eq('关注流共 2 篇（ct2+ct3）', json?.data?.total, 2)
+    const ids = (json?.data?.list ?? []).map((n) => n.id)
+    check('包含 ct2 的笔记', ids.includes(ct2NoteId), `ids=${ids.join(',')}`)
+    check('包含 ct3 的笔记', ids.includes(ct3NoteId), `ids=${ids.join(',')}`)
+    check('不含自己的笔记（自己不能关注自己）', !ids.includes(noteId), `ids=${ids.join(',')}`)
+    const first = json?.data?.list?.[0]
+    check('关注流行带作者信息', typeof first?.authorId === 'string' && first?.authorId !== '' && typeof first?.authorNickname === 'string' && first.authorNickname.length > 0,
+      `authorId=${first?.authorId} nickname=${first?.authorNickname}`)
+    eq('关注流行 authorFollowed=true', first?.authorFollowed, true)
+    check('关注流行没有漏 password', !Object.keys(first ?? {}).includes('password'))
+  }
+  {
+    const { json } = await get('/api/feed/follow', { token: actorAuth })
+    codeIs('没关注任何人时关注流为空（空态不是报错）', json, 0)
+    eq('空关注流 total=0', json?.data?.total, 0)
+    eq('空关注流 list 为空数组', json?.data?.list?.length, 0)
+  }
+
+  // 作者主页：TA 发布的笔记
+  {
+    const { json } = await get(`/api/note/user/${ct2Id}?page=1&size=10`, { token: auth })
+    codeIs('作者主页笔记列表成功', json, 0)
+    eq('ct2 主页只有 ct2 的笔记', json?.data?.total, 1)
+    eq('列表行 authorId 正确', json?.data?.list?.[0]?.authorId, ct2Id)
+    eq('列表行 authorFollowed=true（ct 仍关注 ct2）', json?.data?.list?.[0]?.authorFollowed, true)
+  }
+  {
+    const { json } = await get(`/api/note/user/123456789012345`, { token: auth })
+    codeIs('查不存在作者的主页返回 10001（与「TA 没发笔记」区分开）', json, 10001)
+  }
+  {
+    // 作者主页的用户卡片：一次接口拿到用户信息 + 当前登录者是否已关注
+    const { json } = await get(`/api/follow/user/${ct2Id}`, { token: auth })
+    codeIs('作者卡片查询成功', json, 0)
+    eq('作者卡片是目标用户', json?.data?.id, ct2Id)
+    eq('作者卡片带昵称', json?.data?.nickname, `ct2_${stamp}`)
+    eq('当前登录者已关注 → followed=true', json?.data?.followed, true)
+    check('作者卡片没有漏 password', !Object.keys(json?.data ?? {}).includes('password'))
+  }
+  {
+    const { json } = await get('/api/follow/user/123456789012345', { token: actorAuth })
+    codeIs('查不存在用户的关注状态返回 10001', json, 10001)
+  }
+
+  // 互关：ct2 关注 ct、也关注 ct3，让关注列表出现「viewer 也关注了这一行」的互惠语义
+  {
+    const { json } = await put(`/api/follow/${userId}`, { token: ct2Auth })
+    codeIs('ct2 关注 ct 成功（互关场景）', json, 0)
+    const { json: j2 } = await put(`/api/follow/${actorId}`, { token: ct2Auth })
+    codeIs('ct2 关注 ct3 成功', j2, 0)
+  }
+  {
+    const { json } = await get(`/api/follow/fans?userId=${userId}`, { token: auth })
+    codeIs('粉丝列表查询成功', json, 0)
+    const row = (json?.data?.list ?? []).find((r) => r.id === ct2Id)
+    check('ct 的粉丝里有 ct2', typeof row !== 'undefined', `list=${JSON.stringify(json?.data?.list)}`)
+    eq('viewer 已关注该粉丝 → followed=true（互关）', row?.followed, true)
+  }
+  {
+    // ct2 的关注列表 = [ct, ct3]。followed 的语义是「viewer（ct）是否也关注了这一行的用户」：
+    //   - 行=ct：ct 不能关注自己 → false
+    //   - 行=ct3：ct 关注了 ct3 → true
+    const { json } = await get(`/api/follow/followings?userId=${ct2Id}`, { token: auth })
+    codeIs('关注列表查询成功', json, 0)
+    const rowCt = (json?.data?.list ?? []).find((r) => r.id === userId)
+    check('ct2 的关注里有 ct', typeof rowCt !== 'undefined')
+    eq('行=ct：viewer 与 ct 是同一人，不能自关 → followed=false', rowCt?.followed, false)
+    const rowCt3 = (json?.data?.list ?? []).find((r) => r.id === actorId)
+    eq('行=ct3：viewer 也关注了 TA → followed=true（互惠语义）', rowCt3?.followed, true)
+  }
+  {
+    // 换一个「没关注 ct」的 viewer（ct3）来看 ct2 的关注列表
+    const { json } = await get(`/api/follow/followings?userId=${ct2Id}`, { token: actorAuth })
+    const row = (json?.data?.list ?? []).find((r) => r.id === userId)
+    eq('另一个 viewer 没关注 ct → followed=false（视图态按人算，不是全局缓存）', row?.followed, false)
+    check('FollowUserVO 也没有漏 password', !Object.keys(row ?? {}).includes('password'))
+  }
+  {
+    const { json } = await get(`/api/follow/fans?userId=${userId}&page=1&size=1`, { token: auth })
+    eq('粉丝列表 size=1 只回 1 条', json?.data?.list?.length, 1)
+    eq('total 按全量算仍是 1', json?.data?.total, 1)
+    eq('page 回显', json?.data?.page, 1)
+    eq('size 回显', json?.data?.size, 1)
+  }
+
+  // 取关：计数回退、关注流剔除、40002 兜底
+  {
+    const { json } = await del(`/api/follow/${ct2Id}`, { token: auth })
+    codeIs('取关 ct2 成功', json, 0)
+    eq('取关后返回行 followed=false', json?.data?.followed, false)
+  }
+  {
+    const { json } = await del(`/api/follow/${ct2Id}`, { token: auth })
+    codeIs('未关注却取关返回 40002（不静默成功）', json, 40002)
+  }
+  {
+    const me = await get('/api/user/me', { token: auth })
+    eq('取关后 ct 的 followCount 退回 1', me.json?.data?.followCount, 1)
+    const ct2After = await get('/api/user/me', { token: ct2Auth })
+    eq('ct2 的 fansCount 退回 0', ct2After.json?.data?.fansCount, 0)
+    const { json } = await get(`/api/note/${ct2NoteId}`, { token: auth })
+    eq('取关后详情 authorFollowed=false', json?.data?.authorFollowed, false)
+  }
+  {
+    const { json } = await get('/api/feed/follow', { token: auth })
+    codeIs('取关后再查关注流成功', json, 0)
+    eq('取关后关注流只剩 1 篇', json?.data?.total, 1)
+    const ids = (json?.data?.list ?? []).map((n) => n.id)
+    check('ct2 的笔记已从关注流消失，ct3 的还在',
+      ids.includes(ct3NoteId) && !ids.includes(ct2NoteId), `ids=${ids.join(',')}`)
+  }
+  {
+    const { json } = await get('/api/feed/follow')
+    codeIs('未登录不能看关注流（10005）', json, 10005)
+  }
+
+  // ---- 16. 不支持的方法
   {
     const { json } = await call('DELETE', '/api/user/login')
     codeIs('不支持的请求方法被统一处理（100002）', json, 100002)
@@ -678,6 +877,8 @@ async function main() {
   console.log(`  DELETE FROM xiaoku_db.note_collect WHERE note_id IN (${noteList});`)
   console.log(`  DELETE FROM xiaoku_db.note_image WHERE note_id IN (${noteList});`)
   console.log(`  DELETE FROM xiaoku_db.note WHERE id IN (${noteList});`)
+  // user_follow 没有外键，删 user 之前必须先删它,否则留下一堆指向虚空的关注关系
+  console.log(`  DELETE FROM xiaoku_db.user_follow WHERE user_id IN (SELECT id FROM xiaoku_db.user WHERE username REGEXP '^ct[0-9]?_[a-z0-9]+$') OR follow_id IN (SELECT id FROM xiaoku_db.user WHERE username REGEXP '^ct[0-9]?_[a-z0-9]+$');`)
   console.log(`  DELETE FROM xiaoku_db.user WHERE username REGEXP '^ct[0-9]?_[a-z0-9]+$';`)
   console.log(`  图片文件在 backend/uploads/（已 gitignore），要清就整个删掉该目录`)
   console.log(`  注意：xk_ui_smoke / xk_ui_interact / xiaoku_demo 是常驻 fixture，别删`)

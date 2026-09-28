@@ -107,14 +107,14 @@ $env:XK_MYSQL_PASSWORD = "<.env 里的 MYSQL_ROOT_PASSWORD>"   # 不设就起不
 改后端接口 → 必须跑契约测试；改前端 → 必须跑 CDP 测试。**别攒到最后一起跑。**
 
 ```bash
-# 后端（需后端已在 8088 运行）→ 134 条
+# 后端（需后端已在 8088 运行）→ 203 条
 cd backend && node scripts/contract-test.mjs
 # 换地址：XK_API_BASE=http://ip:8088 node scripts/contract-test.mjs
 
-# 前端（需前端 5180 + 后端 8088 同时在跑）→ 18 + 8 + 17 + 26 + 41 = 110 条
+# 前端（需前端 5180 + 后端 8088 同时在跑）→ 18 + 8 + 17 + 26 + 41 + 25 = 135 条
 cd frontend && npm run test:ui
 
-# 单跑某一组：:smoke / :refresh / :note / :profile / :interaction
+# 单跑某一组：:smoke / :refresh / :note / :profile / :interaction / :follow
 cd frontend && npm run test:ui:interaction
 
 # 前端类型 / 构建
@@ -136,20 +136,27 @@ DELETE FROM xiaoku_db.note_like   WHERE note_id IN (SELECT id FROM xiaoku_db.not
 DELETE FROM xiaoku_db.note_collect WHERE note_id IN (SELECT id FROM xiaoku_db.note);
 DELETE FROM xiaoku_db.note_image  WHERE note_id IN (SELECT id FROM xiaoku_db.note);
 DELETE FROM xiaoku_db.note;
+-- 2) user_follow 无外键不级联（P6），必须在删 user 前先把 ct 账号两头的关系清掉，
+--    否则留下 user_id / follow_id 指向不存在用户的孤儿行
+DELETE FROM xiaoku_db.user_follow
+  WHERE user_id IN (SELECT id FROM xiaoku_db.user WHERE username REGEXP '^ct[0-9]?_[a-z0-9]+$')
+     OR follow_id IN (SELECT id FROM xiaoku_db.user WHERE username REGEXP '^ct[0-9]?_[a-z0-9]+$');
 DELETE FROM xiaoku_db.user WHERE username REGEXP '^ct[0-9]?_[a-z0-9]+$';
 ```
 
 1. **`REGEXP` 而不是 `LIKE`**：MySQL 里 `LIKE 'ct_%'` 的 `_` 是单字符通配符，会误删。
    正则里的 `[0-9]?` 也不能省 —— 写成 `^ct2?_` 匹配不到 `ct3_`，每跑一次漏一个常驻垃圾账号。
 2. **每条 `DELETE` 都必须带 `WHERE`**：库里还有 `xiaoku_demo`、`xk_ui_smoke`、
-   `xk_ui_interact` 这些常驻 fixture 的笔记和评论。`DELETE FROM xiaoku_db.comment;`
+   `xk_ui_interact`、`xk_ui_follow` 这些常驻 fixture 的笔记、评论和关注行。
+   `DELETE FROM xiaoku_db.comment;` / `DELETE FROM xiaoku_db.user_follow;`
    这种全表清空会把它们一起删掉，而脚本跑完只显示「清理成功」，
    **没有任何迹象表明你顺手删了别的东西**。先 `SELECT id FROM note` 缩到测试笔记再删。
 
 删库不会删文件，图片还在 `backend/uploads/`（已 gitignore），要清就整个删掉。
 
-前端 CDP 测试用固定账号 `xk_ui_smoke`（常驻一条 fixture，撞 `10003` 判为通过），
-不要清理它。测试需要 Chrome，路径可用 `XK_CHROME` 覆盖。
+前端 CDP 测试的常驻 fixture：`xk_ui_smoke`（登录冒烟）、`xk_ui_interact`
+（互动搭子+常驻评论）、`xk_ui_follow`（关注流素材号，口令同为 `Xk@2026peer`）。
+撞 `10003` 都判为通过，**三个都不要清理**。测试需要 Chrome，路径可用 `XK_CHROME` 覆盖。
 
 ### 读测试结果时的一个坑
 
@@ -215,11 +222,11 @@ get('/comment/list', { params: { noteId, page } })    // ❌ 发出 ?params[note
 后端收到「缺少必要参数：noteId」。**契约测试抓不到**，因为它走裸 HTTP
 绕开了整个前端封装层，只有真机点一下才会暴露。
 
-## 7. 已完成状态（2026-09-27）
+## 7. 已完成状态（2026-09-28）
 
 - P0 环境编排 / P1 统一响应与异常 / P2 用户模块 + JWT / P4 部分（登录 + 首页）已合并推送
 - 品牌改名已落地（`62ed4c5`），测试通过且未改任何测试断言
-- 契约测试已落盘（`f8f412c`），现为 **134 条断言**（P2 44 条 + P3 32 条 + P5 58 条）
+- 契约测试已落盘（`f8f412c`），现为 **203 条断言**（P2 44 条 + P3 32 条 + P5 58 条 + P6 69 条）
 - 口令兜底修正 + 注释订正（`cf93b22`）
 - AGENTS.md 本身已提交（`3978ed0`）
 - P3 后端已推送（`fd4140e`），含雪花 ID 精度修复
@@ -232,6 +239,17 @@ get('/comment/list', { params: { noteId, page } })    // ❌ 发出 ?params[note
   - 笔记域错误码已在 `ErrorCodeEnum.java:39` 预留并在用：
     `NOTE_NOT_FOUND` / `NOTE_STATUS_ILLEGAL` / `NOTE_UPLOAD_FAILED` /
     `NOTE_IMAGE_LIMIT_EXCEED`（9 张上限）
+- P6 关注域已完工（本 commit）：关注 / 取关 / 关注列表 / 粉丝列表 / 作者主页
+  / 关注流 + 契约 **203 条** + CDP **135 条**
+  - `module/follow/`（`UserFollowEntity` / `FollowUserVO` / 两个 service /
+    `FollowController`）+ `module/feed/`（JOIN SQL）+ 笔记域只读改动
+  - `user_follow.status` 列**闲置弃用**：关注/取关走物理删，唯一索引当裁判
+  - `NoteVO` 新增 `authorId` + `authorFollowed`（P4「不暴露作者 ID」的决定被反转，
+    三处注释一对）；列表卡片用新的 `NoteListItemVO`
+  - `GET /api/follow/user/{id}` 作者卡片一次往返拿全（UserVO 字段 + followed）
+  - feed 用 `INNER JOIN user_follow` 而不是先查 IDs 再 `IN`
+  - 前端新页：`FollowListView.vue`（`/follow/:id` 与 `/fans/:id` 双路由共用）、
+    `UserView.vue`；首页 env 自检卡移除换成关注流；详情页作者区加关注按钮
   - `schema.sql` 在 P0 就已建好全部 8 张表，含 `note` / `note_image`，
     **P3 没有改 schema**
 

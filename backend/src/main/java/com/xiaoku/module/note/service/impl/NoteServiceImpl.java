@@ -78,8 +78,8 @@ public class NoteServiceImpl implements NoteService {
         }
 
         log.info("笔记发布成功 noteId={} userId={} images={}", note.getId(), userId, images.size());
-        // 刚发布的笔记必然没有点赞/收藏，liked 与 collected 都是 false
-        return NoteConverter.toVO(note, userQueryService.getUserVO(userId), images, false, false);
+        // 刚发布的笔记必然没有点赞/收藏/关注作者（自己不能关注自己），三者都是 false
+        return NoteConverter.toVO(note, userQueryService.getUserVO(userId), images, false, false, false);
     }
 
     @Override

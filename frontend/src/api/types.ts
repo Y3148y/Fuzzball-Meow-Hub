@@ -41,6 +41,10 @@ export const ErrorCode = {
   COMMENT_NOT_FOUND: 30005,
   COMMENT_TOO_LONG: 30006,
   CANNOT_COMMENT_SELF_NOTE: 30007,
+  // 40xxx 关注域
+  ALREADY_FOLLOWED: 40001,
+  NOT_FOLLOWED: 40002,
+  CANNOT_FOLLOW_SELF: 40003,
 } as const
 
 /**
@@ -155,8 +159,18 @@ export interface NoteVO {
   liked: boolean
   /** 当前登录用户是否已收藏（P5 新增，和 liked 是两套独立关系） */
   collected: boolean
+  /**
+   * 作者 ID（P6 起暴露）。
+   *
+   * <p>以前刻意不返回 userId，是 P6 做「详情页直接关注作者」时反转的决定：
+   * 没有它，关注按钮就得专门再发一个「查作者身份」的请求。
+   * 和后端 NoteVO 的注释是一对，改这里记得一起去。
+   */
+  authorId: SnowflakeId
+  /** 当前登录用户是否已关注作者。注意：null 字段会被 non_null 规则省略 */
   authorNickname: string
   authorAvatar: string | null
+  authorFollowed: boolean
   /** 按上传顺序返回 */
   images: string[]
   createTime: string
@@ -240,4 +254,40 @@ export interface CommentCreateDTO {
   content: string
   /** 回复某条评论时传，被回复的父评论 ID；发一级评论不传 */
   parentId?: SnowflakeId
+}
+
+/**
+ * 关注 / 粉丝列表的用户行，以及作者主页卡片，对应后端 FollowUserVO。
+ *
+ * <p>等于 UserVO + followed。为什么不直接复用 UserVO：
+ * followed 是「依赖当前浏览者」的视图态，每个看到这行的人结果不同，
+ * 专门一个类型说清楚「这一行是给谁看的」。
+ */
+export interface FollowUserVO extends Omit<UserVO, 'followCount' | 'fansCount' | 'likeReceivedCount'> {
+  followCount: number
+  fansCount: number
+  likeReceivedCount: number
+  /** 当前登录用户是否已关注 TA */
+  followed: boolean
+}
+
+/**
+ * 笔记列表卡片（关注流 / 作者主页列表），对应后端 NoteListItemVO。
+ *
+ * <p>列表场景没有全文正文。authorFollowed 同样是人而异的视图态。
+ */
+export interface NoteListItemVO {
+  id: SnowflakeId
+  /** 1 图文 2 视频 */
+  type: number
+  title: string
+  cover: string | null
+  likeCount: number
+  collectCount: number
+  commentCount: number
+  createTime: string
+  authorId: SnowflakeId
+  authorNickname: string
+  authorAvatar: string | null
+  authorFollowed: boolean
 }

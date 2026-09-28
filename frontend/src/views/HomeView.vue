@@ -1,26 +1,83 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { get } from '@/api/request'
-import type { PingVO } from '@/api/types'
+import { BizError } from '@/api/request'
+import { followUser, unfollowUser } from '@/api/follow'
+import { getFollowFeed } from '@/api/feed'
+import { ErrorCode } from '@/api/types'
+import type { NoteListItemVO } from '@/api/types'
 import { useUserStore } from '@/stores/user'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 
 const router = useRouter()
 const userStore = useUserStore()
 
-const ping = ref<PingVO | null>(null)
-const envLoading = ref(false)
+/* ---------------- 关注流 ---------------- */
 
-async function fetchPing() {
-  envLoading.value = true
+const feed = ref<NoteListItemVO[]>([])
+const feedLoading = ref(true)
+const feedError = ref('')
+/** 正在处理「关注/取关」的笔记作者 id —— 挡住连点 */
+const toggling = ref(new Set<string>())
+
+function isToggling(id: string) {
+  return toggling.value.has(id)
+}
+
+async function loadFeed() {
+  feedLoading.value = true
+  feedError.value = ''
   try {
-    ping.value = await get<PingVO>('/system/ping')
-  } catch {
-    ping.value = null
+    const page = await getFollowFeed(1, 20)
+    feed.value = page.list
+  } catch (e) {
+    if (e instanceof BizError) {
+      feedError.value = e.message
+    } else {
+      feedError.value = '加载失败，请稍后重试'
+    }
   } finally {
-    envLoading.value = false
+    feedLoading.value = false
   }
+}
+
+/**
+ * 卡片上的关注/取关按钮。
+ *
+ * <p>状态判断只看 item.authorFollowed 这一个后端给的值，请求成功后再用响应
+ * 覆盖回同一个字段——和详情页的点赞一致，永远是后端权威值。
+ * 取关成功后 <b>不</b> 从列表里移除这条：用户可能只是手滑，或者想先看内容再取关。
+ */
+async function toggleFollowAuthor(item: NoteListItemVO) {
+  if (!item.authorId || isToggling(item.authorId)) return
+  toggling.value = new Set(toggling.value).add(item.authorId)
+  try {
+    const res = item.authorFollowed
+      ? await unfollowUser(item.authorId)
+      : await followUser(item.authorId)
+    item.authorFollowed = res.followed
+    // 我的关注数变了，静默刷 store，别让「我的」页显示旧数字
+    void userStore.loadProfile().catch(() => {})
+  } catch (e) {
+    if (e instanceof BizError) {
+      // 40001/40002 说明本地状态和后端不一致（多标签页），静默重拉纠正
+      if (e.code === ErrorCode.ALREADY_FOLLOWED || e.code === ErrorCode.NOT_FOLLOWED) {
+        await loadFeed()
+        return
+      }
+    }
+    throw e
+  } finally {
+    toggling.value = new Set([...toggling.value].filter((id) => id !== item.authorId))
+  }
+}
+
+function goAuthor(userId: string) {
+  if (userId) void router.push(`/user/${userId}`)
+}
+
+function goNote(id: string) {
+  void router.push(`/note/${id}`)
 }
 
 async function logout() {
@@ -32,7 +89,8 @@ async function logout() {
 void userStore.loadProfile().catch(() => {
   // token 失效时拦截器已经跳登录页
 })
-void fetchPing()
+
+onMounted(loadFeed)
 </script>
 
 <template>
@@ -42,7 +100,7 @@ void fetchPing()
       <ThemeToggle />
     </header>
 
-    <section class="card xk-card">
+    <section class="card xk-card who-card">
       <div class="who">
         <img class="avatar" src="/mascot/m02.webp" alt="" />
         <div class="names">
@@ -54,17 +112,29 @@ void fetchPing()
       <p v-if="userStore.userInfo?.bio" class="bio">{{ userStore.userInfo.bio }}</p>
 
       <dl class="stats">
-        <div class="stat">
+        <button
+          v-if="userStore.userInfo"
+          class="stat"
+          type="button"
+          data-test="home-follow"
+          @click="router.push(`/follow/${userStore.userInfo!.id}`)"
+        >
           <dt>关注</dt>
-          <dd>{{ userStore.userInfo?.followCount ?? 0 }}</dd>
-        </div>
-        <div class="stat">
+          <dd>{{ userStore.userInfo.followCount ?? 0 }}</dd>
+        </button>
+        <button
+          v-if="userStore.userInfo"
+          class="stat"
+          type="button"
+          data-test="home-fans"
+          @click="router.push(`/fans/${userStore.userInfo!.id}`)"
+        >
           <dt>粉丝</dt>
-          <dd>{{ userStore.userInfo?.fansCount ?? 0 }}</dd>
-        </div>
-        <div class="stat">
+          <dd>{{ userStore.userInfo.fansCount ?? 0 }}</dd>
+        </button>
+        <div v-if="userStore.userInfo" class="stat plain">
           <dt>获赞</dt>
-          <dd>{{ userStore.userInfo?.likeReceivedCount ?? 0 }}</dd>
+          <dd>{{ userStore.userInfo.likeReceivedCount ?? 0 }}</dd>
         </div>
       </dl>
 
@@ -87,24 +157,46 @@ void fetchPing()
       </button>
     </section>
 
-    <section class="card xk-card xk-card--flat env">
-      <div class="env-head">
-        <h2>环境自检</h2>
-        <button class="again" type="button" :disabled="envLoading" @click="fetchPing">
-          {{ envLoading ? '请求中…' : '重新请求' }}
-        </button>
-      </div>
-      <dl v-if="ping" class="kv">
-        <div><dt>applicationName</dt><dd>{{ ping.applicationName }}</dd></div>
-        <div><dt>machineId</dt><dd>{{ ping.machineId }}</dd></div>
-        <div><dt>snowflakeId</dt><dd>{{ ping.snowflakeId }}</dd></div>
-        <div><dt>雪花ID解析</dt><dd>{{ ping.snowflakeParsed }}</dd></div>
-        <div><dt>serverTime</dt><dd>{{ ping.serverTime }}</dd></div>
-      </dl>
-      <p v-else class="env-empty">后端没响应，确认 8088 端口的服务已启动</p>
-    </section>
+    <section class="card xk-card xk-card--flat feed" data-test="feed">
+      <h2 class="feed-title">关注的人刚发的笔记</h2>
 
-    <p class="foot">笔记模块 P3 接入后，这里会变成信息流</p>
+      <p v-if="feedLoading" class="hint" data-test="feed-loading">加载中…</p>
+      <p v-else-if="feedError" class="hint err" data-test="feed-error">{{ feedError }}</p>
+      <p v-else-if="!feed.length" class="hint" data-test="feed-empty">
+        你还没有关注任何人，去别人主页逛逛吧
+      </p>
+
+      <ul v-else class="items">
+        <li v-for="item in feed" :key="item.id" class="item" data-test="feed-item">
+          <button class="main" type="button" @click="goNote(item.id)">
+            <img class="cover" :src="item.cover ?? '/mascot/m02.webp'" alt="" loading="lazy" />
+            <div class="body">
+              <p class="title">{{ item.title }}</p>
+              <p class="meta">
+                ♥ {{ item.likeCount }} · ★ {{ item.collectCount }} · 评论
+                {{ item.commentCount }}
+              </p>
+            </div>
+          </button>
+
+          <div class="who-line">
+            <button class="author" type="button" data-test="feed-author" @click="goAuthor(item.authorId)">
+              {{ item.authorNickname }}
+            </button>
+            <button
+              class="follow"
+              :class="{ on: item.authorFollowed }"
+              type="button"
+              :disabled="isToggling(item.authorId)"
+              data-test="feed-follow"
+              @click="toggleFollowAuthor(item)"
+            >
+              {{ item.authorFollowed ? '已关注' : '关注' }}
+            </button>
+          </div>
+        </li>
+      </ul>
+    </section>
   </main>
 </template>
 
@@ -178,7 +270,7 @@ void fetchPing()
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 10px;
-  margin: 18px 0;
+  margin: 18px 0 0;
   padding: 0;
 }
 
@@ -188,6 +280,15 @@ void fetchPing()
   border-radius: var(--xk-radius-blob-sm);
   background: var(--xk-surface-2);
   text-align: center;
+  cursor: pointer;
+}
+
+.stat:hover {
+  border-color: var(--xk-amber);
+}
+
+.stat .plain {
+  cursor: default;
 }
 
 .stat dt {
@@ -224,20 +325,111 @@ void fetchPing()
   cursor: pointer;
 }
 
-.env-head {
+/* ---------------- 关注流 ---------------- */
+
+.feed {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 12px;
+  flex-direction: column;
+  gap: 12px;
 }
 
-.env-head h2 {
+.feed-title {
   margin: 0;
   font-size: 15px;
 }
 
-.again {
-  padding: 5px 12px;
+.hint {
+  margin: 0;
+  text-align: center;
+  color: var(--xk-text-3);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.hint.err {
+  color: var(--xk-danger);
+}
+
+.items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+}
+
+.item {
+  padding: 12px 0;
+  border-top: var(--xk-stroke-w) solid var(--xk-border);
+}
+
+.item:first-child {
+  border-top: 0;
+}
+
+.main {
+  display: flex;
+  gap: 12px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cover {
+  width: 84px;
+  height: 84px;
+  object-fit: cover;
+  border-radius: var(--xk-radius-blob-sm);
+  flex-shrink: 0;
+  background: var(--xk-surface-2);
+}
+
+.body {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.meta {
+  margin: 0;
+  color: var(--xk-text-3);
+  font-size: 12px;
+}
+
+.who-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 10px;
+}
+
+.author {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--xk-text-2);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.follow {
+  padding: 4px 14px;
   border: var(--xk-stroke-w) solid var(--xk-border);
   border-radius: 999px;
   background: var(--xk-surface-2);
@@ -246,46 +438,15 @@ void fetchPing()
   cursor: pointer;
 }
 
-.again:disabled {
+.follow.on {
+  background: var(--xk-amber);
+  color: var(--xk-amber-ink);
+  border-color: transparent;
+  font-weight: 700;
+}
+
+.follow:disabled {
   opacity: 0.6;
   cursor: not-allowed;
-}
-
-.kv {
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.kv > div {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  font-size: 13px;
-}
-
-.kv dt {
-  color: var(--xk-text-3);
-}
-
-.kv dd {
-  margin: 0;
-  color: var(--xk-text-2);
-  text-align: right;
-  word-break: break-all;
-}
-
-.env-empty {
-  margin: 0;
-  color: var(--xk-text-3);
-  font-size: 13px;
-}
-
-.foot {
-  margin: 0;
-  text-align: center;
-  color: var(--xk-text-3);
-  font-size: 12px;
 }
 </style>

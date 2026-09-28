@@ -21,7 +21,7 @@
 | P3 | 笔记发布 + 图片上传 | ✅ 已完成 |
 | P4 | 前端页面（登录 / 首页 / 发布 / 详情 / 我的） | ✅ 已完成 |
 | P5 | 点赞 / 收藏 / 评论（Redis 计数一致性推到 P8） | ✅ 已完成 |
-| P6 | 关注关系 + 关注流 | ⬜ 未开始 |
+| P6 | 关注关系 + 关注流 | ✅ 已完成 |
 | P7 | Elasticsearch 搜索 + Kafka 异步同步 | ⬜ 未开始 |
 | P8 | 缓存三件套 / 布隆过滤器 / 分布式锁 / 限流 | ⬜ 未开始 |
 | P9 | 压测报告 + 完整文档 + 部署脚本 | ⬜ 未开始 |
@@ -394,10 +394,73 @@ P3 为了雪花 ID 定了「`Long` 一律序列化成字符串」的全局规则
   （非零时是 17 位雪花 ID，一转丢精度），又容易和「ID 就是 0」混淆。
   所以 `CommentConverter` 读出来就转 `null`。
 
+### P6 关注域：三个决策和一个真实缺陷
+
+**1. 关注/取关走「物理删」而不是软删**
+
+`user_follow` 表建表时就留了 `status` 列和「保留行以便追溯历史」的意图，
+P6 做增删接口时决定放弃：关注本质上是一条「现在有效」的关系，取关后留着一行
+失效数据，既要查 `status=1` 又要防 `uk` 判定，还让计数、列表、feed 全都要带条件。
+物理删 + schema 里那个本意是软删的 `status` 列**闲置不用**（列留着，语义弃用）。
+
+唯一索引 `uk_user_follow(user_id, follow_id)` 当唯一裁判，和 P5 的点赞同款：
+不先查后写，直接 `insert`，撞了就是 40001「已关注」。
+
+**2. 关注数与粉丝数的原子加减**
+
+`update follow_count = GREATEST(0, follow_count + 1)`。
+`GREATEST` 拦边界：并发取关时 0 不能再往下跌成负数。
+列表里 `followed` 字段的含义是「**当前浏览者**是否也关注了这一行」，不是
+「TA 和列表主人什么关系」——这个概念不写清，接口和前端测试都会写反
+（契约测试第一版就写反过，见下）。
+
+**3. `NoteVO` 增加 `authorId`——刻意反转的决定**
+
+P4 做详情页时**故意不**在 `NoteVO` 里暴露作者 ID，理由写在注释里：
+详情页展示只需要昵称，作者关系靠「我的」页独立查询。
+P6 要做「详情页直接关注作者」，发现没有 `authorId` 就得为了一个按钮专门
+再发一次「查作者」的请求。于是反转：
+`NoteVO` 现在带 `authorId` 和 `authorFollowed`（当前登录者是否已关注作者）。
+后端、`types.ts`、契约断言三处注释都对得上——改任一侧，另外两处会立刻炸出来。
+
+**4. `followed` 是视图态，不能进被缓存的 `UserVO`**
+
+`UserVO` 按 userId 缓存，而「我关注了 TA 吗」因人而异、逐请求现算。
+把 `followed` 塞进 `UserVO` 等于让缓存带上浏览者指纹，纯给自己挖坑。
+单独一个新类型 `FollowUserVO`（UserVO 字段 + `followed`）说清楚这事。
+作者卡片（`GET /api/follow/user/{id}`）也复用它，一次往返拿全。
+
+**5. feed 用 JOIN 而不是先查 IDs 再 IN**
+
+「我关注的作者的笔记」最直觉的写法是两次查询：先查 followings，再
+`IN (...)` 查笔记。但 follow list 随手可及几万行，IN 进去是灾难。
+一次 `INNER JOIN user_follow ON note.user_id = follow_id AND user_id = me`
+直接把「关系即视野」翻译成 SQL，列表天然只含关注中的人，好理解也好维护。
+
+**6. 一个真实缺陷：`viewer 看别人关系页时 followed 语义写反**
+
+契约测试第一版断言「看 TA 的关注列表，行内 followed 应为 true」，
+跑挂了才意识到这个字段问的是「**我**关注了你没有」，和 TA 无关。
+这属于「设计意图没落地成断言就没人会真的读注释」的典型——
+写进契约里一次，以后谁想改语义都会被红叉拦住。
+
+前端对应实现里还有两个值得一提的坑：
+
+- **`UserView.isSelf` 必须用 `computed`**：写死成 `const isSelf = !!user && id===id`，
+  在用户资料还没拉回来的那一瞬间求值成 `false`，自己主页也会短暂出现「关注」
+  按钮，之后又消失——不是逻辑错，是「一次性求值」对异步加载不成立。
+- **关注/取关按钮沿用详情页点赞的范式**：busy 标记挡连点、
+  状态用后端返回值写回、40001/40002（本地与后端不同步）静默重拉纠正。
+  除了详情页，首页关注流的行内按钮、关注/粉丝列表页、作者主页共用同一套。
+
+CDP 的 `ui-follow.mjs` 有个自愈细节：全程只可能产生 demo→素材号 一条关注关系，
+脚本开头先去作者主页把残留状态归零再断言「不在关注流」，
+这样中途崩掉的上一次运行不会让下一次跑红。
+
 ### 后端契约测试：`node backend/scripts/contract-test.mjs`
 
 P2 那 7 条断言原本是临时脚本，跑完就丢了，`git log` 里看不出「怎么测的」。
-现在固化成落盘的契约快照，134 条（P2 44 + P3 32 + P5 58）：
+现在固化成落盘的契约快照，203 条（P2 44 + P3 32 + P5 58 + P6 69）：
 
 ```bash
 cd backend
@@ -422,6 +485,8 @@ VO 有没有漏出敏感字段。裸 HTTP 打一遍最直接，零依赖意味�
 | P3 笔记域 | 图片类型白名单、空文件、**落盘文件名由服务端生成**、静态资源可回读、9 张边界两侧、10 张越界用专用码 20004、`javascript:`/`data:` URL 被拒、未登录三接口、查无此笔记 20001 |
 | P5 互动域 | 点赞/收藏各自开关往返、重复与未互动用专用码 30001~30004、**两套关系互不影响**、下架/草稿笔记拒绝互动 |
 | P5 评论域 | 不能评论自己的笔记 30007、回复拉平到同一根评论、**子回复截断到 3 条但 replyTotal 给真实总数**、级联删根评论且计数一次退完、非作者删除返回 30005 |
+| P6 关注域 | 关注/取关各自开关注并重复操作 40001/40002、自关注 40003、目标不存在 10001、**关注/粉丝列表的 followed 是「当前浏览者是否也关注」**、互关后两列表都有 true、作者主页笔记列表 20001 区分「无笔记」与「用户不存在」、作者卡片一次往返拿全、feed 只含关注中作者的笔记、**取关后计数回滚且从 feed 消失** |
+| P6 feed | JOIN 不 IN、列表含作者信息、空 feed、分页回显、未登录 10005 |
 
 最后一条是安全断言：Entity 有 `password`，靠 `@JsonIgnore` 兜底属于「靠注解赌后人不忘」，
 断言字段名才能在有人不小心把 Entity 直接返回时立刻炸出来。
@@ -450,8 +515,18 @@ DELETE FROM xiaoku_db.note_like   WHERE note_id IN (SELECT id FROM xiaoku_db.not
 DELETE FROM xiaoku_db.note_collect WHERE note_id IN (SELECT id FROM xiaoku_db.note);
 DELETE FROM xiaoku_db.note_image  WHERE note_id IN (SELECT id FROM xiaoku_db.note);
 DELETE FROM xiaoku_db.note;
+-- 2) user_follow 挂在 user 上但无外键（P6），必须在删 user 前清，
+--    否则留下 user_id / follow_id 指向不存在用户的孤儿行
+DELETE FROM xiaoku_db.user_follow
+  WHERE user_id IN (SELECT id FROM xiaoku_db.user WHERE username REGEXP '^ct[0-9]?_[a-z0-9]+$')
+     OR follow_id IN (SELECT id FROM xiaoku_db.user WHERE username REGEXP '^ct[0-9]?_[a-z0-9]+$');
 DELETE FROM xiaoku_db.user WHERE username REGEXP '^ct[0-9]?_[a-z0-9]+$';
 ```
+
+> **`user_follow` 无外键、不级联**：关注行 `user_id` / `follow_id` 都指向 user。
+> 清 ct 账号时只认这两头的账号，别学 P5 那样「WHERE 一头」——
+> 一个测试账号关注了另一个无效账号，删完就会留下孤儿行。
+> P6 契约里专门有一步验证清理后 `follow_orphans = 0`。
 
 > **必须用 `REGEXP` 而不是 `LIKE`**：MySQL 里 `LIKE 'ct_%'` 的 `_` 是**单字符通配符**，
 > 会误删 `ct2_xxx` / `ct3_xxx` 之外的行。
@@ -459,9 +534,10 @@ DELETE FROM xiaoku_db.user WHERE username REGEXP '^ct[0-9]?_[a-z0-9]+$';
 > **正则里的 `[0-9]?` 不能省**：P5 引入了第三个契约账号 `ct3_<时间戳>`，
 > 写成 `^ct2?_` 匹配不到它，每次跑都会漏一个常驻垃圾账号在库里躺着。
 
-> **`DELETE` 一律要带 `WHERE`**：库里有 `xiaoku_demo`、`xk_ui_smoke`、`xk_ui_interact`
-> 这些常驻 fixture 也在 `xiaoku_db.note` / `comment` 里。一条 `DELETE FROM xiaoku_db.comment;`
-> 会把它们一起清掉，而脚本跑完只显示「清理成功」，**没人会发现顺手删了别的东西**。
+> **`DELETE` 一律要带 `WHERE`**：库里有 `xiaoku_demo`、`xk_ui_smoke`、`xk_ui_interact`、
+> `xk_ui_follow` 这些常驻 fixture 也在 `xiaoku_db.note` / `comment` / `user_follow` 里。一条
+> `DELETE FROM xiaoku_db.comment;` 会把它们一起清掉，而脚本跑完只显示「清理成功」，
+> **没人会发现顺手删了别的东西**。
 > 上面的写法先 `SELECT id FROM note` 把范围缩到测试笔记，正是这个原因。
 > `xk_ui_*` 与 `xiaoku_demo` 是常驻 fixture，任何清理都不要碰。
 

@@ -42,6 +42,26 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '笔记详情', requiresAuth: true },
   },
   {
+    // 这两个路由共用 FollowListView，靠 route.name 区分「关注」还是「粉丝」。
+    // id 同样是雪花字符串，不要 Number()。
+    path: '/follow/:id(\\d+)',
+    name: 'follow',
+    component: () => import('@/views/FollowListView.vue'),
+    meta: { title: '关注', requiresAuth: true },
+  },
+  {
+    path: '/fans/:id(\\d+)',
+    name: 'fans',
+    component: () => import('@/views/FollowListView.vue'),
+    meta: { title: '粉丝', requiresAuth: true },
+  },
+  {
+    path: '/user/:id(\\d+)',
+    name: 'user',
+    component: () => import('@/views/UserView.vue'),
+    meta: { title: 'TA 的主页', requiresAuth: true },
+  },
+  {
     // 兜底放最后，防止前面所有路径被吃掉
     path: '/:pathMatch(.*)*',
     redirect: '/',

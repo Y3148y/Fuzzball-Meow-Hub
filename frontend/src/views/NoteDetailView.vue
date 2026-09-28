@@ -3,13 +3,57 @@ import { computed, nextTick, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { showConfirmDialog, showSuccessToast } from 'vant'
 import { collectNote, getNoteDetail, likeNote, uncollectNote, unlikeNote } from '@/api/note'
+import { followUser, unfollowUser } from '@/api/follow'
 import { createComment, deleteComment, listComments, replyComment } from '@/api/comment'
 import { BizError } from '@/api/request'
 import { ErrorCode } from '@/api/types'
 import type { CommentVO, NoteVO, PageVO } from '@/api/types'
+import { useUserStore } from '@/stores/user'
 
 const route = useRoute()
 const router = useRouter()
+const userStore = useUserStore()
+
+/* ---------------- 关注作者 ---------------- */
+
+/**
+ * 详情页不光要看内容，还要能顺手关注作者。和点赞/收藏同一套范式：
+ * busy 挡连点，状态永远用后端返回值写回。
+ *
+ * <p>这篇是自己发的就不显示按钮——接口本身会拦（40003），但没必要让
+ * 作者自己看自己还要挨一次错误提示。
+ */
+const followingAuthor = ref(false)
+
+const isMyNote = computed(
+  () => !!note.value?.authorId && note.value.authorId === userStore.userInfo?.id,
+)
+const isFollowingAuthor = computed(() => note.value?.authorFollowed === true)
+
+async function toggleFollowAuthor() {
+  const target = note.value
+  if (!target?.authorId || isMyNote.value || followingAuthor.value) return
+  followingAuthor.value = true
+  try {
+    const res = isFollowingAuthor.value
+      ? await unfollowUser(target.authorId)
+      : await followUser(target.authorId)
+    note.value = { ...target, authorFollowed: res.followed }
+    // 我的关注数变了，静默刷 store
+    void userStore.loadProfile().catch(() => {})
+  } catch (e) {
+    if (e instanceof BizError) {
+      // 40001/40002 是「本地状态和后端已经不同步」，静默重拉纠正，别弹错提示
+      if (e.code === ErrorCode.ALREADY_FOLLOWED || e.code === ErrorCode.NOT_FOLLOWED) {
+        await load()
+        return
+      }
+    }
+    throw e
+  } finally {
+    followingAuthor.value = false
+  }
+}
 
 const note = ref<NoteVO | null>(null)
 const loading = ref(true)
@@ -239,6 +283,17 @@ onMounted(async () => {
           <p class="nickname" data-test="note-detail-author">{{ note.authorNickname }}</p>
           <p class="time">{{ note.createTime.replace('T', ' ').slice(0, 16) }}</p>
         </div>
+        <button
+          v-if="!isMyNote"
+          class="follow"
+          :class="{ on: isFollowingAuthor }"
+          type="button"
+          :disabled="followingAuthor"
+          data-test="note-follow"
+          @click="toggleFollowAuthor"
+        >
+          {{ isFollowingAuthor ? '已关注' : '关注' }}
+        </button>
       </div>
 
       <p class="content" data-test="note-detail-content">{{ note.content }}</p>
@@ -474,6 +529,7 @@ onMounted(async () => {
 
 .names {
   min-width: 0;
+  flex: 1;
 }
 
 .nickname {
@@ -486,6 +542,29 @@ onMounted(async () => {
   margin: 2px 0 0;
   font-size: 12px;
   color: var(--xk-text-3);
+}
+
+.follow {
+  flex-shrink: 0;
+  padding: 5px 14px;
+  border: var(--xk-stroke-w) solid var(--xk-border);
+  border-radius: 999px;
+  background: var(--xk-surface-2);
+  color: var(--xk-text-2);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.follow.on {
+  background: var(--xk-amber);
+  color: var(--xk-amber-ink);
+  border-color: transparent;
+  font-weight: 700;
+}
+
+.follow:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .content {

@@ -128,13 +128,42 @@ DELETE FROM xiaoku_db.user WHERE username REGEXP '^ct2?_[a-z0-9]+$';
 
 ---
 
-## 6. 已完成状态（2026-09-27）
+## 6. 雪花 ID：Long 必须序列化成字符串
+
+这条是 P3 用契约测试抓出来的**真实缺陷**，不是风格偏好：
+
+```
+后端 ID  = 362756654342606850          （10^17 量级）
+JS 解析后 = 362756654342606848          JSON.parse 静默四舍五入
+```
+
+JS 的 `Number.MAX_SAFE_INTEGER` 只有 `9007199254740991`（约 9.007×10^15）。
+超出后**不抛错、不告警**，只是数悄悄变了。后果是回传 ID 查详情直接
+`20001 笔记不存在` —— 表现成「数据明明发过却查不到」，极难定位。
+
+因此：
+
+- `JacksonConfig` 只对 **Spring MVC 的 ObjectMapper** 注册 `ToStringSerializer`
+- **不要**改 `RedisObjectMapperProvider`：那是另一个 ObjectMapper 且带
+  `activateDefaultTyping`，缓存里落成字符串后反序列化回 `UserVO` 会类型不匹配
+- 非 ID 的数值别用 `Long`：`LoginVO.expiresIn` 已改成 `Integer`
+- 前端 `types.ts` 用 `SnowflakeId = string`，赋值时不要 `Number()` / `parseInt`
+- 契约测试里有两条断言专门钉这件事（类型必须是 string、BigInt 必须 > MAX_SAFE_INTEGER）
+
+## 7. 已完成状态（2026-09-27）
 
 - P0 环境编排 / P1 统一响应与异常 / P2 用户模块 + JWT / P4 部分（登录 + 首页）已合并推送
 - 品牌改名已落地（`62ed4c5`），测试通过且未改任何测试断言
-- 契约测试已落盘（`f8f412c`）
+- 契约测试已落盘（`f8f412c`），现为 **76 条断言**（P2 44 条 + P3 32 条）
 - 口令兜底修正 + 注释订正（`cf93b22`）
-- **下一步：P3 笔记发布 + 图片上传**
-  （`20xxx` 笔记域错误码已在 `ErrorCodeEnum.java:39` 预留：
-  `NOTE_NOT_FOUND` / `NOTE_STATUS_ILLEGAL` / `NOTE_UPLOAD_FAILED` / `NOTE_IMAGE_LIMIT_EXCEED`；
-  `schema.sql` 里还没建笔记表）
+- AGENTS.md 本身已提交（`3978ed0`）
+- **下一步：P3 前端**（后端已完工并通过 76/76）
+  - `module/note/` 发布 / 详情已实现；`common/storage/` 抽出 `ImageStorage`
+    抽象，`type=local` 落本地盘、`type=s3` 走 S3 协议
+  - 上传文件名**一律服务端生成 UUID**，扩展名按 content type 白名单反推，
+    绝不使用用户提供的原始文件名（防路径穿越与扩展名伪装）
+  - 笔记域错误码已在 `ErrorCodeEnum.java:39` 预留并在用：
+    `NOTE_NOT_FOUND` / `NOTE_STATUS_ILLEGAL` / `NOTE_UPLOAD_FAILED` /
+    `NOTE_IMAGE_LIMIT_EXCEED`（9 张上限）
+  - `schema.sql` 在 P0 就已建好全部 8 张表，含 `note` / `note_image`，
+    **P3 没有改 schema**

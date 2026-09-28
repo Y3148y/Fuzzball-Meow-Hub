@@ -51,6 +51,23 @@ public class UserQueryService {
     }
 
     /**
+     * 同 {@link #getUserVO}，但<b>用户不存在时返回 null 而不是抛异常</b>。
+     *
+     * <p>给「关联对象可能已被删除」的场景用，比如笔记详情要展示作者：
+     * 作者注销不该让整篇笔记 500。
+     *
+     * <p><b>刻意不写成 {@code getUserVO 内部调 findUserVO}：</b>
+     * 那是类内自调用，走不到代理，{@code @Cacheable} 会被静默跳过
+     * （原因见本类注释）。两个方法各自带注解、各自查库，
+     * 共享同一个 cacheName + key，不会互相污染。
+     */
+    @Cacheable(cacheNames = CacheNames.USER_INFO, key = "#userId", sync = true)
+    public UserVO findUserVO(Long userId) {
+        UserEntity user = userMapper.selectById(userId);
+        return user == null ? null : UserConverter.toVO(user);
+    }
+
+    /**
      * 用户信息变更后清缓存。
      *
      * <p><b>先删缓存还是先改库？</b>

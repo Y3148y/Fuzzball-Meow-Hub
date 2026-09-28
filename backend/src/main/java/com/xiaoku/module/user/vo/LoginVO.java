@@ -28,8 +28,15 @@ public class LoginVO implements Serializable {
     @Schema(description = "刷新令牌，仅用于换新的 accessToken")
     private String refreshToken;
 
+    /**
+     * access token 剩余有效秒数，前端据此提前刷新。
+     *
+     * <p>类型是 {@code Integer} 而非 {@code Long}：这是时长不是 ID，
+     * 不该被 JacksonConfig 的「Long 转字符串」规则波及。
+     * 秒数用 int 足够（int 上限约 68 年），前端拿到也就能直接做减法比较。
+     */
     @Schema(description = "access token 剩余有效秒数，前端据此提前刷新")
-    private Long expiresIn;
+    private Integer expiresIn;
 
     @Schema(description = "登录用户信息")
     private UserVO userInfo;

@@ -13,7 +13,9 @@
  * 这里是「接口契约快照」，作用是改 Controller / DTO / 拦截器时能立刻发现
  * 前端依赖的报文形状被改坏了。
  *
- * 依赖：Node 18+（用到全局 fetch）。默认打 http://localhost:8088，
+ * 覆盖范围：P2 用户模块（注册/登录/刷新/资料），P3 笔记域（上传/发布/详情）。
+ *
+ * 依赖：Node 18+（用到全局 fetch 与 FormData）。默认打 http://localhost:8088，
  * 换地址用 XK_API_BASE 覆盖。
  */
 
@@ -71,6 +73,37 @@ async function call(method, path, { token, body, raw } = {}) {
 const get = (p, o) => call('GET', p, o)
 const post = (p, o) => call('POST', p, o)
 const put = (p, o) => call('PUT', p, o)
+
+/** 1x1 透明 PNG，用来测图片上传 */
+const TINY_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+  'base64')
+
+/**
+ * multipart 图片上传。
+ *
+ * <b>刻意不手写 multipart 报文</b>：boundary 的换行、结尾 CRLF 一旦写错，
+ * 测出来的是「服务器解析失败」而不是「业务逻辑对不对」，属于自己骗自己。
+ * 用 FormData 让 undici 自己拼 boundary，和浏览器/前端发出来的形态一致。
+ */
+async function uploadImage(token, { name = 'tiny.png', type = 'image/png', bytes = TINY_PNG } = {}) {
+  const form = new FormData()
+  form.append('file', new Blob([bytes], { type }), name)
+  const res = await fetch(`${BASE}/api/note/image`, {
+    method: 'POST',
+    // 只带 Authorization：Content-Type 必须由 fetch 自己填，否则少了 boundary
+    headers: token ? { Authorization: token } : {},
+    body: form,
+  })
+  const text = await res.text()
+  let json = null
+  try {
+    json = JSON.parse(text)
+  } catch {
+    /* 保留 raw 形态供断言 */
+  }
+  return { status: res.status, json, text }
+}
 
 // ---------------------------------------------------------------- 预检
 
@@ -141,7 +174,14 @@ async function main() {
     const { json } = await post('/api/user/register', { body: { username: U, password: P, nickname: '契约测试' } })
     codeIs('注册成功', json, 0)
     userId = json?.data?.id
-    check('注册返回用户 ID', typeof userId === 'number' || typeof userId === 'bigint', `id=${userId}`)
+    check('注册返回用户 ID', typeof userId === 'string' && /^\d+$/.test(userId), `id=${userId}`)
+    // 雪花 ID 是 10^17 量级，JS 的 Number 存不下，超过 MAX_SAFE_INTEGER
+    // 会被静默四舍五入，回传后端就变成另一个 ID，表现为「明明有数据却查不到」。
+    // 所以后端必须把 Long 序列化成字符串，这里把这条钉死。
+    check('用户 ID 是字符串而不是 JSON 数字（否则前端会静默丢精度）',
+      typeof json?.data?.id === 'string', `实际类型 ${typeof json?.data?.id}`)
+    check('用户 ID 精度未被截断（与 ping 的雪花样本同量级）',
+      BigInt(userId) > 9007199254740991n, `BigInt=${userId}`)
     eq('注册返回的 username 正确', json?.data?.username, U)
     eq('注册返回的 nickname 取了传入值', json?.data?.nickname, '契约测试')
   }
@@ -254,7 +294,127 @@ async function main() {
     codeIs('性别越界被拦（100001）', json, 100001)
   }
 
-  // ---- 10. 不支持的方法
+  // ---- 10. P3 笔记域：图片上传
+  const createdNoteIds = []
+  const auth = `Bearer ${newAccess}`
+  {
+    const { json } = await post('/api/note/publish', { body: { title: 't', content: 'c' } })
+    codeIs('未登录不能发布笔记（10005）', json, 10005)
+  }
+  {
+    const { json } = await uploadImage(undefined)
+    codeIs('未登录不能上传图片（10005）', json, 10005)
+  }
+  {
+    const { json } = await uploadImage(auth, { type: 'application/x-sh', bytes: Buffer.from('#!/bin/sh\nrm -rf /\n') })
+    codeIs('非图片类型被拒（100001）', json, 100001)
+  }
+  {
+    const { json } = await uploadImage(auth, { bytes: Buffer.alloc(0) })
+    codeIs('空文件被拒（100001）', json, 100001)
+  }
+
+  let imageUrl = null
+  {
+    // 文件名故意写成路径穿越形态：服务端必须无视它
+    const { json } = await uploadImage(auth, { name: '../../../../etc/cron.d/evil.png' })
+    codeIs('上传真实 PNG 成功', json, 0)
+    imageUrl = json?.data?.url
+    check('返回的是 /static/uploads/ 下的 URL', typeof imageUrl === 'string' && imageUrl.startsWith('/static/uploads/'), `url=${imageUrl}`)
+    check('落盘文件名由服务端生成，不含原始文件名（防路径穿越/扩展名伪装）',
+      /^\/static\/uploads\/\d{4}\/\d{2}\/\d{2}\/[0-9a-f]{32}\.png$/.test(imageUrl ?? ''),
+      imageUrl ?? 'null')
+  }
+  {
+    // 上传完必须真的能取到，否则前端 <img> 全是碎图
+    const res = await fetch(`${BASE}${imageUrl}`)
+    eq('上传后的图片可以通过静态映射取回', res.status, 200)
+    check('Content-Type 是图片类型', (res.headers.get('content-type') ?? '').startsWith('image/'),
+      `content-type=${res.headers.get('content-type')}`)
+  }
+
+  // ---- 11. P3 笔记域：发布
+  let noteId = null
+  {
+    const { json } = await post('/api/note/publish', {
+      token: auth,
+      body: { title: '契约测试笔记', content: '正文内容', imageUrls: [imageUrl] },
+    })
+    codeIs('发布笔记成功', json, 0)
+    noteId = json?.data?.id
+    createdNoteIds.push(noteId)
+    check('返回笔记 ID', typeof noteId === 'string' && /^\d+$/.test(noteId), `noteId=${noteId}`)
+    eq('封面缺省取第一张图', json?.data?.cover, imageUrl)
+    eq('图片列表原样返回', JSON.stringify(json?.data?.images), JSON.stringify([imageUrl]))
+    eq('作者昵称带出', json?.data?.authorNickname, '改名后')
+    eq('未点赞时 liked 为 false', json?.data?.liked, false)
+    const keys = Object.keys(json?.data ?? {})
+    check('NoteVO 没有漏出内部字段 userId', !keys.includes('userId'), `字段=${keys.join(',')}`)
+  }
+  {
+    const { json } = await post('/api/note/publish', { token: auth, body: { title: '', content: 'c' } })
+    codeIs('空标题被拦（100001）', json, 100001)
+  }
+  {
+    const { json } = await post('/api/note/publish', { token: auth, body: { title: 't', content: 'x'.repeat(2001) } })
+    codeIs('正文超 2000 字被拦（100001）', json, 100001)
+  }
+  {
+    const { json } = await post('/api/note/publish', { token: auth, body: { title: 'x'.repeat(65), content: 'c' } })
+    codeIs('标题超 64 字被拦（100001）', json, 100001)
+  }
+  {
+    // 9 张是上限，10 张才越界：边界两侧都要测，只测 10 的话把 @Size 写成 10 也会通过
+    const nine = Array.from({ length: 9 }, () => imageUrl)
+    const { json } = await post('/api/note/publish', { token: auth, body: { title: '九图边界', content: 'c', imageUrls: nine } })
+    codeIs('9 张图在上限内，可以发布', json, 0)
+    createdNoteIds.push(json?.data?.id)
+  }
+  {
+    const ten = Array.from({ length: 10 }, () => imageUrl)
+    const { json } = await post('/api/note/publish', { token: auth, body: { title: '十图超限', content: 'c', imageUrls: ten } })
+    codeIs('10 张图越界，用专用错误码 20004 而不是通用 100001', json, 20004)
+  }
+  {
+    const { json } = await post('/api/note/publish', {
+      token: auth,
+      body: { title: 'xss', content: 'c', imageUrls: ['javascript:alert(1)'] },
+    })
+    codeIs('javascript: 图片地址被拒（100001，避免渲染成 XSS）', json, 100001)
+  }
+  {
+    const { json } = await post('/api/note/publish', {
+      token: auth,
+      body: { title: 'data', content: 'c', imageUrls: ['data:text/html;base64,PHNjcmlwdD4='] },
+    })
+    codeIs('data: 图片地址被拒（100001）', json, 100001)
+  }
+  {
+    const { json } = await post('/api/note/publish', { token: auth, body: { title: '视频', content: 'c', type: 2 } })
+    codeIs('视频笔记缺 videoUrl 被拦（100001）', json, 100001)
+  }
+  {
+    const { json } = await post('/api/note/publish', { token: auth, body: { title: '类型', content: 'c', type: 9 } })
+    codeIs('非法笔记类型被拦（100001）', json, 100001)
+  }
+
+  // ---- 12. P3 笔记域：详情
+  {
+    const { json } = await get(`/api/note/${noteId}`, { token: auth })
+    codeIs('查看笔记详情成功', json, 0)
+    eq('标题回显正确', json?.data?.title, '契约测试笔记')
+    eq('图片列表顺序保持上传顺序', JSON.stringify(json?.data?.images), JSON.stringify([imageUrl]))
+  }
+  {
+    const { json } = await get('/api/note/123456789012345', { token: auth })
+    codeIs('查不存在的笔记返回 20001', json, 20001)
+  }
+  {
+    const { json } = await get(`/api/note/${noteId}`)
+    codeIs('未登录不能看笔记详情（10005，默认全部需要登录）', json, 10005)
+  }
+
+  // ---- 13. 不支持的方法
   {
     const { json } = await call('DELETE', '/api/user/login')
     codeIs('不支持的请求方法被统一处理（100002）', json, 100002)
@@ -267,10 +427,14 @@ async function main() {
     console.log(`失败用例：\n${failures.map((f) => '  - ' + f).join('\n')}`)
     process.exit(1)
   }
-  // 本脚本只走 HTTP，没有删用户接口，跑完会留下 2 个测试账号。
+  // 本脚本只走 HTTP，没有删用户/删笔记接口，跑完会留下测试账号与测试笔记。
   // 这里直接把清理 SQL 打出来，省得下次翻聊天记录找。
-  console.log(`\n测试账号 ${U} / ct2_${stamp} 已留在库里，清理：`)
+  const noteList = createdNoteIds.filter((n) => typeof n === 'string').join(', ')
+  console.log(`\n测试账号 ${U} / ct2_${stamp} 与笔记 ${noteList} 已留在库里，清理：`)
+  console.log(`  DELETE FROM xiaoku_db.note_image WHERE note_id IN (${noteList});`)
+  console.log(`  DELETE FROM xiaoku_db.note WHERE id IN (${noteList});`)
   console.log(`  DELETE FROM xiaoku_db.user WHERE username IN ('${U}', 'ct2_${stamp}');`)
+  console.log(`  图片文件在 backend/uploads/（已 gitignore），要清就整个删掉该目录`)
 }
 
 main().catch((e) => {

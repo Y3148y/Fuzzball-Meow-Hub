@@ -103,7 +103,7 @@ public class UserServiceImpl implements UserService {
         return LoginVO.builder()
                 .accessToken(accessToken)
                 .refreshToken(refreshToken)
-                .expiresIn(TimeUnit.MINUTES.toSeconds(jwtProperties.getAccessTokenTtlMinutes()))
+                .expiresIn(Math.toIntExact(TimeUnit.MINUTES.toSeconds(jwtProperties.getAccessTokenTtlMinutes())))
                 .userInfo(UserConverter.toVO(user))
                 .build();
     }
@@ -128,7 +128,7 @@ public class UserServiceImpl implements UserService {
         return LoginVO.builder()
                 .accessToken(jwtUtil.createAccessToken(user.getId(), user.getUsername()))
                 .refreshToken(jwtUtil.createRefreshToken(user.getId()))
-                .expiresIn(TimeUnit.MINUTES.toSeconds(jwtProperties.getAccessTokenTtlMinutes()))
+                .expiresIn(Math.toIntExact(TimeUnit.MINUTES.toSeconds(jwtProperties.getAccessTokenTtlMinutes())))
                 .userInfo(UserConverter.toVO(user))
                 .build();
     }

@@ -28,6 +28,11 @@ export const ErrorCode = {
   REPEAT_SUBMIT: 100004,
   RATE_LIMITED: 100005,
   SYSTEM_ERROR: 100999,
+  // 20xxx 笔记域
+  NOTE_NOT_FOUND: 20001,
+  NOTE_STATUS_ILLEGAL: 20002,
+  NOTE_UPLOAD_FAILED: 20003,
+  NOTE_IMAGE_LIMIT_EXCEED: 20004,
 } as const
 
 /**
@@ -40,9 +45,20 @@ export const AUTH_ERROR_CODES: readonly number[] = [
   ErrorCode.TOKEN_INVALID,
 ]
 
+/**
+ * <b>雪花 ID 是字符串，不是 number。</b>
+ *
+ * <p>后端 JacksonConfig 把 Long 一律序列化成字符串。原因是雪花 ID 量级 10^17，
+ * 超出 JS 的 Number.MAX_SAFE_INTEGER（9.007×10^15），
+ * 用 number 接收会静默丢精度：JSON.parse 出来的值和后端存的不是同一个数，
+ * 回传查询就「明明有数据却查不到」。
+ * 所以类型必须写 string，赋值时也不要用 Number()/parseInt 转换。
+ */
+export type SnowflakeId = string
+
 /** 用户信息，对应后端 UserVO */
 export interface UserVO {
-  id: number
+  id: SnowflakeId
   username: string
   nickname: string
   avatar: string | null
@@ -52,7 +68,7 @@ export interface UserVO {
   followCount: number
   fansCount: number
   likeReceivedCount: number
-  /** 后端是 LocalDateTime，默认序列化成 "2026-09-23T10:58:35" */
+  /** 后端是 LocalDateTime，默认序列化出 "2026-09-23T10:58:35" */
   createTime: string
 }
 
@@ -80,7 +96,46 @@ export interface RegisterDTO {
 export interface PingVO {
   applicationName: string
   machineId: number
-  snowflakeId: number
+  /** 雪花 ID 样本，同样是字符串 */
+  snowflakeId: SnowflakeId
   snowflakeParsed: string
   serverTime: string
+}
+
+/** 单篇笔记图片上限，与后端 NOTE_IMAGE_LIMIT_EXCEED 的文案一致 */
+export const NOTE_IMAGE_LIMIT = 9
+
+/** 笔记详情，对应后端 NoteVO */
+export interface NoteVO {
+  id: SnowflakeId
+  /** 1 图文 2 视频 */
+  type: number
+  title: string
+  content: string
+  cover: string | null
+  videoUrl: string | null
+  likeCount: number
+  collectCount: number
+  commentCount: number
+  /** 当前登录用户是否已点赞 */
+  liked: boolean
+  authorNickname: string
+  authorAvatar: string | null
+  /** 按上传顺序返回 */
+  images: string[]
+  createTime: string
+}
+
+/** 发布笔记请求体 */
+export interface NotePublishDTO {
+  title: string
+  content: string
+  type?: number
+  imageUrls?: string[]
+  videoUrl?: string
+}
+
+/** 上传单张图片的返回体 */
+export interface ImageUploadVO {
+  url: string
 }

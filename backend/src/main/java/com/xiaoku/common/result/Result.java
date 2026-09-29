@@ -3,6 +3,7 @@ package com.xiaoku.common.result;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.io.Serial;
 import java.io.Serializable;
@@ -20,6 +21,13 @@ import java.io.Serializable;
  * @param <T> 业务数据类型
  */
 @Data
+// 无参构造器专供 Jackson 反序列化：幂等回放要把缓存下来的响应 JSON
+// 还原成 Result 再返回。不能省——下面那个构造器是 private 且带参，
+// Jackson 没有参数名模块时建不出实例（会报 no suitable constructor）。
+// 顺带一提，回放值必须能赋给控制器的声明返回类型：Spring 用的是
+// CGLIB 类代理，生成的方法体里有一句 return (Result) advice的返回值，
+// 所以回放时返回 Map 会在代理里抛 ClassCastException，不是消息转换器的事。
+@NoArgsConstructor
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class Result<T> implements Serializable {
 

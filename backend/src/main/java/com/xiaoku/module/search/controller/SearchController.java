@@ -1,5 +1,6 @@
 package com.xiaoku.module.search.controller;
 
+import com.xiaoku.common.annotation.RateLimit;
 import com.xiaoku.common.result.PageVO;
 import com.xiaoku.common.result.Result;
 import com.xiaoku.module.note.vo.NoteListItemVO;
@@ -33,6 +34,9 @@ public class SearchController {
 
     @Operation(summary = "搜索笔记",
             description = "对标题（权重2）与正文做 multi_match 全文搜索，只返回已发布笔记，按相关性与时间倒序分页")
+    // 搜索是最容易被爬的读接口（不需要登录态也能猜到 URL），阈值给到 60/分钟
+    @RateLimit(count = 60, seconds = 60, dimension = RateLimit.Dimension.USER,
+            message = "搜索太频繁啦，1 分钟内最多 60 次")
     @GetMapping("/note")
     public Result<PageVO<NoteListItemVO>> search(
             @Parameter(description = "搜索关键词，不能为空") @RequestParam String keyword,
@@ -45,6 +49,10 @@ public class SearchController {
 
     @Operation(summary = "重建笔记索引",
             description = "删旧索引 + 按 mapping 重建 + MySQL 全量回灌已发布笔记。事件管道丢了数据、索引被误删时用它拉回")
+    // 重建是「删索引 + 全量回灌」的重操作，绝不能被随手连点：
+    // 阈值 3/分钟，且按用户限流而不是按 IP，多个人一起点也拦得住同一个账号的连击。
+    @RateLimit(count = 3, seconds = 60, dimension = RateLimit.Dimension.USER,
+            message = "索引重建太频繁啦，1 分钟内最多 3 次")
     @PostMapping("/reindex")
     public Result<Map<String, Integer>> reindex() {
         return Result.success(Map.of("indexed", searchService.rebuildNoteIndex()));

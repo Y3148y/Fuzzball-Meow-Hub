@@ -1,5 +1,7 @@
 package com.xiaoku.module.comment.controller;
 
+import com.xiaoku.common.annotation.Idempotent;
+import com.xiaoku.common.annotation.RateLimit;
 import com.xiaoku.common.result.PageVO;
 import com.xiaoku.common.result.Result;
 import com.xiaoku.module.comment.dto.CommentCreateDTO;
@@ -43,6 +45,11 @@ public class CommentController {
 
     @Operation(summary = "发表评论",
             description = "带 parentId 即为回复。不允许评论自己的笔记（30007）")
+    // 评论是无成本高收益的刷量入口（注册即可发），阈值给到 10/分钟
+    @RateLimit(count = 10, seconds = 60, dimension = RateLimit.Dimension.USER,
+            message = "评论太频繁啦，1 分钟内最多 10 条")
+    // 评论重复 = 同一条评论出现两遍，是最容易被用户直接指出来的功能缺陷
+    @Idempotent
     @PostMapping
     public Result<CommentVO> create(@RequestBody @Valid CommentCreateDTO dto) {
         return Result.success(commentService.create(dto));

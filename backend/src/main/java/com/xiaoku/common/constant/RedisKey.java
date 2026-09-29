@@ -30,17 +30,14 @@ public final class RedisKey {
     /** 关注流 ZSet xk:feed:follow:{userId} */
     public static final String FEED_FOLLOW = PREFIX + "feed:follow:";
 
-    /** 点赞用户集合 ZSet xk:note:like:users:{noteId} */
+    /** 点赞用户集合 ZSet xk:note:like:users:{noteId}，member=userId，当前权威「谁点过」 */
     public static final String NOTE_LIKE_USERS = PREFIX + "note:like:users:";
 
-    /** 收藏用户集合 ZSet xk:note:collect:users:{noteId} */
+    /** 收藏用户集合 ZSet xk:note:collect:users:{noteId}，member=userId，当前权威「谁收藏过」 */
     public static final String NOTE_COLLECT_USERS = PREFIX + "note:collect:users:";
 
-    /** 笔记点赞计数（待落库增量） xk:note:like:delta:{noteId} */
-    public static final String NOTE_LIKE_DELTA = PREFIX + "note:like:delta:";
-
-    /** 笔记收藏计数（待落库增量） xk:note:collect:delta:{noteId} */
-    public static final String NOTE_COLLECT_DELTA = PREFIX + "note:collect:delta:";
+    /** 待落库的笔记 ID 集合（Set）xk:note:dirty，计数落库任务按它批量对账 */
+    public static final String NOTE_DIRTY = PREFIX + "note:dirty";
 
     /** 布隆过滤器（笔记ID是否真实存在） xk:bloom:note:id */
     public static final String BLOOM_NOTE_ID = PREFIX + "bloom:note:id";

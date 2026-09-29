@@ -1,5 +1,6 @@
 package com.xiaoku.module.user.controller;
 
+import com.xiaoku.common.annotation.RateLimit;
 import com.xiaoku.common.context.UserContextHolder;
 import com.xiaoku.common.result.Result;
 import com.xiaoku.common.util.JwtUtil;
@@ -30,12 +31,19 @@ public class UserController {
     private final JwtUtil jwtUtil;
 
     @Operation(summary = "注册", description = "用户名唯一，注册成功后直接返回用户信息，不自动登录")
+    @RateLimit(count = 10, seconds = 60, dimension = RateLimit.Dimension.IP,
+            message = "注册过于频繁，请 1 分钟后再试")
     @PostMapping("/register")
     public Result<UserVO> register(@RequestBody @Valid UserRegisterDTO dto) {
         return Result.success(userService.register(dto));
     }
 
     @Operation(summary = "登录", description = "返回 accessToken(2h) 与 refreshToken(30d)")
+    // 阈值给到 60/分钟而不是 10/分钟：登录限流是防「撞库」的，
+    // 而正常用户在同一出口 IP（公司 / 网吧 / 校园网）下可能有好几个人共用一个额度。
+    // 定得太紧会误伤，定得太松又挡不住真正的爆破——60 次/分钟已经远超人手速。
+    @RateLimit(count = 60, seconds = 60, dimension = RateLimit.Dimension.IP,
+            message = "登录尝试过于频繁，请 1 分钟后再试")
     @PostMapping("/login")
     public Result<LoginVO> login(@RequestBody @Valid UserLoginDTO dto) {
         return Result.success(userService.login(dto));

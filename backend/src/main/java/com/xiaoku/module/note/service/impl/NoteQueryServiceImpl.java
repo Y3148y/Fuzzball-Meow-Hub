@@ -6,6 +6,7 @@ import com.xiaoku.common.context.UserContextHolder;
 import com.xiaoku.common.exception.BizException;
 import com.xiaoku.common.result.ErrorCodeEnum;
 import com.xiaoku.common.result.PageVO;
+import com.xiaoku.common.support.NoteIdBloomFilter;
 import com.xiaoku.module.follow.service.UserFollowQueryService;
 import com.xiaoku.module.note.converter.NoteConverter;
 import com.xiaoku.module.note.entity.NoteEntity;
@@ -17,6 +18,7 @@ import com.xiaoku.module.note.mapper.NoteLikeMapper;
 import com.xiaoku.module.note.mapper.NoteCollectMapper;
 import com.xiaoku.module.note.mapper.NoteMapper;
 import com.xiaoku.module.note.service.NoteQueryService;
+import com.xiaoku.module.note.support.NoteCounterStore;
 import com.xiaoku.module.note.vo.NoteListItemVO;
 import com.xiaoku.module.note.vo.NoteVO;
 import com.xiaoku.module.user.service.UserQueryService;
@@ -43,6 +45,8 @@ public class NoteQueryServiceImpl implements NoteQueryService {
     private final NoteCollectMapper noteCollectMapper;
     private final UserQueryService userQueryService;
     private final UserFollowQueryService userFollowQueryService;
+    private final NoteIdBloomFilter bloomFilter;
+    private final NoteCounterStore counterStore;
 
     /**
      * <b>笔记详情需要登录。</b>
@@ -57,6 +61,13 @@ public class NoteQueryServiceImpl implements NoteQueryService {
     @Override
     public NoteVO getDetail(Long noteId) {
         Long currentUserId = UserContextHolder.requireUserId();
+
+        // 布隆过滤：id 一定不存在时，不碰缓存和 MySQL 直接返回 20001。
+        // 这就是防穿透的全部意义——把「扫 ID」请求挡在数据访问层之前。
+        // mightContain 在未回灌完成 / Redis 异常时恒返回 true（放行），见类的实现注释。
+        if (!bloomFilter.mightContain(noteId)) {
+            throw new BizException(ErrorCodeEnum.NOTE_NOT_FOUND);
+        }
 
         NoteEntity note = noteMapper.selectById(noteId);
         if (note == null) {
@@ -82,19 +93,43 @@ public class NoteQueryServiceImpl implements NoteQueryService {
                 .map(NoteImageEntity::getUrl)
                 .toList();
 
-        boolean liked = noteLikeMapper.selectCount(Wrappers.<NoteLikeEntity>lambdaQuery()
-                .eq(NoteLikeEntity::getUserId, currentUserId)
-                .eq(NoteLikeEntity::getNoteId, noteId)) > 0;
+        // P8：互动状态优先读 Redis（ZSCORE），Redis 答不了（key 缺失 / 连不上）
+        // 才回退 DB——「缓存丢了」绝不等于「没点过」，见 NoteCounterStore。
+        Boolean likedR = counterStore.isLiked(noteId, currentUserId);
+        boolean liked = likedR != null
+                ? likedR
+                : noteLikeMapper.selectCount(Wrappers.<NoteLikeEntity>lambdaQuery()
+                        .eq(NoteLikeEntity::getUserId, currentUserId)
+                        .eq(NoteLikeEntity::getNoteId, noteId)) > 0;
 
-        boolean collected = noteCollectMapper.selectCount(Wrappers.<NoteCollectEntity>lambdaQuery()
-                .eq(NoteCollectEntity::getUserId, currentUserId)
-                .eq(NoteCollectEntity::getNoteId, noteId)) > 0;
+        Boolean collectedR = counterStore.isCollected(noteId, currentUserId);
+        boolean collected = collectedR != null
+                ? collectedR
+                : noteCollectMapper.selectCount(Wrappers.<NoteCollectEntity>lambdaQuery()
+                        .eq(NoteCollectEntity::getUserId, currentUserId)
+                        .eq(NoteCollectEntity::getNoteId, noteId)) > 0;
 
         // 自己是作者时恒为 false：40003 挡住了关注自己，这里同构地输出 false
         boolean authorFollowed = userFollowQueryService.isFollowing(currentUserId, note.getUserId());
 
-        return NoteConverter.toVO(note, userQueryService.findUserVO(note.getUserId()), images,
+        NoteVO vo = NoteConverter.toVO(note, userQueryService.findUserVO(note.getUserId()), images,
                 liked, collected, authorFollowed);
+        // 计数以 Redis 为准；key 缺失（被驱逐/清库/多实例分发）时回退「DB 关系行的实时数」，
+        // 不能回退 note.like_count 列——那是异步落库的产物，最多滞后 30s，
+        // 详情页拿滞后值会对不上「刚点赞完的 +1」。
+        Long likeCount = counterStore.likeCount(noteId);
+        if (likeCount == null) {
+            likeCount = noteLikeMapper.selectCount(Wrappers.<NoteLikeEntity>lambdaQuery()
+                    .eq(NoteLikeEntity::getNoteId, noteId));
+        }
+        Long collectCount = counterStore.collectCount(noteId);
+        if (collectCount == null) {
+            collectCount = noteCollectMapper.selectCount(Wrappers.<NoteCollectEntity>lambdaQuery()
+                    .eq(NoteCollectEntity::getNoteId, noteId));
+        }
+        vo.setLikeCount(Math.toIntExact(likeCount));
+        vo.setCollectCount(Math.toIntExact(collectCount));
+        return vo;
     }
 
     @Override
@@ -117,6 +152,8 @@ public class NoteQueryServiceImpl implements NoteQueryService {
 
         // 这一页全是同一个作者的笔记，authorFollowed 算一次即可
         boolean authorFollowed = userFollowQueryService.isFollowing(currentUserId, userId);
+        // P8：整页卡片计数以 Redis 为准（pipeline 一次往返），缺失的保持 DB 现值
+        counterStore.applyCounts(result.getRecords());
         List<NoteListItemVO> voList = result.getRecords().stream()
                 .map(note -> NoteConverter.toListItemVO(note, author, authorFollowed))
                 .toList();

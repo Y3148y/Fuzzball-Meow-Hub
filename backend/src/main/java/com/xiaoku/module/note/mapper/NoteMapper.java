@@ -10,26 +10,33 @@ import org.apache.ibatis.annotations.Update;
 public interface NoteMapper extends BaseMapper<NoteEntity> {
 
     /**
-     * 点赞数 ±1。
+     * 按绝对值覆盖点赞/收藏计数（P8 对账用，取代旧的 ±1 逐次 UPDATE）。
      *
-     * <p><b>刻意写成 {@code like_count = like_count + 1} 这样的单条原子 SQL</b>，
-     * 而不是「先 select 出计数 → Java 里 +1 → update 写回」。
-     * 后者在并发下必然丢计数：A 和 B 同时读到 10，各自算出 11，
-     * 最后写回 11，点赞了两次却只记了 1。把加减法交给数据库的
-     * 行锁（InnoDB 对同一行的 UPDATE 会串行化）才不会丢。
+     * <p>动态 {@code <set>}：只更新非 null 的那一列，避免把「某一边集合缺失」时的
+     * 缺失值当成 0 写坏另一边。计数权威在 Redis ZSet，DB 这边由
+     * {@code NoteCounterFlushJob} 定期对账，绝对值覆盖天然幂等——
+     * 上一轮死在任何位置，重跑结果都一样（这正是增量累加做不到的）。
      *
-     * <p>另外注意<b>不能</b>用 MyBatis-Plus 的 {@code lambdaUpdate().set(...)}：
-     * 那是「把这个字段设为某个值」，语义和自增不同，仍需先读后写。
-     *
-     * @param delta +1 或 -1
-     * @return 受影响行数；0 表示笔记不存在
+     * <p>旧方法：{@code like_count = like_count + 1} 靠 DB 行锁防并发丢数，
+     * 但每次互动都打一次这一行，压力全在单行 UPDATE 上。P8 改为
+     * 「DB 关系行（唯一索引当裁判）→ Redis ZSet（计数）→ 定期对账落回 DB」，
+     * 写入只碰 Redis（ZADD/ZREM + SREM 打脏），读只读 Redis，
+     * DB 计数列成为可容忍 <30s 延迟的底账。旧的 {@code updateLikeCount}
+     * 也就是上面那个语义，已被 {@link #updateCountsAbs} 取代。
      */
-    @Update("UPDATE note SET like_count = like_count + #{delta} WHERE id = #{noteId}")
-    int updateLikeCount(@Param("noteId") Long noteId, @Param("delta") int delta);
-
-    /** 收藏数 ±1，同 {@link #updateLikeCount} 的理由 */
-    @Update("UPDATE note SET collect_count = collect_count + #{delta} WHERE id = #{noteId}")
-    int updateCollectCount(@Param("noteId") Long noteId, @Param("delta") int delta);
+    @Update("""
+            <script>
+            UPDATE note
+            <set>
+              <if test="like != null">like_count = #{like},</if>
+              <if test="collect != null">collect_count = #{collect},</if>
+            </set>
+            WHERE id = #{noteId}
+            </script>
+            """)
+    int updateCountsAbs(@Param("noteId") Long noteId,
+                        @Param("like") Integer like,
+                        @Param("collect") Integer collect);
 
     /** 评论数 +1 */
     @Update("UPDATE note SET comment_count = comment_count + 1 WHERE id = #{noteId}")

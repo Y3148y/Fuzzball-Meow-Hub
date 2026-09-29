@@ -8,10 +8,12 @@ import com.xiaoku.common.context.UserContextHolder;
 import com.xiaoku.common.exception.BizException;
 import com.xiaoku.common.result.ErrorCodeEnum;
 import com.xiaoku.common.result.PageVO;
+import com.xiaoku.common.support.LockTemplate;
 import com.xiaoku.module.follow.service.UserFollowQueryService;
 import com.xiaoku.module.note.converter.NoteConverter;
 import com.xiaoku.module.note.entity.NoteEntity;
 import com.xiaoku.module.note.mapper.NoteMapper;
+import com.xiaoku.module.note.support.NoteCounterStore;
 import com.xiaoku.module.note.vo.NoteListItemVO;
 import com.xiaoku.module.search.doc.NoteSearchDoc;
 import com.xiaoku.module.search.repository.NoteSearchRepository;
@@ -30,6 +32,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.time.Duration;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -60,11 +63,16 @@ public class SearchServiceImpl implements SearchService {
 
     private static final int REINDEX_BATCH_SIZE = 1000;
 
+    /** 重建是「删旧索引 + 从库回灌」的重操作，两点并发会互相拆台，用锁串行化 */
+    private static final String REINDEX_LOCK_KEY = "xiaoku:lock:search:reindex";
+
     private final ElasticsearchOperations operations;
     private final NoteSearchRepository noteSearchRepository;
     private final NoteMapper noteMapper;
     private final UserQueryService userQueryService;
     private final UserFollowQueryService userFollowQueryService;
+    private final NoteCounterStore counterStore;
+    private final LockTemplate lockTemplate;
 
     @Override
     public PageVO<NoteListItemVO> searchNote(String keyword, int page, int size) {
@@ -109,6 +117,19 @@ public class SearchServiceImpl implements SearchService {
 
     @Override
     public int rebuildNoteIndex() {
+        // 非阻塞拿锁：有人在重建就让路，别两个请求同时 delete + 回灌。
+        // Redis 不可用时 LockTemplate 会 fail-open（单机部署值得），
+        // 所以 null 的唯一含义就是「确确实实被另一个重建占着」。
+        try (LockTemplate.LockHandle held = lockTemplate.tryLock(
+                REINDEX_LOCK_KEY, Duration.ZERO, Duration.ofSeconds(30))) {
+            if (held == null) {
+                throw new BizException(ErrorCodeEnum.SEARCH_SERVICE_ERROR, "已有重建任务在跑，请稍后再试");
+            }
+            return doRebuild();
+        }
+    }
+
+    private int doRebuild() {
         var indexOps = operations.indexOps(NoteSearchDoc.class);
         if (indexOps.exists()) {
             indexOps.delete();
@@ -163,6 +184,8 @@ public class SearchServiceImpl implements SearchService {
         Map<Long, UserVO> users = userQueryService.findUserVOMap(authorIds);
         Set<Long> following = userFollowQueryService.batchFollowingIds(currentUserId, authorIds);
 
+        // P8：搜索结果卡片计数以 Redis 为准（整页一次 pipeline），缺失的保持 DB 现值
+        counterStore.applyCounts(kept);
         return kept.stream()
                 .map(note -> NoteConverter.toListItemVO(note,
                         users.get(note.getUserId()),

@@ -3,6 +3,7 @@ package com.xiaoku.module.note.service.impl;
 import com.xiaoku.common.context.UserContextHolder;
 import com.xiaoku.common.exception.BizException;
 import com.xiaoku.common.result.ErrorCodeEnum;
+import com.xiaoku.common.support.NoteIdBloomFilter;
 import com.xiaoku.common.storage.ImageStorage;
 import com.xiaoku.module.note.converter.NoteConverter;
 import com.xiaoku.module.note.dto.NotePublishDTO;
@@ -44,6 +45,7 @@ public class NoteServiceImpl implements NoteService {
     private final UserQueryService userQueryService;
     private final ImageStorage imageStorage;
     private final KafkaTemplate<String, Object> kafkaTemplate;
+    private final NoteIdBloomFilter bloomFilter;
 
     @Value("${xiaoku.kafka.note-topic}")
     private String noteEventTopic;
@@ -78,6 +80,9 @@ public class NoteServiceImpl implements NoteService {
         note.setCover(images.isEmpty() ? null : images.get(0));
         note.setStatus(1);
         noteMapper.insert(note);
+        // 提前置位（事务提交前）：假阳性只多查一次库，「漏置位 = 详情 404」才是要命的。
+        // 详见 NoteIdBloomFilter 的类注释
+        bloomFilter.add(note.getId());
 
         for (int i = 0; i < images.size(); i++) {
             NoteImageEntity image = new NoteImageEntity();

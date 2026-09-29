@@ -12,6 +12,7 @@ import com.xiaoku.module.note.mapper.NoteLikeMapper;
 import com.xiaoku.module.note.mapper.NoteMapper;
 import com.xiaoku.module.note.service.NoteInteractionService;
 import com.xiaoku.module.note.service.NoteQueryService;
+import com.xiaoku.module.note.support.NoteCounterStore;
 import com.xiaoku.module.note.vo.NoteVO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -30,6 +31,7 @@ public class NoteInteractionServiceImpl implements NoteInteractionService {
     private final NoteLikeMapper noteLikeMapper;
     private final NoteCollectMapper noteCollectMapper;
     private final NoteQueryService noteQueryService;
+    private final NoteCounterStore counterStore;
 
     /**
      * <b>防重为什么不写成「先 select 查一下再 insert」？</b>
@@ -55,10 +57,14 @@ public class NoteInteractionServiceImpl implements NoteInteractionService {
         try {
             noteLikeMapper.insert(like);
         } catch (DuplicateKeyException e) {
+            // 重复点赞：把 Redis 成员也补齐（自愈：万一上次 Redis 写入没落），再报已点赞
+            counterStore.like(noteId, userId, () -> noteLikeMapper.selectUserIds(noteId));
             throw new BizException(ErrorCodeEnum.ALREADY_LIKED);
         }
 
-        noteMapper.updateLikeCount(noteId, 1);
+        // 计数写入走 Redis（ZSET 置位 + 打脏），不再逐次 update DB 计数列，
+        // 由 NoteCounterFlushJob 每 30s 按绝对值对账落库。
+        counterStore.like(noteId, userId, () -> noteLikeMapper.selectUserIds(noteId));
         return noteQueryService.getDetail(noteId);
     }
 
@@ -72,14 +78,15 @@ public class NoteInteractionServiceImpl implements NoteInteractionService {
          *
          * <p><b>但注意一个当前阶段修不掉的坑</b>：末尾的 getDetail 会对
          * 已下架的笔记抛 20002，而本方法是 @Transactional，异常会连带
-         * 上面已经执行成功的 delete 和计数自增一起回滚。
+         * 上面已经执行成功的 delete 和计数变更一起回滚。
          * 也就是说「笔记下架之后用户再也无法取消点赞，计数定格在那儿」。
          *
-         * <p>要真正修好得让 getDetail 对「非本人可见的未发布内容」有个内部旁路，
-         * 但那会牵出一个更难的问题：一个曾经点过赞的路人，是否有权在取消时
-         * 读到这篇草稿的内容。所以这里不猜语义，把缺口写清楚。
-         * P5 没有下架/编辑接口，这条分支目前<b>无法被触发</b>，也就无从测试；
-         * 等真正做管理端时，连同计数重算策略一起处理。
+         * <p>P8 之前计数是 update DB ±1，回滚删关系会一并回滚计数；
+         * 现在计数在 Redis（ZREM + 打脏），回滚只回滚 DB 关系行——Redis 侧
+         * 已经减掉的那个成员不会被还回来，DB 与 Redis 会短暂不一致，
+         * 只能靠 NoteCounterFlushJob 的绝对值对账收敛（它在两边都缺时不动 DB）。
+         * 与 P5 的结论一致：真正修好需要给 getDetail 开「非本人可见」的内部旁路，
+         * 留到做管理端时一并处理。
          */
         int deleted = noteLikeMapper.delete(Wrappers.<NoteLikeEntity>lambdaQuery()
                 .eq(NoteLikeEntity::getUserId, userId)
@@ -89,7 +96,7 @@ public class NoteInteractionServiceImpl implements NoteInteractionService {
             throw new BizException(ErrorCodeEnum.NOT_LIKED_YET);
         }
 
-        noteMapper.updateLikeCount(noteId, -1);
+        counterStore.unlike(noteId, userId, () -> noteLikeMapper.selectUserIds(noteId));
         return noteQueryService.getDetail(noteId);
     }
 
@@ -105,10 +112,11 @@ public class NoteInteractionServiceImpl implements NoteInteractionService {
         try {
             noteCollectMapper.insert(collect);
         } catch (DuplicateKeyException e) {
+            counterStore.collect(noteId, userId, () -> noteCollectMapper.selectUserIds(noteId));
             throw new BizException(ErrorCodeEnum.ALREADY_COLLECTED);
         }
 
-        noteMapper.updateCollectCount(noteId, 1);
+        counterStore.collect(noteId, userId, () -> noteCollectMapper.selectUserIds(noteId));
         return noteQueryService.getDetail(noteId);
     }
 
@@ -124,7 +132,7 @@ public class NoteInteractionServiceImpl implements NoteInteractionService {
             throw new BizException(ErrorCodeEnum.NOT_COLLECTED_YET);
         }
 
-        noteMapper.updateCollectCount(noteId, -1);
+        counterStore.uncollect(noteId, userId, () -> noteCollectMapper.selectUserIds(noteId));
         return noteQueryService.getDetail(noteId);
     }
 

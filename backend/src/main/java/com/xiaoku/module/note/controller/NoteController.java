@@ -1,5 +1,7 @@
 package com.xiaoku.module.note.controller;
 
+import com.xiaoku.common.annotation.Idempotent;
+import com.xiaoku.common.annotation.RateLimit;
 import com.xiaoku.common.result.PageVO;
 import com.xiaoku.common.result.Result;
 import com.xiaoku.module.note.dto.NotePublishDTO;
@@ -33,6 +35,12 @@ public class NoteController {
 
     @Operation(summary = "发布笔记",
             description = "图文笔记最多 9 张图；图片需先调 /api/note/image 换取 URL 再随本请求提交")
+    // 写接口按登录用户限流：一个人一天发几百篇要么是机器人，要么是刷屏，
+    // 两种都不该占用索引和搜索资源。按 userId 而非 IP 是为了让「换设备继续发」也被算进来。
+    @RateLimit(count = 20, seconds = 60, dimension = RateLimit.Dimension.USER,
+            message = "发布太频繁啦，1 分钟内最多 20 篇")
+    // 弱网重发是「一篇笔记发两遍」的主要来源；同一个 X-Idempotency-Key 重发只会拿到同一个 noteId
+    @Idempotent
     @PostMapping("/publish")
     public Result<NoteVO> publish(@RequestBody @Valid NotePublishDTO dto) {
         return Result.success(noteService.publish(dto));
@@ -40,6 +48,12 @@ public class NoteController {
 
     @Operation(summary = "上传单张图片",
             description = "multipart/form-data，字段名 file。仅支持 jpg/png/webp/gif，单张不超过 10MB")
+    // 上传是唯一会吃磁盘和带宽的接口，阈值给得比发布更紧
+    @RateLimit(count = 30, seconds = 60, dimension = RateLimit.Dimension.USER,
+            message = "上传太频繁啦，1 分钟内最多 30 张")
+    // 上传重试会多出一个孤儿文件（图片已落盘，笔记却没引用它），
+    // 幂等让重试拿回同一个 URL，不会越传越多
+    @Idempotent
     @PostMapping("/image")
     public Result<Map<String, String>> uploadImage(
             @Parameter(description = "图片文件", required = true)

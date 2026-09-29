@@ -6,6 +6,7 @@ import com.xiaoku.module.feed.mapper.FeedMapper;
 import com.xiaoku.module.feed.service.FeedService;
 import com.xiaoku.module.note.converter.NoteConverter;
 import com.xiaoku.module.note.entity.NoteEntity;
+import com.xiaoku.module.note.support.NoteCounterStore;
 import com.xiaoku.module.note.vo.NoteListItemVO;
 import com.xiaoku.module.user.service.UserQueryService;
 import com.xiaoku.module.user.vo.UserVO;
@@ -23,6 +24,7 @@ public class FeedServiceImpl implements FeedService {
 
     private final FeedMapper feedMapper;
     private final UserQueryService userQueryService;
+    private final NoteCounterStore counterStore;
 
     @Override
     public PageVO<NoteListItemVO> followFeed(int page, int size) {
@@ -41,6 +43,8 @@ public class FeedServiceImpl implements FeedService {
 
         // 能出现在关注流里的作者 = 用户仍在关注，authorFollowed 恒为 true，
         // 但作者可能刚被逻辑删除（findUserVOMap 里没有），行回退成「已注销用户」
+        // P8：整页卡片计数以 Redis 为准（pipeline 一次往返），缺失的保持 DB 现值
+        counterStore.applyCounts(notes);
         List<NoteListItemVO> voList = notes.stream()
                 .map(note -> NoteConverter.toListItemVO(note, users.get(note.getUserId()), true))
                 .toList();

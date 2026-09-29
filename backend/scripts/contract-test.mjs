@@ -52,10 +52,13 @@ function codeIs(name, body, expected) {
 
 // ---------------------------------------------------------------- HTTP 助手
 
-async function call(method, path, { token, body, raw } = {}) {
+async function call(method, path, { token, body, raw, headers: extra } = {}) {
   const headers = {}
   if (body !== undefined) headers['Content-Type'] = 'application/json'
   if (token) headers.Authorization = token
+  // 幂等 token 之类的自定义头从这里进来；不能覆盖 Content-Type
+  // （那是 fetch 对普通 JSON 请求自己填的）
+  if (extra) Object.assign(headers, extra)
   const res = await fetch(`${BASE}${path}`, {
     method,
     headers,
@@ -88,13 +91,15 @@ const TINY_PNG = Buffer.from(
  * 测出来的是「服务器解析失败」而不是「业务逻辑对不对」，属于自己骗自己。
  * 用 FormData 让 undici 自己拼 boundary，和浏览器/前端发出来的形态一致。
  */
-async function uploadImage(token, { name = 'tiny.png', type = 'image/png', bytes = TINY_PNG } = {}) {
+async function uploadImage(token, { name = 'tiny.png', type = 'image/png', bytes = TINY_PNG, idemKey } = {}) {
   const form = new FormData()
   form.append('file', new Blob([bytes], { type }), name)
+  const headers = token ? { Authorization: token } : {}
+  if (idemKey) headers['X-Idempotency-Key'] = idemKey
   const res = await fetch(`${BASE}/api/note/image`, {
     method: 'POST',
     // 只带 Authorization：Content-Type 必须由 fetch 自己填，否则少了 boundary
-    headers: token ? { Authorization: token } : {},
+    headers,
     body: form,
   })
   const text = await res.text()
@@ -853,26 +858,55 @@ async function main() {
     codeIs('空关键词被拦（50002）', json, 50002)
   }
   let searchNoteId = null
-  // 唯一词：seed 标题里带随机尾缀，保证只命中自己这篇，避开演示账号/固定 fixture 的笔记
-  const searchUnique = `星尘电台${stamp}${Math.random().toString(36).slice(2, 6)}`.toLowerCase()
+  // 唯一词必须是<b>纯 ASCII</b>，这一点踩过坑：
+  //
+  // 第一版把随机尾缀接在中文后面（`星尘电台a1b2c3`），想着「有随机尾就只会命中自己」。
+  // 但 ES 用的是默认 standard 分析器（项目没装 IK），中文会被切成独立的字/词，
+  // 字母数字串又是另一个 token，而 multi_match 默认 OR 语义 ——
+  // 于是 <b>历次测试留在 ES 里的孤儿文档</b>（MySQL 已删、ES 仍在，删库不删索引）
+  // 只要含「星尘」或「电台」就被召回，「首条就是刚发布的种子笔记」随机失败。
+  // 之前一直没炸，只是因为每次收尾都 reindex 把索引清干净了。
+  //
+  // 改成纯 ASCII token 后，它在 standard 分析器下是<b>单一不可分 token</b>，
+  // 只有标题里带这段字符串的文档能命中，索引脏不脏都不影响这条断言。
+  const searchUnique = `xkseed${stamp}${Math.random().toString(36).slice(2, 6)}`.toLowerCase()
+  // 轮询专用账号：为什么不能复用 auth？
+  //
+  // P8 上线了 60 次/分钟/用户的搜索限流，而「等异步入索引」吃的是真实搜索接口的额度。
+  // 老写法用 auth 轮询 50 次 + 后面还有 ~5 次断言搜索，恰好卡在 60 的临界线，
+  // 一旦消费端积压超过 10s（历史包袱没消化完时真发生过 14s），轮询把额度烧光就
+  // 只能拿到 100005 而永远等不到首条 —— 一颗随时会爆的雷。
+  // 隔离账号后轮询额度与断言账号互不干扰，预算从此随便给。
+  // 名字带 ct5_ 前缀，与 AGENTS.md 的清理正则 ^ct[0-9]?_ 对齐。
+  const pollName = `ct5_${stamp}`
+  const pollPwd = 'Xk@2026poll'
+  {
+    const { json } = await post('/api/user/register', { body: { username: pollName, password: pollPwd } })
+    codeIs('搜索轮询账号注册成功（隔离限流额度）', json, 0)
+  }
+  const pollLogin = await post('/api/user/login', { body: { username: pollName, password: pollPwd } })
+  const pollAuth = `Bearer ${pollLogin.json?.data?.accessToken}`
+  check('搜索轮询账号登录可用', typeof pollAuth === 'string' && pollAuth.length > 5)
   {
     const { json } = await post('/api/note/publish', {
       token: auth,
-      body: { title: searchUnique, content: '在银河系边缘收听毛球乐队', type: 1 },
+      body: { title: `星尘电台 ${searchUnique}`, content: '在银河系边缘收听毛球乐队', type: 1 },
     })
     codeIs('搜索种子笔记发布成功（应进入 ES 索引）', json, 0)
     searchNoteId = json?.data?.id
     createdNoteIds.push(searchNoteId)
   }
-  // 发布 → Kafka → 消费 → ES 全程异步，轮询等入索引；50×200ms 兜底，别让测试卡死在这
+  // 发布 → Kafka → 消费 → ES 全程异步，轮询等入索引。50×500ms ≈ 25s 兜底。
+  // 睡 500ms 而不是 200ms：同样的 50 次调用把覆盖窗口从 10s 拉长到 25s，
+  // 消费端积压（实测出现过 14s）也能等到，且不额外烧搜索额度。
   {
     let found = false
     for (let i = 0; i < 50 && !found; i++) {
-      const { json } = await get(`/api/search/note?keyword=${encodeURIComponent(searchUnique)}`, { token: auth })
+      const { json } = await get(`/api/search/note?keyword=${encodeURIComponent(searchUnique)}`, { token: pollAuth })
       found = json?.code === 0 && (json?.data?.total ?? 0) > 0
-      if (!found) await new Promise((r) => setTimeout(r, 200))
+      if (!found) await new Promise((r) => setTimeout(r, 500))
     }
-    check('发布后经 Kafka 异步入索引（轮询 10s 内命中）', found)
+    check('发布后经 Kafka 异步入索引（轮询 25s 内命中）', found)
   }
   {
     const { json } = await get(`/api/search/note?keyword=${encodeURIComponent(searchUnique)}`, { token: auth })
@@ -907,7 +941,250 @@ async function main() {
     eq('重建后种子笔记仍可搜到', j2?.data?.list?.[0]?.id, searchNoteId)
   }
 
-  // ---- 17. 不支持的方法
+  // ---- 16.0 P8 分布式锁
+  //
+  // reindex = 删旧索引 + 从库回灌，两个请求同时跑会互相拆台（A 删了 B 正在写的索引）。
+  // Redisson 锁把它串行化：同时打进来的两个重建请求，一个赢，另一个立刻返回
+  // 50001「已有重建任务在跑」。两个账号一起来是为了避开「同账号 reindex 3 次/分钟」
+  // 的限流桶（auth 已用 1 次、ct2 已用 1 次，各自还剩 2 次额度）。
+  //
+  // 时序上赢家持锁覆盖整个重建窗口（删+建+回灌约几百毫秒），本地 localhost 两个
+  // 请求几乎同时到达，输家拿不到锁是确定性的。
+  {
+    const r1 = post('/api/search/reindex', { token: auth })
+    const r2 = post('/api/search/reindex', { token: ct2Auth })
+    const [a, b] = await Promise.all([r1, r2])
+    const codes = [a?.json?.code, b?.json?.code].sort()
+    check('并发重建互斥：一个成功一个 50001（不会同时删旧建新）',
+      codes[0] === 0 && codes[1] === 50001, `codes=${JSON.stringify(codes)}`)
+    // 锁测试自身也消耗了两人各 1 次重建额度，醒来后确认索引没被破坏
+    await new Promise((r) => setTimeout(r, 1500))
+    const { json: j3 } = await get(`/api/search/note?keyword=${encodeURIComponent(searchUnique)}`, { token: auth })
+    eq('锁测试后索引完好（种子笔记仍可搜到）', j3?.data?.list?.[0]?.id, searchNoteId)
+  }
+
+  // ---- 16.1 P8 限流
+  //
+  // 刻意用「一个全新账号」而不是复用 auth：限流额度是按 userId 分桶的，
+  // 复用 auth 的话它前面几节已经花掉了一些（搜索 4 次、reindex 1 次），
+  // 断言就得写成「第 N 次开始报错」——那是在测别处的调用次数，
+  // 别人随手加一节搜索测试就会把这条断言搞挂，排查起来毫无头绪。
+  //
+  // 隔离出来还有个副作用好处：trip 掉一个账号的桶不会影响别的用例。
+  const rlName = `ct4_${stamp}`
+  const rlPwd = 'Xk@2026rlpwd'
+  {
+    const { json } = await post('/api/user/register', { body: { username: rlName, password: rlPwd } })
+    codeIs('限流测试账号注册成功（账号名带随机 stamp，不该撞号）', json, 0)
+  }
+  const rlLogin = await post('/api/user/login', { body: { username: rlName, password: rlPwd } })
+  const rlAuth = `Bearer ${rlLogin.json?.data?.accessToken}`
+  check('限流测试账号登录可用', typeof rlAuth === 'string' && rlAuth.length > 5)
+  {
+    // reindex 的阈值是 3 次/分钟（重建是重操作，阈值给得比别处紧）
+    const codes = []
+    for (let i = 0; i < 4; i++) {
+      const { json } = await post('/api/search/reindex', { token: rlAuth })
+      codes.push(json?.code)
+    }
+    eq('额度内前 3 次重建都放行', JSON.stringify(codes.slice(0, 3)), JSON.stringify([0, 0, 0]))
+    codeIs('第 4 次超阈值被限流（100005）', { code: codes[3] }, 100005)
+  }
+  {
+    const { json } = await post('/api/search/reindex', { token: ct2Auth })
+    codeIs('换个账号不受牵连（额度按 userId 分桶，不是全局）', json, 0)
+  }
+  {
+    // 限流挂在 Controller 方法上，但拦截器先跑：拿一个格式合法、签名无效的 token，
+    // 期望在鉴权阶段就被打回 10006（凭证无效）而不是「当作未登录放进去再限流」。
+    // 反过来如果这里拿到 10005，说明鉴权把非法凭证当成了游客，
+    // 游客请求会绕过「必须有登录态」的前提去消耗限流桶。
+    const { json } = await call('POST', '/api/search/reindex', { token: 'Bearer not-a-real-token' })
+    codeIs('无 token 时先撞鉴权 10006，不进限流', json, 10006)
+  }
+  {
+    // IP 维度的 login 没法在契约里稳定 trip：契约测试本身要注册+登录几十次，
+    // 一旦把登录阈值压到测试用量的量级，以后加任何一节都会连环失败。
+    // IP 维度限流的正确测法是「用真实 IP 打同一个 IP 的桶」，
+    // 属于本地/压测手段，不适合放进每次都跑的契约（前提：注解读的是这个 IP）。
+    const { json } = await post('/api/user/login', { body: { username: rlName, password: rlPwd } })
+    codeIs('正常登录不被 IP 限流误伤（本机 60 次/分钟额度充足）', json, 0)
+  }
+
+  // ---- 16.2 P8 幂等
+  //
+  // 协议：请求头 X-Idempotency-Key。带了就幂等，不带就走老逻辑（老客户端不受影响）。
+  //
+  // 这里用 P8 里另一个账号（rlAuth）来发，理由是 P5 那几节已经把 auth 的
+  // 笔记/评论都用过了，再往里塞幂等断言会让「哪个 id 是幂等产生的」不好认。
+  const idem = (t) => ({ 'X-Idempotency-Key': t })
+  const idemNote = { title: `幂等${stamp}`, content: '同一个 token 连发两次', type: 1 }
+  let rlNoteId = null
+  {
+    const token = `pub-${stamp}`
+    const r1 = await post('/api/note/publish', { token: rlAuth, body: idemNote, headers: idem(token) })
+    codeIs('带幂等 token 首次发布成功', r1.json, 0)
+    rlNoteId = r1.json?.data?.id
+    const r2 = await post('/api/note/publish', { token: rlAuth, body: idemNote, headers: idem(token) })
+    codeIs('同 token 重复发布回放成功（不是报错）', r2.json, 0)
+    eq('同 token 两次拿到同一个 noteId', r2.json?.data?.id, r1.json?.data?.id)
+    createdNoteIds.push(rlNoteId)
+
+    // 只断言「返回同一个 id」不够：那个 id 可能只是被回放了，库里其实有两条。
+    // 直接查作者列表数出现次数，才钉住「真的只落了一行」
+    const me = await get('/api/user/me', { token: rlAuth })
+    const list = await get(`/api/note/user/${me.json?.data?.id}?page=1&size=100`, { token: rlAuth })
+    const hit = (list.json?.data?.list ?? []).filter((n) => n.id === r1.json?.data?.id).length
+    eq('库里只有一条（不是回放了 id 却仍写了两行）', hit, 1)
+  }
+  {
+    const r = await post('/api/note/publish', {
+      token: rlAuth,
+      body: { ...idemNote, title: `${idemNote.title}B` },
+      headers: idem(`pub-${stamp}-other`),
+    })
+    codeIs('换 token 等于新的一次发布', r.json, 0)
+    check('换 token 拿到不同的 noteId', r.json?.data?.id !== undefined, `id=${r.json?.data?.id}`)
+    createdNoteIds.push(r.json?.data?.id)
+  }
+  {
+    // 不带 token 必须照常工作：幂等是「客户端配合才生效」的能力，
+    // 不能因为加了它就把 curl / 老版本客户端堵在门外
+    const r = await post('/api/note/publish', { token: rlAuth, body: { ...idemNote, title: `${idemNote.title}C` } })
+    codeIs('不带幂等 token 也能发布（向后兼容）', r.json, 0)
+    createdNoteIds.push(r.json?.data?.id)
+  }
+  {
+    // 幂等 key 里带 userId：别人拿同一个 token 不该被算成同一次提交
+    const token = `xuser-${stamp}`
+    const r1 = await post('/api/note/publish', { token: rlAuth, body: { ...idemNote, title: `${idemNote.title}D` }, headers: idem(token) })
+    const r2 = await post('/api/note/publish', { token: actorAuth, body: { ...idemNote, title: `${idemNote.title}D` }, headers: idem(token) })
+    codeIs('同一 token 换用户发布成功', r2.json, 0)
+    check('换 userId 后视为新提交（key 里绑了用户）', r1.json?.data?.id !== r2.json?.data?.id,
+      `${r1.json?.data?.id} vs ${r2.json?.data?.id}`)
+    createdNoteIds.push(r1.json?.data?.id, r2.json?.data?.id)
+  }
+  {
+    // 业务失败必须把 key 还回去：否则「参数写错了重发一次」会永远得到
+    // 100004 重复提交，而正确的内容永远提交不上——比不做幂等更糟
+    // 必须用 rl <b>自己</b>的笔记：30007 是「不允许评论自己的笔记」，
+    // 拿别人的笔记去评论当然成功，这条就测不到释放占位的那条分支
+    const token = `cfail-${stamp}`
+    const r1 = await post('/api/comment', {
+      token: rlAuth,
+      body: { noteId: rlNoteId, content: '评论自己的笔记' },
+      headers: idem(token),
+    })
+    codeIs('评论自己的笔记被业务规则拒绝（30007）', r1.json, 30007)
+    const r2 = await post('/api/comment', {
+      token: rlAuth,
+      body: { noteId: rlNoteId, content: '评论自己的笔记' },
+      headers: idem(token),
+    })
+    codeIs('失败后同 token 再来仍是真实业务错（不是 100004）', r2.json, 30007)
+  }
+  {
+    // 成功路径：同 token 发两次评论只落一条 —— 「同一条评论出现两遍」
+    // 是用户一眼就能看出来的功能缺陷，比接口超时更难解释
+    const token = `cmt-${stamp}`
+    const otherNoteId = createdNoteIds[0]
+    const r1 = await post('/api/comment', { token: rlAuth, body: { noteId: otherNoteId, content: '幂等评论' }, headers: idem(token) })
+    codeIs('带 token 首次评论成功', r1.json, 0)
+    const r2 = await post('/api/comment', { token: rlAuth, body: { noteId: otherNoteId, content: '幂等评论' }, headers: idem(token) })
+    codeIs('同 token 重复评论回放成功', r2.json, 0)
+    eq('同 token 两次拿到同一个 commentId', r2.json?.data?.id, r1.json?.data?.id)
+    const list = await get(`/api/comment/list?noteId=${otherNoteId}&page=1&size=100`, { token: rlAuth })
+    const same = (list.json?.data?.list ?? []).filter((c) => c.content === '幂等评论').length
+    eq('评论列表里只有一条（真的没写两行）', same, 1)
+    await del(`/api/comment/${r1.json?.data?.id}`, { token: rlAuth })
+  }
+  {
+    const r = await post('/api/note/publish', {
+      token: rlAuth,
+      body: idemNote,
+      headers: idem('x'.repeat(200)),
+    })
+    codeIs('超长幂等 token 被拒（100004，不静默截断）', r.json, 100004)
+  }
+  {
+    // 上传重试不该多出一个孤儿文件：同 token 重传拿回同一个 URL
+    const token = `up-${stamp}`
+    const r1 = await uploadImage(rlAuth, { idemKey: token })
+    const r2 = await uploadImage(rlAuth, { idemKey: token })
+    codeIs('带 token 上传成功', r1.json, 0)
+    eq('同 token 重传拿回同一个 URL（不产生孤儿文件）', r2.json?.data?.url, r1.json?.data?.url)
+    const r3 = await uploadImage(rlAuth)
+    check('不带 token 上传拿到的是新 URL', r3.json?.data?.url !== r1.json?.data?.url,
+      `${r3.json?.data?.url}`)
+  }
+
+  // ---- 17. P8 计数权威：多人聚合（ZSet 当裁判）
+  //
+  // P5 的单人断言在「计数 = DB 行数 / 自增列」的实现下也能通过；
+  // P8 把计数搬到 Redis ZSet，用两个互不相干的账号（ct3_ / ct4_）在
+  // 同一篇笔记上各自点赞、取消，才能钉住「计数是集合成员数的聚合」：
+  //   1. 第二个人的 like 必须让第一个人看到 +1（不是各自落一行 DB 更新互不可见）
+  //   2. 一个人取消不能把另一个人顶掉（common 的「删除即清零」实现会挂）
+  //   3. Redis key 一旦丢了，读路径得回退 DB 底账而不是返回 0 / false
+  //      （fallback 语义单靠 HTTP 只能验到 DB 一致时的结果，见 NoteCounterStore）
+  // 起始状态由 P5 保证：本笔记 like=0 / collect=0，两个账号都没点过。
+  {
+    const d0 = await get(`/api/note/${noteId}`, { token: actorAuth })
+    eq('P8 基线 likeCount=0', d0.json?.data?.likeCount, 0)
+    eq('P8 基线 collectCount=0', d0.json?.data?.collectCount, 0)
+  }
+  {
+    const a1 = await put(`/api/note/${noteId}/like`, { token: actorAuth })
+    codeIs('账号 A 点赞成功', a1.json, 0)
+    eq('A 点赞后 likeCount=1', a1.json?.data?.likeCount, 1)
+    eq('A 自己 liked=true', a1.json?.data?.liked, true)
+    const b1 = await put(`/api/note/${noteId}/like`, { token: rlAuth })
+    codeIs('账号 B 点赞成功', b1.json, 0)
+    eq('B 点赞后 likeCount=2（ZSet 聚合，不是各自记一份）', b1.json?.data?.likeCount, 2)
+    eq('B 自己 liked=true', b1.json?.data?.liked, true)
+  }
+  {
+    // 关键：A 视角读详情，必须看到 B 攒的那个 +1，两者不能互相遮蔽
+    const d = await get(`/api/note/${noteId}`, { token: actorAuth })
+    eq('A 视角 likeCount=2（能看到 B 的点赞）', d.json?.data?.likeCount, 2)
+    eq('A 视角 liked=true（自己的那票还在）', d.json?.data?.liked, true)
+    const f = await get(`/api/note/user/${userId}?page=1&size=100`, { token: actorAuth })
+    const cards = (f.json?.data?.list ?? []).filter((n) => n.id === noteId)
+    check('作者笔记列表（applyCounts 路径）与详情计数一致', cards.length === 1 && cards[0]?.likeCount === 2,
+      `list likeCount=${cards[0]?.likeCount}`)
+  }
+  {
+    // 一人取消，另一个人不能被顶掉
+    const b2 = await del(`/api/note/${noteId}/like`, { token: rlAuth })
+    codeIs('B 取消点赞成功', b2.json, 0)
+    eq('B 取消后 likeCount=1（A 的票还在）', b2.json?.data?.likeCount, 1)
+    eq('B 自己 liked=false', b2.json?.data?.liked, false)
+    const d = await get(`/api/note/${noteId}`, { token: actorAuth })
+    eq('A 视角 likeCount=1 且 liked=true', d.json?.data?.likeCount, 1)
+  }
+  {
+    // 收藏维度同构验证：B 收藏时 A 的收藏也应在，且收藏与点赞互不干扰
+    const a1 = await put(`/api/note/${noteId}/collect`, { token: actorAuth })
+    eq('A 收藏后 collectCount=1', a1.json?.data?.collectCount, 1)
+    const b1 = await put(`/api/note/${noteId}/collect`, { token: rlAuth })
+    eq('B 收藏后 collectCount=2，likeCount 保持 1', b1.json?.data?.collectCount, 2)
+    eq('B 收藏后另一维 likeCount 未被碰', b1.json?.data?.likeCount, 1)
+    const a2 = await del(`/api/note/${noteId}/collect`, { token: actorAuth })
+    eq('A 取消收藏后 collectCount=1（B 的还在）', a2.json?.data?.collectCount, 1)
+    eq('A 取消收藏后 collected=false', a2.json?.data?.collected, false)
+  }
+  {
+    // 收尾还原：两个账号都清掉，计数回到基线 0，不给后续/下次运行留尾巴
+    const d1 = await del(`/api/note/${noteId}/like`, { token: actorAuth })
+    codeIs('最后清掉 A 的点赞', d1.json, 0)
+    const d2 = await del(`/api/note/${noteId}/collect`, { token: rlAuth })
+    codeIs('最后清掉 B 的收藏', d2.json, 0)
+    const d3 = await get(`/api/note/${noteId}`, { token: actorAuth })
+    eq('全部还原后 likeCount=0', d3.json?.data?.likeCount, 0)
+    eq('全部还原后 collectCount=0', d3.json?.data?.collectCount, 0)
+  }
+
+  // ---- 18. 不支持的方法
   {
     const { json } = await call('DELETE', '/api/user/login')
     codeIs('不支持的请求方法被统一处理（100002）', json, 100002)
@@ -934,7 +1211,7 @@ async function main() {
   // 一条无 WHERE 的 DELETE 会把它们一起清掉，而这种误删是<b>不可逆</b>的：
   // 脚本跑完只看得到「清理成功」，不会有人发现顺手删掉了别的东西。
   const noteList = createdNoteIds.filter((n) => typeof n === 'string').join(', ')
-  console.log(`\n测试账号 ${U} / ct2_${stamp} / ${actorName} 与笔记 ${noteList} 已留在库里，清理：`)
+  console.log(`\n测试账号 ${U} / ct2_${stamp} / ${actorName} / ${rlName} 与笔记 ${noteList} 已留在库里，清理：`)
   console.log(`  -- 先子表，comment_like 依赖 comment`)
   console.log(`  DELETE FROM xiaoku_db.comment_like WHERE comment_id IN (SELECT id FROM xiaoku_db.comment WHERE note_id IN (${noteList}));`)
   console.log(`  DELETE FROM xiaoku_db.comment WHERE note_id IN (${noteList});`)

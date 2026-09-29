@@ -126,22 +126,24 @@ $env:XK_MYSQL_PASSWORD = "<.env 里的 MYSQL_ROOT_PASSWORD>"   # 不设就起不
 改后端接口 → 必须跑契约测试；改前端 → 必须跑 CDP 测试。**别攒到最后一起跑。**
 
 ```bash
-# 后端（需后端已在 8088 运行）→ 222 条
+# 后端（需后端已在 8088 运行）→ 276 条
 cd backend && node scripts/contract-test.mjs
 # 换地址：XK_API_BASE=http://ip:8088 node scripts/contract-test.mjs
 
-# 前端（需前端 5180 + 后端 8088 同时在跑）→ 18 + 8 + 17 + 26 + 41 + 25 + 19 = 154 条
+# 前端（需前端 5180 + 后端 8088 同时在跑）→ 18 + 8 + 17 + 26 + 41 + 25 + 19 + 9 = 163 条
 cd frontend && npm run test:ui
 
-# 单跑某一组：:smoke / :refresh / :note / :profile / :interaction / :follow / :search
+# 单跑某一组：:smoke / :refresh / :note / :profile / :interaction / :follow / :search / :idempotent
 cd frontend && npm run test:ui:interaction
 
 # 前端类型 / 构建
 cd frontend && npm run typecheck && npm run build
 ```
 
-契约测试每次跑会新建 `ct_<时间戳>` / `ct2_<时间戳>` / `ct3_<时间戳>` 三个账号
+契约测试每次跑会新建 `ct_/ct2_/ct3_/ct4_/ct5_<时间戳>` 等账号
 （必须随机，固定账号会撞 `10003` 就测不到注册成功分支），**并留下它们的笔记和图片**。
+`ct5_` 是 P7 搜索轮询的专用账号——搜索接口 60/min 限流，轮询用自己的额度
+才不把断言账号的桶打空（50 次 × 500ms ≈ 25s 预算）。
 
 清理有**两个**坑，第二个比第一个危险得多：
 
@@ -297,6 +299,40 @@ get('/comment/list', { params: { noteId, page } })    // ❌ 发出 ?params[note
     `bootstrap.servers`，启动不报错、**首次真发消息**才抛
     `No resolvable bootstrap urls`。已改为 `kafkaProperties.buildProducerProperties(null)`
     打底再覆盖自有键。另有 `kafkaErrorHandler` bean（DLT + `FixedBackOff(1s,3)`）
+- P8 四件套已完工（本 commit）：限流 / 幂等 / 布隆 / 分布式锁 + Redis 计数权威
+  + 契约 **276 条**（P2 44 + P3 32 + P5 58 + P6 69 + P7 19 + P8 54）+ CDP **163 条**
+  - 限流 `common/annotation/RateLimit` + AOP + Lua（`INCR`+首次 `PEXPIRE` 原子）：
+    register/login 按 IP，publish/image/comment/search/reindex 按 USER，
+    Redis 异常 fail-open；契约 16.1 节
+  - 幂等 `common/annotation/Idempotent` + AOP + Store：请求头 `X-Idempotency-Key`
+    对齐 Stripe（不给头不生效）；回放返回**原方法返回类型**序列化的缓存 JSON
+    （CGLIB 代理的坑，P8 契约抓过）；前端 `request.ts` 的 `_xkIdemKey` +
+    note/comment 接口 `idempotent:true`；契约 16.2 节 + CDP `ui-idempotent.mjs`
+    （9 条，Fetch 域拦截篡改 Authorization 精确模拟 401）
+  - 布隆 `common/support/NoteIdBloomFilter`：FNV-1a64 + Kirsch-Mitzenmacher，
+    纯 SETBIT/GETBIT，启动 `BloomWarmUpRunner` 全量回灌，向左查详情短路 20001。
+    **容错三件事（都踩过）**：(1) 位图 key 被外部清掉时 `mightContain` 放行
+    （否则全站真实笔记 404）；(2) `add()` 遇 key 缺失降级为不过滤，绝不重建
+    残缺位图；(3) 位下标依赖 bitCount，改 config 必须 `#reset()` 重灌
+  - 分布式锁 `common/support/LockTemplate`（Redisson 薄封装，fail-open）：
+    挂在 `SearchServiceImpl.rebuildNoteIndex` 上，reindex 并发互斥返回 50001；
+    契约 16.0 节（`Promise.all` 并发同打）
+  - **Redis 计数权威 + 异步落库**（推翻 P5「DB 列即权威」）：
+    - ZSet `xk:note:like|collect:users:{noteId}` 是当前权威，member=userId；
+      DB 关系行照旧 insert/delete（唯一索引当裁判）兼作持久底账
+    - 写只动 ZSet + `SADD xk:note:dirty`，不再每赞 UPDATE 一次列。
+      key 缺失时先按 DB 关系行**全量重建**再合入本次变更（防裸 ZADD 顶掉老成员）
+    - 读走 `ZCARD`（列表页整页 pipeline 先 EXISTS 再 ZCARD）；**key 缺失回退
+      「DB 关系行实时 COUNT」而不是 `note.like_count` 列**——列是异步产物，
+      回退列会让详情页对不上刚点的 +1（P8 契约有断言钉）
+    - `NoteCounterFlushJob` 每 30s 抢 `xk:lock:note:counter-flush`，SPOP 一批
+      脏 noteId 用**绝对值覆盖**写回两列（幂等 / 崩溃安全 / 多实例不打架）。
+      ZSet key 空了会自动删除；dirty/位图 key 丢失都会**自动降级重建**，
+      无需手动清理
+    - 前端 `NoteDetailView` 切换点赞/收藏改**只合并自己那一维**：并发双键时
+      后响应 VO 的另一维是它自己事务快照里的旧值，整包覆盖会随机回退
+      成 `0|1`/`1|0`（CDP 实测，批量 5 修复）
+  - P8 计数详情见 `NoteCounterStore` / `NoteCounterFlushJob` 的类注释 + README「P8」段
   - `NoteServiceImpl.publish` 在 **afterCommit** 发事件（key=noteId，失败只记日志）
   - 消费端 `application.yml` 显式配 `JsonDeserializer` + `default.type`，
     因为生产端复用的是 Spring MVC 那个 `ObjectMapper`（Long → 字符串）

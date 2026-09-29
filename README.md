@@ -20,10 +20,10 @@
 | P2 | 用户模块 + JWT 鉴权 | ✅ 已完成 `v0.2-user-jwt` |
 | P3 | 笔记发布 + 图片上传 | ✅ 已完成 |
 | P4 | 前端页面（登录 / 首页 / 发布 / 详情 / 我的） | ✅ 已完成 |
-| P5 | 点赞 / 收藏 / 评论（Redis 计数一致性推到 P8） | ✅ 已完成 |
+| P5 | 点赞 / 收藏 / 评论 | ✅ 已完成 |
 | P6 | 关注关系 + 关注流 | ✅ 已完成 |
 | P7 | Elasticsearch 搜索 + Kafka 异步同步 | ✅ 已完成 |
-| P8 | 缓存三件套 / 布隆过滤器 / 分布式锁 / 限流 | ⬜ 未开始 |
+| P8 | 限流 / 幂等 / 布隆过滤器 / 分布式锁 / Redis 计数权威 + 异步落库 | ✅ 已完成 |
 | P9 | 压测报告 + 完整文档 + 部署脚本 | ⬜ 未开始 |
 
 > 完整 README（架构图 / ER 图 / 技术选型理由 / 难点攻坚 / 压测数据 / 面试话术）会在 P9 撰写。
@@ -259,7 +259,7 @@ red-book/
 | 2 | access token 正常过期时用户被踢下线 | 响应拦截器已解包成 `body.data`，刷新逻辑又读 `res.data` 得 `undefined` → 走失败分支 | 成功路径和失败路径类型都是合法的 |
 | 3 | 填错密码时点登录毫无反应 | `canSubmit` 把「长度不够」也算作按钮 `disabled` | 不是错误，是设计选择 |
 
-**防复发**：登录链路一旦改动，跑 `npm run test:ui`（154 条断言，见下）。第 1、2 条都有对应用例。
+**防复发**：登录链路一旦改动，跑 `npm run test:ui`（163 条断言，见下）。第 1、2 条都有对应用例。
 
 ### 测试基建：`npm run test:ui`
 
@@ -272,10 +272,11 @@ red-book/
 | `npm run test:ui:refresh` | 坏 access 自动 refresh + 重放原请求、双 token 同步轮换、双 token 失效清理、无 refresh 安全降级 |
 | `npm run test:ui:note` | 发布页守卫、空表单禁用、字数计数、本地预览、9 张上限、发布跳详情、详情图片**真实解码**（非碎图） |
 | `npm run test:ui:profile` | 我的页守卫、资料回填、昵称超长前端拦截、保存后**回查后端**确认落库、取消不写库、演示账号自还原 |
-| `npm run test:ui:interaction` | 点赞/收藏开关往返、两者互不影响、跨账号评论、回复嵌套与被回复者昵称、删根评论的确认弹窗与子树级联 |
+| `npm run test:ui:interaction` | 点赞/收藏开关往返、两者互不影响、并发复位收敛、跨账号评论、回复嵌套与被回复者昵称、删根评论的确认弹窗与子树级联 |
 | `npm run test:ui:follow` | 作者主页关注 → 关注流出现 → 详情页取关 → 关注流消失、行内关注按钮、关注/粉丝列表、粉丝空态、自己主页无关注按钮 |
 | `npm run test:ui:search` | 首页搜索框跳搜索页、命中素材笔记、卡片作者昵称来自 MySQL 回填、进详情、无结果空态、空关键词不发请求、带 `?keyword=` 直链刷新 |
-| `npm run test:ui` | 七者全跑（154 条） |
+| `npm run test:ui:idempotent` | 幂等 key 随请求存活期滚动、坏 access 触发 refresh 时幂等头不丢、手动改坏 token 精确模拟 401 |
+| `npm run test:ui` | 八者全跑（163 条） |
 
 **验证 refresh 链路的做法**：把 `localStorage` 里的 `xk_token` 改成垃圾串后**整页重载**。
 冷启动时 token 的 `ref` 会读到这个坏值，`isLogin` 仍为 `true`，
@@ -387,10 +388,12 @@ P3 为了雪花 ID 定了「`Long` 一律序列化成字符串」的全局规则
 
 顺带两个设计决定：
 
-- **DB 是计数的唯一权威，Redis 计数一致性推到 P8。** 计数用
+- **P5 时的计数实现：DB 自增 + 唯一索引当裁判，Redis 计数一致性推到 P8。** 计数用
   `UPDATE note SET like_count = like_count + 1` 原子自增，不做读-改-写；
   「先查有没有点赞再 insert」那种 check-then-act 会被并发打穿，
   这里只 insert、让 `uk_user_note` 唯一索引当唯一裁判。
+  <b>P8 已推翻「DB 列即权威」</b>：列改成一号备份，读与写都以 Redis ZSet 为裁判
+  （见下方 P8 段），但「唯一索引当裁判」这条没动。
 - **`0` 哨兵不往外暴露。** 库里 `parent_id` 用 `0` 表示「无父级」，
   但这两个字段是 `Long`，序列化后是字符串 `"0"`，前端既不能 `Number()` 转
   （非零时是 17 位雪花 ID，一转丢精度），又容易和「ID 就是 0」混淆。
@@ -503,7 +506,7 @@ ES 文档只存**检索字段**（id / title / content / type / status / userId 
 ### 后端契约测试：`node backend/scripts/contract-test.mjs`
 
 P2 那 7 条断言原本是临时脚本，跑完就丢了，`git log` 里看不出「怎么测的」。
-现在固化成落盘的契约快照，222 条（P2 44 + P3 32 + P5 58 + P6 69 + P7 19）：
+现在固化成落盘的契约快照，276 条（P2 44 + P3 32 + P5 58 + P6 69 + P7 19 + P8 54）：
 
 ```bash
 cd backend
@@ -607,3 +610,55 @@ DELETE FROM xiaoku_db.user WHERE username REGEXP '^ct[0-9]?_[a-z0-9]+$';
 `frontend/public/mascot/m01..m11.webp` 由 `frontend/scripts/mascot-cutout.py` 生成
 （切比雪夫距离抠图 + 400px 裁剪 + WebP 压缩 92），脚本内置自检：
 主体内部零误删、残留背景像素 ≤ 0.71%，不达标直接退出非零。
+
+### P8 缓存/限流/幂等/计数：四个独立子系统
+
+**1. 限流（`RateLimit` 注解 + AOP + Lua 原子计数）**
+`register`/`login` 按 IP、`publish`/`image`/`comment`/`search`/`reindex` 按 USER，
+Lua 里 `INCR + 首次 PEXPIRE` 是原子的，不会出现「只看不设过期」或「设了过期改散」。
+Redis 异常一律 fail-open（服务不可用是能容忍的，把用户挡在门外不行）。
+受保护的 + 公共的用户枚举信息用同一条消息，不给爆破提供噪音。
+
+**2. 幂等（`Idempotent` 注解 + `X-Idempotency-Key` 请求头，对齐 Stripe）**
+只认显式头：客户端不给就不生效（curl / 老版本不受影响）；给了就
+`SET NX __PENDING__` 占位，业务失败必须 release 占位，否则「参数写错重试」
+会永远拿到 100004；成功则回放缓存的 JSON。key = `xk:idem:{userId}:{uri}:{token}`，
+换用户换 URL 换请求体都是新的幂等单元。**回放必须走原方法的返回类型序列化**，
+这是 CGLIB 代理里最容易翻车的一环（接线错误是 P8 契约测出来的）。
+
+**3. 布隆过滤器（`NoteIdBloomFilter`，纯 SETBIT/GETBIT）**
+不引 redisson，用 FNV-1a64 + Kirsch-Mitzenmacher 双哈希铺 `2^24` 位，
+启动 `ApplicationReadyEvent` 把库里笔记全量回灌，查询端先发制人挡掉
+「ID 乱编但格式合法」的 20001 流量，再放行去打 DB。
+关键容错（真实踩坑）：位图 key 被外部清掉（FLUSHDB / 驱逐 / 容器重启）时
+`mightContain` 一律放行（缓存丢了 = 让所有真实请求去 DB，而不是全站 404）；
+`add()` 发现 key 缺失时降级为「不过滤」并记错误日志，**绝不重建残缺位图**。
+
+**4. 分布式锁（`LockTemplate`，对着 Redisson 手写薄封装）**
+`tryLock(key, wait, lease)` 返回 `LockHandle`（`AutoCloseable`），被占返回 null，
+Redis 异常 fail-open 返回空 handle（锁的目的是排序不是保命）。
+`/api/search/reindex` 用它做互斥：已有任务在跑 → 50001「已有重建任务在跑」，
+天然挡掉并发老板发起的全量重建，契约测试两账号 `Promise.all` 同打验证只有一个赢。
+
+**5. Redis ZSet 计数权威 + 异步落库（推翻 P5 的「DB 列即权威」）**
+- 权威：`xk:note:like:users:{noteId}` / `xk:note:collect:users:{noteId}` 两个 ZSet，
+  member = userId。DB 关系行照旧 insert/delete（唯一索引当裁判）、兼作持久底账。
+- 写：不再每赞打一次 `UPDATE note SET like_count = like_count + 1`——
+  点赞/取消只动对应 ZSet（key 缺失时先按 DB 关系行**全量重建**再合入本次变更，
+  否则裸 ZADD 会把老成员全顶掉）再 `SADD xk:note:dirty` 标记待落库。
+- 读：详情与列表计数都从 `ZCARD` 拿（列表整页一条 pipeline：先 `EXISTS` 再对
+  存活 key `ZCARD`，省一半往返）。**key 缺失时回退「DB 关系行的实时 COUNT」，
+  不落 `note.like_count` 列**——那是异步产物的陈旧副本，回退到列会让详情页
+  「刚点赞完的 +1」对不上（契约有专门断言钉这件事）。
+- 落库：`NoteCounterFlushJob` 每 30s 抢 `xk:lock:note:counter-flush`，`SPOP`
+  一批脏 noteId 用**绝对值覆盖**写回两列。绝对值写入天然幂等、崩溃安全、
+  多实例各抢各批不打架——绝对值得它比增量/位图优先级高。
+- Redis 全程 fail-open：Redis 不可用时关系还在 DB 里，读写都走行数，功能不降级只减速。
+- 前端 `NoteDetailView` 的点赞/收藏切换变成「只合并自己那一维」：
+  并发点两个键时，先响应的那份 VO 里另一维度是在它自己的事务快照里读的，
+  MySQL RR 下可能落后于「另一个提交」瞬间，整包覆盖会把那一维打回旧值
+  （CDP 实测随机回退成 `0|1` / `1|0`）。每个键自己的值永远是响应生成前刚提交的，
+  所以合并只取自己那维、另一维保留本地现值，两键连点必然收敛。
+- 这个坑有两种解法：后端让响应在事务提交后读，前端只合并自己那一维。
+  两个都直指「响应来自事务内快照」这个根源；这里选了前端解法，
+  因为网络乱序 + 多标签页并发是前端的常态，本地合并天然免疫。

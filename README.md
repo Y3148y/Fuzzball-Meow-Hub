@@ -24,10 +24,9 @@
 | P6 | 关注关系 + 关注流 | ✅ 已完成 |
 | P7 | Elasticsearch 搜索 + Kafka 异步同步 | ✅ 已完成 |
 | P8 | 限流 / 幂等 / 布隆过滤器 / 分布式锁 / Redis 计数权威 + 异步落库 | ✅ 已完成 |
-| P9 | 压测报告 + 完整文档 + 部署脚本 | ⬜ 未开始 |
+| P9 | 压测报告 + 完整文档 + 部署脚本 | ✅ 已完成 |
 
-> 完整 README（架构图 / ER 图 / 技术选型理由 / 难点攻坚 / 压测数据 / 面试话术）会在 P9 撰写。
-> 届时每个阶段会打一个 git tag，形成「渐进式演进」的提交记录。
+> 架构图 / ER 图 / 部署脚本 / 压测数据都在「P9」节；git tag 见各版本提交记录。
 
 ---
 
@@ -662,3 +661,166 @@ Redis 异常 fail-open 返回空 handle（锁的目的是排序不是保命）�
 - 这个坑有两种解法：后端让响应在事务提交后读，前端只合并自己那一维。
   两个都直指「响应来自事务内快照」这个根源；这里选了前端解法，
   因为网络乱序 + 多标签页并发是前端的常态，本地合并天然免疫。
+
+---
+
+### P9 部署 + 压测：全栈上真机
+
+#### 1. 生产编排：`deploy/docker-compose.prod.yml`
+
+开发期的 `docker-compose.yml` 只编排 Kafka / ES（MySQL、Redis 复用宿主服务），
+P9 把它补成**全栈隔离**的生产编排：
+
+```
+                域名 / IP
+                    │ :80
+              ┌─────▼──────────────┐
+              │  frontend (nginx)  │  SPA + /api 反代 + /static 图片反代
+              └──────┬─────────────┘
+                     │ :8088  (内网)
+      ┌──────────────┼──────────────────┐
+      │              │                  │
+┌─────▼──────┐ ┌─────▼──────┐  ┌───────▼──────┐
+│   backend  │ │   backend  │  │  Elasticsearch│
+│ (Spring Boot) │ (多实例时...)│  │     :9200     │
+└──┬──────┬──┘ └────────────┘  └──────────────┘
+   │      │
+┌──▼──┐ ┌▼─────┐        ┌──────────┐
+│MySQL│ │Redis │        │  Kafka   │  KRaft，容器内仅 :29092
+└─────┘ └──────┘        └──────────┘
+```
+
+- **只开一个口**：所有服务进 `xiaoku-prod-net` 内网，仅 frontend 暴露
+  `${XK_WEB_PORT:-80}`；mysql / redis / kafka / es 不对宿主机开放。
+- **kafka 改了监听**：容器内 `PLAINTEXT://kafka:29092`（开发 compose 对外 9092 是
+  给宿主机看的，生产不适用），后端 `application-prod.yml` 的 bootstrap 地址随之切换。
+- **build 带 `REGISTRY_PREFIX`**：`docker.io` 在大陆不可直连，本机走 daocloud 白名单
+  镜像 `docker.m.daocloud.io/`（`maven` / `eclipse-temurin` / `node` / `nginx` /
+  `mysql` / `apache/kafka` / `redis` 都在白名单；grafana/k6 不在，测试工具本机装）。
+  ES 走 `docker.elastic.co` 直连，不加前缀。
+- **变量闸**：模板 `deploy/.env.prod.example`；`MYSQL_ROOT_PASSWORD` / `XK_JWT_SECRET`
+  必填用 `${VAR:?中文提示}`，缺了 compose 直接 exit=1。
+- **健康链**：backend `depends_on` 四个中间件全部 `condition: service_healthy`，
+  nginx 反代不到就绪的后端不会「假启动」。
+
+```bash
+# 生产栈（示例，.env.prod 由模板复制后填真值）
+cd deploy
+docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
+docker compose --env-file .env.prod -f docker-compose.prod.yml ps   # all healthy
+
+# 图片走 local 卷：uploads 数据卷，S3 改 XK_STORAGE_TYPE=s3 + 四个 S3 变量
+```
+
+#### 2. ER 图（schema.sql 8 张表）
+
+```
+ user ──╼ user_follow ──╼ user        E-R 关系
+   │  (follow_id)   (user_id)           user 1—N note；note 1—N note_image
+   │                                    note 1—N note_like / note_collect / comment
+   ▼                                    note 1—N comment；comment 1—N comment_like
+ note ──┬── note_image
+         ├── note_like
+         ├── note_collect
+         ├── comment ── comment_like
+```
+
+| 表 | 主键 | 关键外键/约束 | 一句话职责 |
+|---|---|---|---|
+| `user` | `id` 雪花 | `username` 唯一、`gender` 枚举 | 账号 + 简介 + 计数列 |
+| `note` | `id` 雪花 | `user_id`、`status`、`id_hash` 唯一 | 笔记正文 + 异步计数列 |
+| `note_image` | `id` | `note_id` 索引、唯一索引 `(note_id, sort)` | 九图限制、顺序 |
+| `note_like` | `id` | 唯一索引 `(note_id, user_id)` | 点赞持久底账 |
+| `note_collect` | `id` | 唯一索引 `(note_id, user_id)` | 收藏持久底账 |
+| `comment` | `id` 雪花 | `note_id` 索引、`comment_like` 子表 | 一级/二级评论（自引用） |
+| `comment_like` | `id` | 唯一索引 `(comment_id, user_id)` | P5 只读不写，预留 |
+| `user_follow` | `id` | 唯一索引 `(user_id, follow_id)`、status 弃用 | 关注/取关物理删，索引当裁判 |
+
+所有业务表的主键都是雪花 ID，且**永不修改**（索引稳定性 + 分布式唯一）；
+关系表用唯一索引承载幂等，不存在「唯一约束 + 软删除标记」的并发陷阱。
+
+#### 3. 压测：k6 三场景混合负载
+
+工具：**k6 v2.3.0**（goja 单线程、结果有确定性的分位数统计，比竞品更贴脚本）
+目标：**生产栈**（`http://127.0.0.1:18080/api`，nginx → backend，真实反代链路）
+数据：`deploy/loadtest/seed.mjs` 播种 —— 1 作者 + 12 篇笔记 + 10 读者
+（关注作者、热评笔记 20 条评论），幂等可重跑（10003 视为已存在）。
+
+| 场景 | VU | 时长 | 干什么 | 限流预算 |
+|---|---|---|---|---|
+| `browse` | 20 | 90s | 关注流 → 详情 → 评论列表；低频搜索、低频评论 | comment ≈4/分/用户 < 10 |
+| `likers` | 6 | 60s | like/unlike、collect/uncollect 交替 | like/collect 不限流 |
+| `authors` | 3 | 60s | 各发 1 篇笔记 | publish 3/分 < 20 |
+
+其中 **10% 的详情请求故意打不存在的 17 位伪雪花 ID**，考察布隆过滤器短路的表现；
+作者的笔记刚发布就搜「发布」能搜到，验证 Kafka → ES 异步同步的实时性。
+
+```bash
+node deploy/loadtest/seed.mjs                     # 打 18080；XK_API_BASE 可换
+k6 run --summary-export=deploy/loadtest/report.json deploy/loadtest/mix.js
+```
+
+**结果（2026-09-29，本机单机 Docker，数值含宿主干扰，只作相对参考）**
+
+| 指标 | 值 |
+|---|---|
+| 请求总量 | 12,122 次 @ **133.8 req/s** |
+| 平均 / 中位 | **10.67 ms / 6.42 ms** |
+| p90 / p95 / p99 | **16.0 / 20.6 / 45.0 ms** |
+| 最大（单峰） | 910.8 ms |
+| HTTP 失败率 | **0.00%**（12,122 全 2xx） |
+| 业务断言（checks） | **7,832 / 7,832 = 100%** |
+| 压测产生的笔记搜「发布」 | 14 条全部命中（种子外的都来自 load 期的 live 写入） |
+
+阈值 `p(95)<600` / `p(99)<1500` / `rate<0.01` 全部通过。
+结论：单机 Docker 上读写混合、接近 135 req/s 的负载下，链路是健康的；
+p99 仍是个位数×10ms 量级，Bloom 短路和 Redis 计数让「读」面十分廉价。
+
+压测里顺带抓到的**三个真实边界**，都是「业务规则」而非「故障」：
+
+1. **nginx 拒收 URI 里的裸非 ASCII**：k6 直发 UTF-8 关键字 `花猫` 得 400，
+   浏览器会自动百分号编码所以 CDP 从未踩到 —— `encodeURIComponent` 是压测脚本
+   必须自己补的一课。
+2. **作者不能评论自己的笔记（30007）**：authors 场景首版让作者评论自己的新笔记，
+   3 个校验全红 —— 不是系统坏了，是模块故意禁止自我评论，脚本改成由读者产出评论。
+3. **seed 与 k6 都要在限流桶内排队**：register 10/min、publish 20/min 的窗口
+   是真实存在的，播种/压测脚本一旦被打回，先怀疑脚本节奏，别怀疑被测系统。
+
+#### 4. 压测没覆盖 / 明说做不到的
+
+- **单机压测不等于性能验收**：宿主 CPU/磁盘波动、Docker 网络栈、同一份 Redis/ES
+  都在同机。要在云上给「QPS 天花板」「扩容曲线」这类结论，得另起环境跑。
+- **没有加压到失败**：给出的是「此负载下健康」，不是「击穿点」。摸最大并发要
+  阶梯加压逐档找 429 与 50x 的临界点，留给后续。
+- **未做 CI 门槛**：k6 脚本留在 repo，可以与 git 钩子 / CI 联动做回归基准
+  （阈值已在 options 里，直接当门槛）。
+
+#### 5. 部署到新机器清单（面试话术版）
+
+```bash
+# 1) 主机准备：Docker + Compose；生成 32B+ 的 JWT 密钥
+openssl rand -base64 64
+
+# 2) 复制环境模板并填值（2 个必填：MYSQL_ROOT_PASSWORD / XK_JWT_SECRET；
+#    中国大陆机器的 REGISTRY_PREFIX 保持 docker.m.daocloud.io/）
+cp deploy/.env.prod.example deploy/.env.prod
+
+# 3) 起栈（首次 build 拉镜像 + 编译前后端镜像）
+deploy\docker compose --env-file .env.prod -f deploy\docker-compose.prod.yml up -d --build
+
+# 4) 冒烟：页面 200、/api/system/ping OK、注册一个账号走通登录
+curl http://host/api/system/ping
+
+# 5) 关掉再开的迁移与回灌轨迹：
+#    - 数据都在命名卷（mysql-data / es-data / kafka-data / redis-data / uploads）
+#    - ES 索引可从 MySQL 全量回灌：登录后 POST /api/search/reindex
+#    - 布隆过滤器启动时自动按当前库回灌，Redis 清库也能自愈
+#    - 计数：ZSet 丢失自动按 DB 关系行重建；dirty 标记丢失只丢一次落库，无一致性问题
+```
+
+**面试可讲的几句话**：
+「部署是 Docker Compose 全栈编排，只让 nginx 对外，四个中间件走内网；
+生产配置把 dev 的 SQL 打印和 debug 日志关掉（`application-prod.yml`），
+口令走 `${VAR:?}` 缺一即拒。压测用 k6 三场景混合压 135 req/s，
+p99 25ms 内、零失败 —— 用来证明模块和编排在真机上是能跑起来的，
+不是只过了单元测试。」

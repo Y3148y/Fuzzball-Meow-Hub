@@ -342,6 +342,31 @@ get('/comment/list', { params: { noteId, page } })    // ❌ 发出 ?params[note
   - 前端新页 `SearchView.vue`（`/search?keyword=`，query 传关键词）+ 首页搜索框；
     CDP 新组 `ui-search.mjs`（19 条）复用 `xk_ui_follow` 的常驻素材笔记
   - 搜索域错误码 50xxx：`SEARCH_SERVICE_ERROR` / `SEARCH_KEYWORD_EMPTY`
+- P9 部署 + 压测（本 commit）：**12122 请求 @ 133.8 req/s，p95 20.6ms / p99 45ms，
+  失败率 0%，checks 7832/7832**
+  - `deploy/docker-compose.prod.yml`：全栈内网（name=xiaoku-prod 网络），仅
+    frontend 暴露 `${XK_WEB_PORT:-80}`；backend 四中间件 depends_on healthy；
+    kafka 容器内改 `PLAINTEXT://kafka:29092`（开发 9092 是给宿主看的，生产不适用）
+  - `backend/application-prod.yml`（prod profile）：SQL 打印与外发日志关掉、
+    `xiaoku.jwt.secret=${XK_JWT_SECRET}` 无兜底、`init-demo-data` 默认 false
+  - `backend/Dockerfile`/`frontend/Dockerfile` + nginx.conf：多阶段构建，非 root，
+    `AGENT REGISTRY_PREFIX`/`ARG REGISTRY_PREFIX` 支持镜像加速前缀（本机填
+    `docker.m.daocloud.io/`，ES 走 docker.elastic.co 不加）——**grafana/k6 不在
+    daocloud 白名单**，压测工具本机装
+  - `deploy/.env.prod.example`：`MYSQL_ROOT_PASSWORD` / `XK_JWT_SECRET` 用
+    `${VAR:?}` 闸，缺一 compose exit=1；实际 `.env.prod` 已 gitignore
+  - 压测：`deploy/loadtest/seed.mjs`（Node 零依赖，幂等）造 1 作者 + 12 笔记 +
+    10 读者（关注 + 热评笔记 20 条评论）；`deploy/loadtest/mix.js`（k6）三场景
+    browse 20VU/likers 6VU/authors 3VU，10% 详情打伪 ID 体现布隆短路，k6 输出
+    `deploy/loadtest/report.json`
+  - **压测抓的三个边界**（都是规则不是故障）：nginx 拒收 URI 裸非 ASCII → k6 要
+    `encodeURIComponent`（浏览器自动编码，CDP 永远踩不到但 k6 一定踩）；
+    作者不能评论自己的笔记（30007）→ authors 场景不写评论，评论写入交给 browse；
+    seed/压测必须在自己限流余量内跑（register 10/min、publish 20/min），被打回先
+    怀疑脚本节奏
+  - 注意：loadtest 会在库里留下 `xk_lt_*` 账号与笔记（`ct` 清理 SQL 的 REGEXP
+    不会碰到它们，正常跑不受影响）；压测目标走 prod 栈 nginx 18080 而非 dev 8088，
+    因为 dev profile 是 debug+SQL 打印，会拉偏数据
 
 ### P3 已知缺口（不是遗漏，是当前阶段做不到）
 

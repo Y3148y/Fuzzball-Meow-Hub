@@ -1,0 +1,39 @@
+# =====================================================================
+#  毛球喵社 Fuzzball-Meow-Hub —— 生产环境覆盖配置
+#  激活方式：XK_PROFILE=prod（application.yml 里 profiles.active）
+#  原则：一切敏感项（口令 / JWT 密钥 / 存储 AK）不上默认值，
+#  缺了就启动报错，绝不在「没配好」的情况下悄悄把服务拿来用。
+# =====================================================================
+
+spring:
+  # 数据库由 compose 初始化（挂载 sql/schema.sql），运行时绝不重放 DDL
+  sql:
+    init:
+      mode: never
+
+  # ---------------- 日志降噪：生产环境不打每条 SQL / 每个 bean 的 DEBUG ----------------
+  # main 里 MyBatis 默认挂了 StdOutImpl（开发期打印 SQL），
+  # 生产必须换掉，否则每条 SQL 都往 stdout 灌，既刷屏又拖慢响应。
+mybatis-plus:
+  configuration:
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+
+logging:
+  level:
+    root: info
+    com.xiaoku: info
+    com.xiaoku.module: warn
+    org.springframework.kafka: warn
+    org.apache.kafka.clients: warn
+    co.elastic.clients: warn
+    com.alibaba.druid: warn
+
+xiaoku:
+  jwt:
+    # 生产 JWT 密钥只从环境变量来，不给口令兜底：
+    # XK_JWT_SECRET 未注入时属性绑定直接把占位符当空串，HS256 因密钥太短
+    # 会在启动阶段失败（jjwt 校验 <32 字节直接抛错），满足「fail fast」。
+    secret: ${XK_JWT_SECRET}
+
+  # 生产默认不灌演示数据；要灌显式 XK_INIT_DEMO_DATA=true
+  init-demo-data: ${XK_INIT_DEMO_DATA:false}

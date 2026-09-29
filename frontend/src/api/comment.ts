@@ -27,14 +27,14 @@ export function listComments(noteId: string, page = 1, size = 10) {
   return get<PageVO<CommentVO>>('/comment/list', { noteId, page, size })
 }
 
-/** 发表一级评论。不传 parentId 即可 */
+/** 发表一级评论。不传 parentId 即可。开了幂等：同一次发送重发只落一条 */
 export function createComment(data: CommentCreateDTO) {
-  return post<CommentVO>('/comment', data)
+  return post<CommentVO>('/comment', data, { idempotent: true })
 }
 
 /** 回复某条评论。parentId 传被回复的那条评论 ID */
 export function replyComment(noteId: string, content: string, parentId: string) {
-  return post<CommentVO>('/comment', { noteId, content, parentId })
+  return post<CommentVO>('/comment', { noteId, content, parentId }, { idempotent: true })
 }
 
 /** 删除评论。删根评论会连它的子树一起删 */

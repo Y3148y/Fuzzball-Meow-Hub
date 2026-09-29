@@ -1,5 +1,4 @@
-import type { AxiosRequestConfig } from 'axios'
-import http, { del, get, post, put } from './request'
+import { del, get, post, postForm, put } from './request'
 import type { ImageUploadVO, NotePublishDTO, NoteVO } from './types'
 
 /**
@@ -10,24 +9,27 @@ import type { ImageUploadVO, NotePublishDTO, NoteVO } from './types'
 /**
  * 上传单张图片。
  *
- * <b>刻意不走 request.ts 里那三个 get/post 包装</b>：那三个都按 JSON 传 body，
- * 而这里是 multipart/form-data，必须让浏览器自己填 Content-Type（含 boundary），
+ * 走 {@link postForm} 而不是普通 post：这里要发 multipart/form-data，
+ * Content-Type（含 boundary）必须由浏览器自己填，
  * 手动设置会丢掉 boundary 导致后端解析失败。
+ *
+ * <p>开了 idempotent：弱网下重传会拿回<b>同一个 URL</b>，而不是多留一个孤儿文件。
  */
 export function uploadImage(file: File, onProgress?: (percent: number) => void) {
   const form = new FormData()
   form.append('file', file)
 
-  return http.post<ImageUploadVO>('/note/image', form, {
+  return postForm<ImageUploadVO>('/note/image', form, {
     // 上传可能比普通请求慢，放宽超时
     timeout: 60000,
+    idempotent: true,
     // 上传进度条：axios 只在浏览器 XHR 适配器上支持
     onUploadProgress: (e) => {
       if (onProgress && e.total) {
         onProgress(Math.round((e.loaded * 100) / e.total))
       }
     },
-  } as AxiosRequestConfig) as unknown as Promise<ImageUploadVO>
+  })
 }
 
 /**
@@ -35,9 +37,12 @@ export function uploadImage(file: File, onProgress?: (percent: number) => void) 
  *
  * <b>注意 id 是 string</b>：雪花 ID 10^17 超出 JS 的 MAX_SAFE_INTEGER，
  * 后端 JacksonConfig 把它序列化成字符串，前端不要 Number() 转换。
+ *
+ * <p>开了 idempotent：用户点完「发布」没等到响应又点一次时，
+ * 后端只落一篇，第二次拿回的是同一个 noteId。
  */
 export function publishNote(data: NotePublishDTO) {
-  return post<NoteVO>('/note/publish', data)
+  return post<NoteVO>('/note/publish', data, { idempotent: true })
 }
 
 /** 笔记详情 */

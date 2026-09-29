@@ -82,9 +82,13 @@ async function toggleLike() {
   if (!note.value || liking.value) return
   liking.value = true
   try {
-    // 用后端返回的完整 NoteVO 整体覆盖，不要自己 +1：
-    // 计数可能有别人并发改动过，自己算的那个数不一定对
-    note.value = isLiked.value ? await unlikeNote(note.value.id) : await likeNote(note.value.id)
+    // 只取「点赞这一维」的结果整给本地状态，不整包覆盖。
+    // 并发点收藏时，like 响应里那个 collectCount 是在本事务快照里读出来的，
+    // 可能落后于「收藏刚提交」那一刻（MySQL RR + Redis key 缺失回退 DB），
+    // 整包覆盖会把收藏维度打回旧值（实测两键连点会随机回退成 0|1 或 1|0）。
+    // 自己这一维是响应生成前刚提交的，必然最新；另一维用本地已有值。
+    const r = isLiked.value ? await unlikeNote(note.value.id) : await likeNote(note.value.id)
+    note.value = { ...note.value!, liked: r.liked, likeCount: r.likeCount }
   } catch (e) {
     if (e instanceof BizError) {
       // 30001/30002 说明本地状态已经和后端不一致（多标签页之类的），
@@ -104,9 +108,11 @@ async function toggleCollect() {
   if (!note.value || collecting.value) return
   collecting.value = true
   try {
-    note.value = isCollected.value
+    // 与 toggleLike 同理：只合并收藏维度，避免并发点赞时被快照旧值回退
+    const r = isCollected.value
       ? await uncollectNote(note.value.id)
       : await collectNote(note.value.id)
+    note.value = { ...note.value!, collected: r.collected, collectCount: r.collectCount }
   } catch (e) {
     if (e instanceof BizError) {
       if (e.code === ErrorCode.NOTE_ALREADY_COLLECTED || e.code === ErrorCode.NOTE_NOT_COLLECTED) {

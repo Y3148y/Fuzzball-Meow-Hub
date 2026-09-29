@@ -25,6 +25,41 @@ interface XkConfig extends InternalAxiosRequestConfig {
   _xkSkipAuth?: boolean
   /** 静默：不弹全局 toast，由调用方自己展示（如登录表单内联报错） */
   _xkSilent?: boolean
+  /** 本次请求的幂等 token，生成后钉在 config 上，重放时才能复用同一个 */
+  _xkIdemKey?: string
+}
+
+/**
+ * 对外的请求配置。
+ *
+ * 在 axios 原生配置上加 `idempotent`：
+ * 打开后由请求拦截器生成 `X-Idempotency-Key`，
+ * 后端据此保证「同一次提交重发只执行一次」。
+ */
+export type XkRequestConfig = AxiosRequestConfig & {
+  /**
+   * 是否为写操作开启幂等。
+   *
+   * <b>只给「重试会造成脏数据」的接口开</b>：发布、上传、评论。
+   * 查询类接口不需要（重复查一次最多浪费点算力，不会有副作用），
+   * 点赞这类天然幂等的 PUT/DELETE 也不需要（重复调用只会返回最新状态）。
+   */
+  idempotent?: boolean
+}
+
+/**
+ * 生成幂等 token。
+ *
+ * 优先用 {@code crypto.randomUUID()}，但它要 HTTPS + 新内核，
+ * 老版本安卓 WebView 和 http 局域网调试下没有，所以留了兜底。
+ * 兜底不是「凑合」：只要同一次操作重发时拿到的是同一个值就够了，
+ * 而这点由「token 存在 config 上、重放时不重新生成」保证，不依赖随机源强度。
+ */
+function newIdemKey(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `xk${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`
 }
 
 const http: AxiosInstance = axios.create({
@@ -38,6 +73,19 @@ http.interceptors.request.use(
     if (accessToken.value) {
       config.headers.Authorization = `Bearer ${accessToken.value}`
     }
+
+    const xk = config as XkConfig & { idempotent?: boolean }
+    if (xk.idempotent) {
+      // 只在「还没有 token」时生成，钉在 config 上。
+      // 这一句是整个前端幂等的关键：401 刷新后 axios 会拿<b>同一个 config 对象</b>
+      // 重放（见响应拦截器里的 http.request(config)），如果这里每次都重新生成，
+      // 重放就会被后端当成一次全新的提交，笔记/评论照样发两遍。
+      if (!xk._xkIdemKey) {
+        xk._xkIdemKey = newIdemKey()
+      }
+      config.headers['X-Idempotency-Key'] = xk._xkIdemKey
+    }
+
     return config
   },
   (error) => Promise.reject(error),
@@ -166,20 +214,31 @@ http.interceptors.response.use(
   },
 )
 
-export function get<T>(url: string, params?: object, config?: AxiosRequestConfig): Promise<T> {
+export function get<T>(url: string, params?: object, config?: XkRequestConfig): Promise<T> {
   return http.get(url, { params, ...config }) as unknown as Promise<T>
 }
 
 export function post<T>(
   url: string,
   data?: object,
-  config?: AxiosRequestConfig,
+  config?: XkRequestConfig,
 ): Promise<T> {
   return http.post(url, data, config) as unknown as Promise<T>
 }
 
-export function put<T>(url: string, data?: object, config?: AxiosRequestConfig): Promise<T> {
+export function put<T>(url: string, data?: object, config?: XkRequestConfig): Promise<T> {
   return http.put(url, data, config) as unknown as Promise<T>
+}
+
+/**
+ * multipart 表单提交（图片上传）。
+ *
+ * 刻意<b>不设置 Content-Type</b>：带 boundary 的那个值必须由浏览器自己算出来，
+ * 手动指定等于替它填了个没有 boundary 的值，后端只能报解析失败。
+ * 和上面几个 post 唯一的区别就是这里不碰头。
+ */
+export function postForm<T>(url: string, form: FormData, config?: XkRequestConfig): Promise<T> {
+  return http.post(url, form, config) as unknown as Promise<T>
 }
 
 /**
@@ -189,7 +248,7 @@ export function put<T>(url: string, data?: object, config?: AxiosRequestConfig):
  * 这些接口没有请求体，用 body 反而会让某些网关和 CDN 对 DELETE 的处理
  * 出现分歧（有的会丢弃 body）。
  */
-export function del<T>(url: string, config?: AxiosRequestConfig): Promise<T> {
+export function del<T>(url: string, config?: XkRequestConfig): Promise<T> {
   return http.delete(url, config) as unknown as Promise<T>
 }
 

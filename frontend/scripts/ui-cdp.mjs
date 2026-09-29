@@ -112,6 +112,8 @@ export async function createSession({ name = 'ui', port } = {}) {
 
   const pending = new Map()
   const consoleErrors = []
+  /** method -> Set<handler>：给「要看请求实际发了什么」这类用例用 */
+  const listeners = new Map()
   let msgId = 0
 
   ws.onmessage = (e) => {
@@ -121,6 +123,14 @@ export async function createSession({ name = 'ui', port } = {}) {
       pending.delete(m.id)
       m.error ? reject(new Error(JSON.stringify(m.error))) : resolve(m.result)
       return
+    }
+    // 协议事件：比如 Network.requestWillBeSent。
+    // 断言「请求头里到底有没有某个字段」只能在协议这一层看 ——
+    // 页面上 evaluate 拿到的都是 axios 加工之后的对象，
+    // 封装层把头写错/漏写时它照样是对的，看它等于什么都没验。
+    const handlers = listeners.get(m.method)
+    if (handlers) {
+      for (const h of handlers) h(m.params)
     }
     // 只收集 error 级别：注入的控制台警告不属于被测代码的问题
     if (m.method === 'Runtime.exceptionThrown') {
@@ -181,6 +191,17 @@ export async function createSession({ name = 'ui', port } = {}) {
     await sleep(400)
   }
 
+  /**
+   * 订阅协议事件，返回退订函数。
+   *
+   * 必须先 {@code Network.enable} 才会收到 Network.* 事件。
+   */
+  function on(method, handler) {
+    if (!listeners.has(method)) listeners.set(method, new Set())
+    listeners.get(method).add(handler)
+    return () => listeners.get(method)?.delete(handler)
+  }
+
   const results = []
   const check = (label, ok, extra = '') => {
     results.push({ label, ok })
@@ -223,5 +244,5 @@ export async function createSession({ name = 'ui', port } = {}) {
     return failed === 0
   }
 
-  return { evaluate, waitFor, goto, send, check, log, results, consoleErrors, close }
+  return { evaluate, waitFor, goto, send, check, log, on, results, consoleErrors, close }
 }

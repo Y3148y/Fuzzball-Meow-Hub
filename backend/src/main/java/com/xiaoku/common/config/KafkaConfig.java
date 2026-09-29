@@ -60,10 +60,23 @@ public class KafkaConfig {
         return new KafkaTemplate<>(producerFactory);
     }
 
+    /**
+     * 生产端 Factory。
+     *
+     * <p><b>为什么不能只丢一张手写 config 进去：</b>{@code bootstrap.servers}
+     * 只存在于 Spring Boot 的 {@code KafkaProperties}（application.yml 的
+     * {@code spring.kafka.*}）里。这里如果手拼 Map 而漏掉它，KafkaTemplate
+     * 首次 send 时抛 {@code No resolvable bootstrap urls}——P0 铺 Kafka 时
+     * 没有生产者一直没暴露，P7 首次真实发送就被打脸。
+     * 所以先 {@code buildProducerProperties()} 打底（bootstrap.servers、
+     * enable.idempotence、max.in.flight 等全来自 yml），再用显式键覆盖
+     * 下面这几个有说明的项。
+     */
     @Bean
     public org.springframework.kafka.core.ProducerFactory<String, Object> xkProducerFactory(
-            ObjectMapper objectMapper) {
-        Map<String, Object> config = new HashMap<>();
+            ObjectMapper objectMapper,
+            org.springframework.boot.autoconfigure.kafka.KafkaProperties kafkaProperties) {
+        Map<String, Object> config = kafkaProperties.buildProducerProperties(null);
         // acks=-1 即 all，等待所有 ISR 副本确认后才认为写入成功
         config.put("acks", "all");
         // 默认 0 不重试。生产端至少给 3 次重试，覆盖 Broker 短暂 Leader 切换的场景
@@ -80,5 +93,25 @@ public class KafkaConfig {
                 new org.springframework.kafka.core.DefaultKafkaProducerFactory<>(config);
         factory.setValueSerializer(new JsonSerializer<>(objectMapper));
         return factory;
+    }
+
+    /**
+     * 消费端统一错误处理：固定退避重试 3 次（间隔 1s）仍失败 → 转发到
+     * {@code <原topic>.DLT} 死信主题，且<b>不再让异常冒泡</b>（recovered 视为已消费、提交位移）。
+     *
+     * <p>依赖 {@code spring.kafka.consumer.value-deserializer=ErrorHandlingDeserializer}：
+     * 反序列化失败的脏消息不会进到这里（value 直接被解成 null，
+     * {@code NoteSearchConsumer} 收到空事件只记日志跳过），
+     * 这里兜的是<b>业务处理失败</b>（如 ES 短暂不可用）。
+     *
+     * <p>死信消息可以手动回放：把 DLT 里的事件重投回主 topic，消费端幂等 upsert 不受影响。
+     */
+    @Bean
+    public org.springframework.kafka.listener.CommonErrorHandler kafkaErrorHandler(
+            KafkaTemplate<String, Object> kafkaTemplate) {
+        org.springframework.kafka.listener.DeadLetterPublishingRecoverer recoverer =
+                new org.springframework.kafka.listener.DeadLetterPublishingRecoverer(kafkaTemplate);
+        return new org.springframework.kafka.listener.DefaultErrorHandler(recoverer,
+                new org.springframework.util.backoff.FixedBackOff(1000L, 3));
     }
 }

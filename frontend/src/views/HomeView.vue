@@ -12,6 +12,16 @@ import ThemeToggle from '@/components/ThemeToggle.vue'
 const router = useRouter()
 const userStore = useUserStore()
 
+/* ---------------- 搜索入口 ---------------- */
+
+const keyword = ref('')
+
+function goSearch() {
+  const kw = keyword.value.trim()
+  if (!kw) return
+  void router.push({ name: 'search', query: { keyword: kw } })
+}
+
 /* ---------------- 关注流 ---------------- */
 
 const feed = ref<NoteListItemVO[]>([])
@@ -157,7 +167,18 @@ onMounted(loadFeed)
       </button>
     </section>
 
-    <section class="card xk-card xk-card--flat feed" data-test="feed">
+    <form class="search-row" role="search" data-test="home-search" @submit.prevent="goSearch">
+      <input
+        v-model="keyword"
+        class="search-input"
+        type="search"
+        placeholder="搜索笔记…"
+        data-test="home-search-input"
+      />
+      <button class="xk-btn go-search" type="submit" data-test="home-search-btn">搜索</button>
+    </form>
+
+    <section class="card xk-card xk-card--flat feed" data-test="feed" style="padding-top: 14px">
       <h2 class="feed-title">关注的人刚发的笔记</h2>
 
       <p v-if="feedLoading" class="hint" data-test="feed-loading">加载中…</p>
@@ -323,6 +344,36 @@ onMounted(loadFeed)
   color: var(--xk-text-3);
   font-size: 13px;
   cursor: pointer;
+}
+
+/* ---------------- 搜索入口 ---------------- */
+
+.search-row {
+  display: flex;
+  gap: 10px;
+}
+
+.search-input {
+  flex: 1;
+  min-width: 0;
+  height: 42px;
+  padding: 0 14px;
+  border: var(--xk-stroke-w) solid var(--xk-border);
+  border-radius: var(--xk-radius-blob-sm);
+  background: var(--xk-surface-2);
+  color: var(--xk-text-1);
+  font-size: 14px;
+}
+
+.search-input:focus {
+  outline: none;
+  border-color: var(--xk-amber);
+}
+
+.go-search {
+  height: 42px;
+  padding: 0 20px;
+  flex-shrink: 0;
 }
 
 /* ---------------- 关注流 ---------------- */

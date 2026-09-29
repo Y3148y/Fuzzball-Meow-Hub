@@ -12,13 +12,19 @@ import com.xiaoku.module.note.mapper.NoteImageMapper;
 import com.xiaoku.module.note.mapper.NoteMapper;
 import com.xiaoku.module.note.service.NoteService;
 import com.xiaoku.module.note.vo.NoteVO;
+import com.xiaoku.module.search.event.NoteEventDTO;
 import com.xiaoku.module.user.service.UserQueryService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Locale;
 
@@ -37,6 +43,10 @@ public class NoteServiceImpl implements NoteService {
     private final NoteImageMapper noteImageMapper;
     private final UserQueryService userQueryService;
     private final ImageStorage imageStorage;
+    private final KafkaTemplate<String, Object> kafkaTemplate;
+
+    @Value("${xiaoku.kafka.note-topic}")
+    private String noteEventTopic;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -78,6 +88,10 @@ public class NoteServiceImpl implements NoteService {
         }
 
         log.info("笔记发布成功 noteId={} userId={} images={}", note.getId(), userId, images.size());
+        // 稀缺：规划 ES 索引的异步同步。必须在 afterCommit 发送而不是在事务内直接发，
+        // 否则「消息进了 Kafka、事务却回滚」会产生索引里有、库里没有的幽灵文档。
+        // 发送是异步的且失败只记日志：搜索索引可被 /api/search/reindex 一键重建，不值得拖成功接口
+        registerAfterCommit(note);
         // 刚发布的笔记必然没有点赞/收藏/关注作者（自己不能关注自己），三者都是 false
         return NoteConverter.toVO(note, userQueryService.getUserVO(userId), images, false, false, false);
     }
@@ -85,6 +99,39 @@ public class NoteServiceImpl implements NoteService {
     @Override
     public String uploadImage(MultipartFile file) {
         return imageStorage.store(file);
+    }
+
+    /**
+     * 登记「事务提交后发笔记索引事件」。见 publish 里的说明。
+     */
+    private void registerAfterCommit(NoteEntity note) {
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                sendNoteEvent(note);
+            }
+        });
+    }
+
+    private void sendNoteEvent(NoteEntity note) {
+        NoteEventDTO event = NoteEventDTO.builder()
+                .action(NoteEventDTO.ACTION_PUBLISH)
+                .noteId(String.valueOf(note.getId()))
+                .title(note.getTitle())
+                .content(note.getContent())
+                .type(note.getType())
+                .status(note.getStatus())
+                .userId(String.valueOf(note.getUserId()))
+                .createTime(note.getCreateTime() == null ? null
+                        : note.getCreateTime().toEpochSecond(ZoneOffset.ofHours(8)) * 1000)
+                .build();
+        try {
+            // key=noteId：同一篇笔记的事件永远落同一分区，天然串行，杜绝并发 upsert 乱序
+            kafkaTemplate.send(noteEventTopic, event.getNoteId(), event);
+            log.info("已发送笔记索引事件 noteId={} action={}", event.getNoteId(), event.getAction());
+        } catch (RuntimeException e) {
+            log.error("笔记索引事件发送失败，可运行 POST /api/search/reindex 重建。noteId={}", event.getNoteId(), e);
+        }
     }
 
     /**

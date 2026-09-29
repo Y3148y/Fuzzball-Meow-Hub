@@ -143,6 +143,12 @@ spring:
       max-poll-records: 50
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        # ErrorHandlingDeserializer 只是个「带异常兜底的外壳」，真正干活的是交给它的
+        # delegate。生产端 JsonSerializer 关了 type headers（add.type.headers: false），
+        # 所以这里必须显式告诉 JsonDeserializer 把事件反序列化成什么类。
+        spring.deserializer.value.delegate.class: org.springframework.kafka.support.serializer.JsonDeserializer
+        spring.json.value.default.type: com.xiaoku.module.search.event.NoteEventDTO
     listener:
       # 单条消息处理失败时的重试次数，用尽后进入死信（由我们自己定义 DLT 逻辑）
       missing-topics-fatal: false

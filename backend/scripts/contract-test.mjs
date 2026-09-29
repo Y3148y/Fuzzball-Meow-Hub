@@ -13,7 +13,8 @@
  * 这里是「接口契约快照」，作用是改 Controller / DTO / 拦截器时能立刻发现
  * 前端依赖的报文形状被改坏了。
  *
- * 覆盖范围：P2 用户模块（注册/登录/刷新/资料），P3 笔记域（上传/发布/详情）。
+ * 覆盖范围：P2 用户模块（注册/登录/刷新/资料），P3 笔记域（上传/发布/详情），
+ * P5 互动域，P6 关注域，P7 搜索域（发布→Kafka→ES 异步索引→检索回 MySQL 组卡）。
  *
  * 依赖：Node 18+（用到全局 fetch 与 FormData）。默认打 http://localhost:8088，
  * 换地址用 XK_API_BASE 覆盖。
@@ -842,7 +843,71 @@ async function main() {
     codeIs('未登录不能看关注流（10005）', json, 10005)
   }
 
-  // ---- 16. 不支持的方法
+  // ---- 16. P7 搜索域：发布 → Kafka → ES 异步入索引 → 检索回 MySQL 组卡
+  {
+    const { json } = await get('/api/search/note?keyword=x')
+    codeIs('未登录不能搜索（10005，搜索沿用「默认全部需要登录」）', json, 10005)
+  }
+  {
+    const { json } = await get('/api/search/note?keyword=', { token: auth })
+    codeIs('空关键词被拦（50002）', json, 50002)
+  }
+  let searchNoteId = null
+  // 唯一词：seed 标题里带随机尾缀，保证只命中自己这篇，避开演示账号/固定 fixture 的笔记
+  const searchUnique = `星尘电台${stamp}${Math.random().toString(36).slice(2, 6)}`.toLowerCase()
+  {
+    const { json } = await post('/api/note/publish', {
+      token: auth,
+      body: { title: searchUnique, content: '在银河系边缘收听毛球乐队', type: 1 },
+    })
+    codeIs('搜索种子笔记发布成功（应进入 ES 索引）', json, 0)
+    searchNoteId = json?.data?.id
+    createdNoteIds.push(searchNoteId)
+  }
+  // 发布 → Kafka → 消费 → ES 全程异步，轮询等入索引；50×200ms 兜底，别让测试卡死在这
+  {
+    let found = false
+    for (let i = 0; i < 50 && !found; i++) {
+      const { json } = await get(`/api/search/note?keyword=${encodeURIComponent(searchUnique)}`, { token: auth })
+      found = json?.code === 0 && (json?.data?.total ?? 0) > 0
+      if (!found) await new Promise((r) => setTimeout(r, 200))
+    }
+    check('发布后经 Kafka 异步入索引（轮询 10s 内命中）', found)
+  }
+  {
+    const { json } = await get(`/api/search/note?keyword=${encodeURIComponent(searchUnique)}`, { token: auth })
+    codeIs('关键词命中后搜索成功', json, 0)
+    eq('命中首条就是刚发布的种子笔记', json?.data?.list?.[0]?.id, searchNoteId)
+    check('卡片作者昵称来自 MySQL 回填（ES 只做检索）',
+      typeof json?.data?.list?.[0]?.authorNickname === 'string' && json.data.list[0].authorNickname.length > 0,
+      `author=${json?.data?.list?.[0]?.authorNickname}`)
+    eq('自己看自己的搜索卡 authorFollowed=false', json?.data?.list?.[0]?.authorFollowed, false)
+    eq('total 与 list 长度一致', json?.data?.total, json?.data?.list?.length)
+    eq('page 回显', json?.data?.page, 1)
+    eq('size 回显（默认 20）', json?.data?.size, 20)
+  }
+  {
+    const { json } = await get(`/api/search/note?keyword=${stamp}zzzqqqno`, { token: auth })
+    codeIs('完全无关的关键词返回成功（不报错）', json, 0)
+    eq('搜不到时 total=0 且 list 为空', json?.data?.total, 0)
+  }
+  {
+    const { json } = await get(`/api/search/note?keyword=${encodeURIComponent(searchUnique)}&page=1&size=1`, { token: auth })
+    codeIs('分页搜索成功', json, 0)
+    eq('size=1 只回 1 条', json?.data?.list?.length, 1)
+    eq('size 回显', json?.data?.size, 1)
+  }
+  {
+    // 对账兜底：reindex 删旧索引 + 从 MySQL 全量回灌，重建后数据必须还在
+    const { json } = await post('/api/search/reindex', { token: auth })
+    codeIs('重建索引成功', json, 0)
+    check('reindex 返回回灌文档数', typeof json?.data?.indexed === 'number' && json.data.indexed > 0, `indexed=${json?.data?.indexed}`)
+    await new Promise((r) => setTimeout(r, 1500))
+    const { json: j2 } = await get(`/api/search/note?keyword=${encodeURIComponent(searchUnique)}`, { token: auth })
+    eq('重建后种子笔记仍可搜到', j2?.data?.list?.[0]?.id, searchNoteId)
+  }
+
+  // ---- 17. 不支持的方法
   {
     const { json } = await call('DELETE', '/api/user/login')
     codeIs('不支持的请求方法被统一处理（100002）', json, 100002)
@@ -882,6 +947,8 @@ async function main() {
   console.log(`  DELETE FROM xiaoku_db.user WHERE username REGEXP '^ct[0-9]?_[a-z0-9]+$';`)
   console.log(`  图片文件在 backend/uploads/（已 gitignore），要清就整个删掉该目录`)
   console.log(`  注意：xk_ui_smoke / xk_ui_interact / xiaoku_demo 是常驻 fixture，别删`)
+  console.log(`  ES 会留下已删笔记的孤儿文档（搜索回填时会按 MySQL 过滤掉，不影响结果）`)
+  console.log(`  要彻底清空索引：重启后端后调 POST /api/search/reindex 从当前库重建`)
 }
 
 main().catch((e) => {

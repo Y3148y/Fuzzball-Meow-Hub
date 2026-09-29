@@ -51,6 +51,25 @@ git -c http.proxy=http://127.0.0.1:7897 -c https.proxy=http://127.0.0.1:7897 pus
 - Elasticsearch `9250`、Kafka `9092`、后端 `8088`、前端 dev `5180`
 - 仓库根目录 `.env` 提供 `MYSQL_ROOT_PASSWORD`（**永不提交**）
 
+**连 MySQL 只能这么写（2026-09-29 实测，其他写法全部失败）**：
+
+```powershell
+$pwd = (Select-String -Path .env -Pattern "^MYSQL_ROOT_PASSWORD=(.*)$").Matches.Groups[1].Value
+$env:MYSQL_PWD = $pwd   # 别用 -p：交互式会索要口令，非交互式又会把口令打到日志里
+& "E:\Web\MySQL\bin\mysql.exe" --no-defaults --host=127.0.0.1 --port=3309 --user=root "--execute=SELECT 1"
+```
+
+两个坑：
+
+1. **必须 `--no-defaults`**：这台机的 option 文件（`C:\WINDOWS\my.ini` 等）与
+   MySQL 9.0.1 客户端不兼容，**不加这个开关时 mysql 只会打一屏 usage 然后退出**，
+   看起来像「SQL 写错了」，其实是根本没执行。
+2. **必须用长参数 `--host=127.0.0.1`，不能用粘连的短参数 `-h127.0.0.1`**：
+   粘连写法会被解析成 host=`127`，报 `Unknown MySQL server host '127'`。
+
+用 `mysql --version` 确认客户端本身是好的（`Ver 9.0.1 for Win64`）；如果连
+`--version` 都打不出来，才是二进制本身坏了。
+
 ---
 
 ## 3. 启动后端：口令变量是强制的
@@ -107,14 +126,14 @@ $env:XK_MYSQL_PASSWORD = "<.env 里的 MYSQL_ROOT_PASSWORD>"   # 不设就起不
 改后端接口 → 必须跑契约测试；改前端 → 必须跑 CDP 测试。**别攒到最后一起跑。**
 
 ```bash
-# 后端（需后端已在 8088 运行）→ 203 条
+# 后端（需后端已在 8088 运行）→ 222 条
 cd backend && node scripts/contract-test.mjs
 # 换地址：XK_API_BASE=http://ip:8088 node scripts/contract-test.mjs
 
-# 前端（需前端 5180 + 后端 8088 同时在跑）→ 18 + 8 + 17 + 26 + 41 + 25 = 135 条
+# 前端（需前端 5180 + 后端 8088 同时在跑）→ 18 + 8 + 17 + 26 + 41 + 25 + 19 = 154 条
 cd frontend && npm run test:ui
 
-# 单跑某一组：:smoke / :refresh / :note / :profile / :interaction / :follow
+# 单跑某一组：:smoke / :refresh / :note / :profile / :interaction / :follow / :search
 cd frontend && npm run test:ui:interaction
 
 # 前端类型 / 构建
@@ -127,20 +146,30 @@ cd frontend && npm run typecheck && npm run build
 清理有**两个**坑，第二个比第一个危险得多：
 
 ```sql
+-- 0) 先把 ct 账号 id 落临时表：后面每条 DELETE 都锚在它上面，
+--    既不用抄三遍正则，也保证「只删测试账号的东西」这件事肉眼可验证
+CREATE TEMPORARY TABLE _ct AS
+  SELECT id FROM xiaoku_db.user WHERE username REGEXP '^ct[0-9]?_[a-z0-9]+$';
+SELECT COUNT(*) FROM _ct;   -- 先看清要删几个，再往下删
+
 -- 1) 顺序：先子表后父表。P5 之后有四张表挂在 note 下面，
 --    comment_like 又挂在 comment 下面，少删一张就留孤儿行
 DELETE FROM xiaoku_db.comment_like
-  WHERE comment_id IN (SELECT id FROM xiaoku_db.comment WHERE note_id IN (SELECT id FROM xiaoku_db.note));
-DELETE FROM xiaoku_db.comment   WHERE note_id IN (SELECT id FROM xiaoku_db.note);
-DELETE FROM xiaoku_db.note_like   WHERE note_id IN (SELECT id FROM xiaoku_db.note);
-DELETE FROM xiaoku_db.note_collect WHERE note_id IN (SELECT id FROM xiaoku_db.note);
-DELETE FROM xiaoku_db.note_image  WHERE note_id IN (SELECT id FROM xiaoku_db.note);
-DELETE FROM xiaoku_db.note;
+  WHERE comment_id IN (SELECT id FROM xiaoku_db.comment
+    WHERE note_id IN (SELECT id FROM xiaoku_db.note WHERE user_id IN (SELECT id FROM _ct)));
+DELETE FROM xiaoku_db.comment
+  WHERE note_id IN (SELECT id FROM xiaoku_db.note WHERE user_id IN (SELECT id FROM _ct));
+DELETE FROM xiaoku_db.note_like
+  WHERE note_id IN (SELECT id FROM xiaoku_db.note WHERE user_id IN (SELECT id FROM _ct));
+DELETE FROM xiaoku_db.note_collect
+  WHERE note_id IN (SELECT id FROM xiaoku_db.note WHERE user_id IN (SELECT id FROM _ct));
+DELETE FROM xiaoku_db.note_image
+  WHERE note_id IN (SELECT id FROM xiaoku_db.note WHERE user_id IN (SELECT id FROM _ct));
+DELETE FROM xiaoku_db.note WHERE user_id IN (SELECT id FROM _ct);
 -- 2) user_follow 无外键不级联（P6），必须在删 user 前先把 ct 账号两头的关系清掉，
 --    否则留下 user_id / follow_id 指向不存在用户的孤儿行
 DELETE FROM xiaoku_db.user_follow
-  WHERE user_id IN (SELECT id FROM xiaoku_db.user WHERE username REGEXP '^ct[0-9]?_[a-z0-9]+$')
-     OR follow_id IN (SELECT id FROM xiaoku_db.user WHERE username REGEXP '^ct[0-9]?_[a-z0-9]+$');
+  WHERE user_id IN (SELECT id FROM _ct) OR follow_id IN (SELECT id FROM _ct);
 DELETE FROM xiaoku_db.user WHERE username REGEXP '^ct[0-9]?_[a-z0-9]+$';
 ```
 
@@ -150,7 +179,13 @@ DELETE FROM xiaoku_db.user WHERE username REGEXP '^ct[0-9]?_[a-z0-9]+$';
    `xk_ui_interact`、`xk_ui_follow` 这些常驻 fixture 的笔记、评论和关注行。
    `DELETE FROM xiaoku_db.comment;` / `DELETE FROM xiaoku_db.user_follow;`
    这种全表清空会把它们一起删掉，而脚本跑完只显示「清理成功」，
-   **没有任何迹象表明你顺手删了别的东西**。先 `SELECT id FROM note` 缩到测试笔记再删。
+   **没有任何迹象表明你顺手删了别的东西**。
+   ⚠️ 旧版这份文档里的清理 SQL 就是**每条都锚在 `xiaoku_db.note` 上**的
+   （最后一条 `DELETE FROM xiaoku_db.note;` 甚至没有 `WHERE`），
+   与它自己下一条禁令直接矛盾。**照抄会连 fixture 的笔记一起删掉。**
+3. **ES 里会留下孤儿文档**：P7 起测试笔记会经 Kafka 进索引，删库不删索引。
+   搜索回填时按 MySQL 过滤，结果不受影响；想彻底清空就调
+   `POST /api/search/reindex`（需登录）从当前库重建。
 
 删库不会删文件，图片还在 `backend/uploads/`（已 gitignore），要清就整个删掉。
 
@@ -222,11 +257,11 @@ get('/comment/list', { params: { noteId, page } })    // ❌ 发出 ?params[note
 后端收到「缺少必要参数：noteId」。**契约测试抓不到**，因为它走裸 HTTP
 绕开了整个前端封装层，只有真机点一下才会暴露。
 
-## 7. 已完成状态（2026-09-28）
+## 7. 已完成状态（2026-09-29）
 
 - P0 环境编排 / P1 统一响应与异常 / P2 用户模块 + JWT / P4 部分（登录 + 首页）已合并推送
 - 品牌改名已落地（`62ed4c5`），测试通过且未改任何测试断言
-- 契约测试已落盘（`f8f412c`），现为 **203 条断言**（P2 44 条 + P3 32 条 + P5 58 条 + P6 69 条）
+- 契约测试已落盘（`f8f412c`），现为 **222 条断言**（P2 44 + P3 32 + P5 58 + P6 69 + P7 19）
 - 口令兜底修正 + 注释订正（`cf93b22`）
 - AGENTS.md 本身已提交（`3978ed0`）
 - P3 后端已推送（`fd4140e`），含雪花 ID 精度修复
@@ -239,8 +274,8 @@ get('/comment/list', { params: { noteId, page } })    // ❌ 发出 ?params[note
   - 笔记域错误码已在 `ErrorCodeEnum.java:39` 预留并在用：
     `NOTE_NOT_FOUND` / `NOTE_STATUS_ILLEGAL` / `NOTE_UPLOAD_FAILED` /
     `NOTE_IMAGE_LIMIT_EXCEED`（9 张上限）
-- P6 关注域已完工（本 commit）：关注 / 取关 / 关注列表 / 粉丝列表 / 作者主页
-  / 关注流 + 契约 **203 条** + CDP **135 条**
+- P6 关注域已完工：关注 / 取关 / 关注列表 / 粉丝列表 / 作者主页
+  / 关注流 + 契约 203 条 + CDP 135 条
   - `module/follow/`（`UserFollowEntity` / `FollowUserVO` / 两个 service /
     `FollowController`）+ `module/feed/`（JOIN SQL）+ 笔记域只读改动
   - `user_follow.status` 列**闲置弃用**：关注/取关走物理删，唯一索引当裁判
@@ -252,6 +287,25 @@ get('/comment/list', { params: { noteId, page } })    // ❌ 发出 ?params[note
     `UserView.vue`；首页 env 自检卡移除换成关注流；详情页作者区加关注按钮
   - `schema.sql` 在 P0 就已建好全部 8 张表，含 `note` / `note_image`，
     **P3 没有改 schema**
+- P7 搜索域已完工（本 commit）：ES 检索 + Kafka 异步同步
+  + 契约 **222 条** + CDP **154 条**
+  - `module/search/`：`NoteEventDTO` / `NoteSearchDoc` / `NoteSearchRepository` /
+    `NoteSearchConsumer` / `SearchService(Impl)` / `SearchController`
+  - 接口：`GET /api/search/note?keyword=&page=&size=`、
+    `POST /api/search/reindex`（删旧索引 + 从 MySQL 全量回灌，需登录）
+  - **`KafkaConfig.xkProducerFactory` 有真实缺陷**：P0 手写的 config map 漏了
+    `bootstrap.servers`，启动不报错、**首次真发消息**才抛
+    `No resolvable bootstrap urls`。已改为 `kafkaProperties.buildProducerProperties(null)`
+    打底再覆盖自有键。另有 `kafkaErrorHandler` bean（DLT + `FixedBackOff(1s,3)`）
+  - `NoteServiceImpl.publish` 在 **afterCommit** 发事件（key=noteId，失败只记日志）
+  - 消费端 `application.yml` 显式配 `JsonDeserializer` + `default.type`，
+    因为生产端复用的是 Spring MVC 那个 `ObjectMapper`（Long → 字符串）
+  - **ES 只存检索字段**，命中后回 MySQL 组卡（昵称/计数/authorFollowed 都是当前值），
+    并按 id 映射重排以保住 ES 的相关度/时间序
+  - 点赞/收藏/评论计数变化**不触发**重建索引（计数在回 MySQL 时现查），漂移推给 P8
+  - 前端新页 `SearchView.vue`（`/search?keyword=`，query 传关键词）+ 首页搜索框；
+    CDP 新组 `ui-search.mjs`（19 条）复用 `xk_ui_follow` 的常驻素材笔记
+  - 搜索域错误码 50xxx：`SEARCH_SERVICE_ERROR` / `SEARCH_KEYWORD_EMPTY`
 
 ### P3 已知缺口（不是遗漏，是当前阶段做不到）
 
@@ -285,3 +339,19 @@ get('/comment/list', { params: { noteId, page } })    // ❌ 发出 ?params[note
 - **S3ImageStorage 仍未实测**（同 P3，本机无 S3 端点）。
 - **固定账号 xk_ui_interact**：`ui-interaction.mjs` 的常驻评论者，
   撞 `10003` 判通过，和 `xk_ui_smoke` 一样**不要清理**。
+
+### P7 已知缺口（不是遗漏，是当前阶段做不到）
+
+- **没用 IK 中文分词**：`NoteSearchDoc` 用的是 ES 默认 standard 分析器，
+  中文基本按单字切，召回够用（「笔记」能搜到）但语义相关性远不如 IK。
+  要换就改注解上的 `analyzer` + 装 IK 插件，重建索引。
+- **`createTime` 用 Long 存 epochMillis 有 WARN**：`@Field(type = Date, epoch_millis)`
+  配 `Long` 会被 Spring Data ES 判为不支持类型，实际落成 number 字段。
+  排序（`SortOptions.of` 的 createTime desc）和检索都正常，但映射不是日期类型，
+  将来做时间范围查询要注意写法。
+- **点赞/收藏/评论计数不触发重建索引**（决策 D2）：卡片计数在回 MySQL 时现查，
+  所以展示值是准的；ES 里的 `createTime`/标题快照不会随编辑更新 ——
+  而 P3 至今没有编辑/下架接口，所以暂时没有漂移来源。
+  真正要做的是 P8 的 Redis 计数 + 异步落库。
+- **reindex 是全量重建**：删索引 + 从 MySQL 回灌，10 篇就 10 篇，量大了会慢，
+  且期间检索会短暂失败。没做增量/双写，别在生产直接调。

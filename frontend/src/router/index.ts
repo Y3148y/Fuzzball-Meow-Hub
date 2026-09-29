@@ -34,6 +34,13 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '发布笔记', requiresAuth: true },
   },
   {
+    // 关键词走 query 而不走路径参数，中文不用 encode 进 URL，刷新也能保持
+    path: '/search',
+    name: 'search',
+    component: () => import('@/views/SearchView.vue'),
+    meta: { title: '搜索', requiresAuth: true },
+  },
+  {
     // id 是雪花 ID，必须按字符串透传。这里写 :id(\\d+) 只是收窄非法路径，
     // 不要写成 :id(\\d{1,15}) —— 那样真笔记的 17~18 位 ID 反而进不来。
     path: '/note/:id(\\d+)',

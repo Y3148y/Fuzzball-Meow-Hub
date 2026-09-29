@@ -22,7 +22,7 @@
 | P4 | 前端页面（登录 / 首页 / 发布 / 详情 / 我的） | ✅ 已完成 |
 | P5 | 点赞 / 收藏 / 评论（Redis 计数一致性推到 P8） | ✅ 已完成 |
 | P6 | 关注关系 + 关注流 | ✅ 已完成 |
-| P7 | Elasticsearch 搜索 + Kafka 异步同步 | ⬜ 未开始 |
+| P7 | Elasticsearch 搜索 + Kafka 异步同步 | ✅ 已完成 |
 | P8 | 缓存三件套 / 布隆过滤器 / 分布式锁 / 限流 | ⬜ 未开始 |
 | P9 | 压测报告 + 完整文档 + 部署脚本 | ⬜ 未开始 |
 
@@ -259,7 +259,7 @@ red-book/
 | 2 | access token 正常过期时用户被踢下线 | 响应拦截器已解包成 `body.data`，刷新逻辑又读 `res.data` 得 `undefined` → 走失败分支 | 成功路径和失败路径类型都是合法的 |
 | 3 | 填错密码时点登录毫无反应 | `canSubmit` 把「长度不够」也算作按钮 `disabled` | 不是错误，是设计选择 |
 
-**防复发**：登录链路一旦改动，跑 `npm run test:ui`（110 条断言，见下）。第 1、2 条都有对应用例。
+**防复发**：登录链路一旦改动，跑 `npm run test:ui`（154 条断言，见下）。第 1、2 条都有对应用例。
 
 ### 测试基建：`npm run test:ui`
 
@@ -273,7 +273,9 @@ red-book/
 | `npm run test:ui:note` | 发布页守卫、空表单禁用、字数计数、本地预览、9 张上限、发布跳详情、详情图片**真实解码**（非碎图） |
 | `npm run test:ui:profile` | 我的页守卫、资料回填、昵称超长前端拦截、保存后**回查后端**确认落库、取消不写库、演示账号自还原 |
 | `npm run test:ui:interaction` | 点赞/收藏开关往返、两者互不影响、跨账号评论、回复嵌套与被回复者昵称、删根评论的确认弹窗与子树级联 |
-| `npm run test:ui` | 五者全跑（110 条） |
+| `npm run test:ui:follow` | 作者主页关注 → 关注流出现 → 详情页取关 → 关注流消失、行内关注按钮、关注/粉丝列表、粉丝空态、自己主页无关注按钮 |
+| `npm run test:ui:search` | 首页搜索框跳搜索页、命中素材笔记、卡片作者昵称来自 MySQL 回填、进详情、无结果空态、空关键词不发请求、带 `?keyword=` 直链刷新 |
+| `npm run test:ui` | 七者全跑（154 条） |
 
 **验证 refresh 链路的做法**：把 `localStorage` 里的 `xk_token` 改成垃圾串后**整页重载**。
 冷启动时 token 的 `ref` 会读到这个坏值，`isLogin` 仍为 `true`，
@@ -457,10 +459,51 @@ CDP 的 `ui-follow.mjs` 有个自愈细节：全程只可能产生 demo→素材
 脚本开头先去作者主页把残留状态归零再断言「不在关注流」，
 这样中途崩掉的上一次运行不会让下一次跑红。
 
+### P7 搜索域：ES 只做检索，卡片回 MySQL 组装
+
+**1. 一个真实的脚手架缺陷：producer 缺 `bootstrap.servers`**
+
+P0 的 `KafkaConfig` 手写 `ProducerFactory` 的 config map，只塞了序列化器等键，
+**漏了从 `spring.kafka.*` 读 `bootstrap.servers`**。启动阶段完全不报错，
+直到第一次真发消息才抛 `No resolvable bootstrap urls given in bootstrap.servers`。
+修法是 `kafkaProperties.buildProducerProperties(null)` 打底再覆盖自有键——
+别再手写那串 map。这类「配置在启动时被放过、在首个请求才暴露」的坑，
+只有真发一条消息才能抓到。
+
+**2. 发布 → Kafka → ES 全异步，索引只是检索层**
+
+`NoteServiceImpl.publish` 在事务 **afterCommit** 才发 `NoteEventDTO`
+（key = noteId，发送失败只记日志、绝不阻塞发布本身）。消费端 `xk-search` 组
+按「先删后建」upsert，`_id` 直接用 noteId，天然幂等、可重放。
+
+ES 文档只存**检索字段**（id / title / content / type / status / userId / createTime），
+命中后回 MySQL `selectBatchIds` 组装卡片——昵称、计数、`authorFollowed` 都是**当前值**，
+不会因为 ES 里是发布时的快照而过期。返回顺序严格保 ES 的相关度/时间序：回填后按 id 映射重排。
+
+**3. 计数不进 ES，漂移留到 P8**
+
+点赞/收藏/评论数变化**不触发**重建索引（P7 只做发布快照 + reindex 兜底），
+卡片计数由回 MySQL 时现查所以始终准；真正的实时计数一致性（Redis 计数 + 异步落库）
+是 P8 的主题，这里不提前实现。
+
+**4. Snowflake ID 在 ES 里也是字符串**
+
+`NoteEventDTO` 的 id 用 `String`（生产者复用 Spring MVC 的 ObjectMapper，Long → 字符串），
+文档 `_id` 直接用它。按数字存会和 P3 一样丢精度——ES 的 `long` 是安全的，
+但事件一路从 JSON 过来，中间任何一次 JS/字符串转换都不能变数字。
+
+**5. DLT 兜底**
+
+消费失败经 `FixedBackOff(1s, 3)` 重试后进 `<topic>.DLT`（`DeadLetterPublishingRecoverer`），
+坏消息不卡分区。
+
+**已知缺口**：未引入 IK 分词，用的是 ES 默认 standard 分析器（中文按单字切，
+召回够用但与 IK 有差距）；本机无 S3 端点，`S3ImageStorage` 仍未实测。
+
 ### 后端契约测试：`node backend/scripts/contract-test.mjs`
 
 P2 那 7 条断言原本是临时脚本，跑完就丢了，`git log` 里看不出「怎么测的」。
-现在固化成落盘的契约快照，203 条（P2 44 + P3 32 + P5 58 + P6 69）：
+现在固化成落盘的契约快照，222 条（P2 44 + P3 32 + P5 58 + P6 69 + P7 19）：
 
 ```bash
 cd backend
@@ -487,6 +530,7 @@ VO 有没有漏出敏感字段。裸 HTTP 打一遍最直接，零依赖意味�
 | P5 评论域 | 不能评论自己的笔记 30007、回复拉平到同一根评论、**子回复截断到 3 条但 replyTotal 给真实总数**、级联删根评论且计数一次退完、非作者删除返回 30005 |
 | P6 关注域 | 关注/取关各自开关注并重复操作 40001/40002、自关注 40003、目标不存在 10001、**关注/粉丝列表的 followed 是「当前浏览者是否也关注」**、互关后两列表都有 true、作者主页笔记列表 20001 区分「无笔记」与「用户不存在」、作者卡片一次往返拿全、feed 只含关注中作者的笔记、**取关后计数回滚且从 feed 消失** |
 | P6 feed | JOIN 不 IN、列表含作者信息、空 feed、分页回显、未登录 10005 |
+| P7 搜索域 | 空关键词 50002、未登录 10005、发布后**轮询等异步入索引**再断命中、命中首条就是种子笔记、卡片作者昵称来自 MySQL 回填、`authorFollowed` 为当前值、`total` 与 `list` 长度一致、无关词返回空列表不报错、分页回显、`/api/search/reindex` 重建后仍可搜到 |
 
 最后一条是安全断言：Entity 有 `password`，靠 `@JsonIgnore` 兜底属于「靠注解赌后人不忘」，
 断言字段名才能在有人不小心把 Entity 直接返回时立刻炸出来。
@@ -506,15 +550,28 @@ VO 有没有漏出敏感字段。裸 HTTP 打一遍最直接，零依赖意味�
 脚本结束时会直接打出带具体 id 的清理 SQL。批量清（**顺序和范围都有讲究**）：
 
 ```sql
+-- 0) 先用 ct 账号 id 把范围缩到测试笔记，别碰 fixture（demo / xk_ui_*）
+--    下面每个子查询都锚在 ^ct[0-9]?_[a-z0-9]+$ 上，不是全表 DELETE
 -- 1) 先子表后父表。P5 之后有四张表挂在 note 下面，
 --    comment_like 又挂在 comment 下面，少删一张就留孤儿行
 DELETE FROM xiaoku_db.comment_like
-  WHERE comment_id IN (SELECT id FROM xiaoku_db.comment WHERE note_id IN (SELECT id FROM xiaoku_db.note));
-DELETE FROM xiaoku_db.comment WHERE note_id IN (SELECT id FROM xiaoku_db.note);
-DELETE FROM xiaoku_db.note_like   WHERE note_id IN (SELECT id FROM xiaoku_db.note);
-DELETE FROM xiaoku_db.note_collect WHERE note_id IN (SELECT id FROM xiaoku_db.note);
-DELETE FROM xiaoku_db.note_image  WHERE note_id IN (SELECT id FROM xiaoku_db.note);
-DELETE FROM xiaoku_db.note;
+  WHERE comment_id IN (SELECT id FROM xiaoku_db.comment WHERE note_id IN
+    (SELECT id FROM xiaoku_db.note WHERE user_id IN
+      (SELECT id FROM xiaoku_db.user WHERE username REGEXP '^ct[0-9]?_[a-z0-9]+$')));
+DELETE FROM xiaoku_db.comment WHERE note_id IN
+  (SELECT id FROM xiaoku_db.note WHERE user_id IN
+    (SELECT id FROM xiaoku_db.user WHERE username REGEXP '^ct[0-9]?_[a-z0-9]+$'));
+DELETE FROM xiaoku_db.note_like   WHERE note_id IN
+  (SELECT id FROM xiaoku_db.note WHERE user_id IN
+    (SELECT id FROM xiaoku_db.user WHERE username REGEXP '^ct[0-9]?_[a-z0-9]+$'));
+DELETE FROM xiaoku_db.note_collect WHERE note_id IN
+  (SELECT id FROM xiaoku_db.note WHERE user_id IN
+    (SELECT id FROM xiaoku_db.user WHERE username REGEXP '^ct[0-9]?_[a-z0-9]+$'));
+DELETE FROM xiaoku_db.note_image  WHERE note_id IN
+  (SELECT id FROM xiaoku_db.note WHERE user_id IN
+    (SELECT id FROM xiaoku_db.user WHERE username REGEXP '^ct[0-9]?_[a-z0-9]+$'));
+DELETE FROM xiaoku_db.note WHERE user_id IN
+  (SELECT id FROM xiaoku_db.user WHERE username REGEXP '^ct[0-9]?_[a-z0-9]+$');
 -- 2) user_follow 挂在 user 上但无外键（P6），必须在删 user 前清，
 --    否则留下 user_id / follow_id 指向不存在用户的孤儿行
 DELETE FROM xiaoku_db.user_follow
@@ -538,8 +595,12 @@ DELETE FROM xiaoku_db.user WHERE username REGEXP '^ct[0-9]?_[a-z0-9]+$';
 > `xk_ui_follow` 这些常驻 fixture 也在 `xiaoku_db.note` / `comment` / `user_follow` 里。一条
 > `DELETE FROM xiaoku_db.comment;` 会把它们一起清掉，而脚本跑完只显示「清理成功」，
 > **没人会发现顺手删了别的东西**。
-> 上面的写法先 `SELECT id FROM note` 把范围缩到测试笔记，正是这个原因。
+> 上面的写法把范围缩到测试笔记（子查询锚在 ct 账号正则上），正是这个原因。
 > `xk_ui_*` 与 `xiaoku_demo` 是常驻 fixture，任何清理都不要碰。
+
+> **清理不碰 ES**：契约测试发的笔记经 Kafka 进了 ES 索引，删库不会自动删索引文档。
+> 搜索回填时按 MySQL 过滤，孤儿文档不会出现在结果里；要彻底清空就调
+> `POST /api/search/reindex`（需登录）从当前库重建。
 
 ### 素材
 

@@ -45,6 +45,9 @@ export const ErrorCode = {
   ALREADY_FOLLOWED: 40001,
   NOT_FOLLOWED: 40002,
   CANNOT_FOLLOW_SELF: 40003,
+  // 50xxx 搜索域
+  SEARCH_SERVICE_ERROR: 50001,
+  SEARCH_KEYWORD_EMPTY: 50002,
 } as const
 
 /**

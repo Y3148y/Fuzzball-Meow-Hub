@@ -45,9 +45,36 @@ export function publishNote(data: NotePublishDTO) {
   return post<NoteVO>('/note/publish', data, { idempotent: true })
 }
 
-/** 笔记详情 */
+/**
+ * 笔记详情
+ */
 export function getNoteDetail(id: string) {
   return get<NoteVO>(`/note/${id}`)
+}
+
+/**
+ * 更新笔记（作者本人，全量覆盖，P10）。
+ *
+ * <p>编辑走 PUT + 全量字段覆盖语义：不传的字段会被清空（cover/videoUrl 同理），
+ * 因此必须把当前表单完整回传。不挂幂等头——编辑不是创建，重复提交无副作用叠加。
+ */
+export function updateNote(id: string, data: NotePublishDTO) {
+  return put<NoteVO>(`/note/${id}`, data)
+}
+
+/**
+ * 上架 / 下架笔记（作者本人，P10）。
+ * status 只接受 1（发布）或 2（下架）；重复设置同一状态幂等。
+ */
+export function changeNoteStatus(id: string, status: 1 | 2) {
+  return put<NoteVO>(`/note/${id}/status`, { status })
+}
+
+/**
+ * 删除笔记（作者本人，P11）。级联清理图片/点赞/收藏/评论并从搜索移除。
+ */
+export function deleteNote(id: string) {
+  return del<{ success: true }>(`/note/${id}`)
 }
 
 /*

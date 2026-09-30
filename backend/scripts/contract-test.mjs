@@ -407,6 +407,17 @@ async function main() {
     codeIs('视频笔记缺 videoUrl 被拦（100001）', json, 100001)
   }
   {
+    const { json } = await post('/api/note/publish', { token: auth, body: { title: '图文没图', content: 'c', type: 1 } })
+    codeIs('图文笔记必须至少一张图（P11，对齐小红书）', json, 100001)
+  }
+  {
+    // 图文 + 空图组（null / []）同样算没图，检验「有图」判断用的是非空图片列表而不是「传了字段」
+    for (const images of [null, []]) {
+      const { json } = await post('/api/note/publish', { token: auth, body: { title: '空图组', content: 'c', type: 1, imageUrls: images } })
+      codeIs('图文笔记 imageUrls 为 null/[] 同样被拦（100001）', json, 100001)
+    }
+  }
+  {
     const { json } = await post('/api/note/publish', { token: auth, body: { title: '类型', content: 'c', type: 9 } })
     codeIs('非法笔记类型被拦（100001）', json, 100001)
   }
@@ -429,8 +440,8 @@ async function main() {
 
   // ---- 13. P5 互动域：点赞 / 收藏
   //
-  // 需要第三个账号：note 的作者是 ct_，而规则禁止评论自己的笔记（30007），
-  // 点赞/收藏也要一个「非作者」来点，否则测不到 30007 这条规则。
+  // 需要第三个账号：note 的作者是 ct_，点赞/收藏必须由「非作者」来点，
+  // 否则计数/关系行都落在作者自己身上，测不到独立视角。
   let actorAuth = null
   let actorName = `ct3_${stamp}`
   {
@@ -515,11 +526,20 @@ async function main() {
   let commentId = null
   let replyId = null
   {
+    // P11 起作者可以在自己笔记下评论/回复（对齐小红书「作者运营评论区」），
+    // 发完立刻删掉，维持 commentCount 从 0 开始供下游章节使用
     const { json } = await post('/api/comment', {
       token: auth,
-      body: { noteId, content: '作者评论自己的笔记' },
+      body: { noteId, content: '作者在自己的笔记下发一条评论' },
     })
-    codeIs('不能评论自己的笔记（30007，兑现 P0 定下的规则）', json, 30007)
+    codeIs('作者可以评论自己的笔记（P11 放开自评限制，对齐小红书）', json, 0)
+    eq('自己的评论 mine=true', json?.data?.mine, true)
+    const ownId = json?.data?.id
+    check('自评拿到评论 ID', typeof ownId === 'string' && /^\d+$/.test(ownId), `ownId=${ownId}`)
+    const { json: j2 } = await del(`/api/comment/${ownId}`, { token: auth })
+    codeIs('删除刚才那条自评（还原计数）', j2, 0)
+    const { json: j3 } = await get(`/api/note/${noteId}`, { token: actorAuth })
+    eq('自评已删，commentCount 回到 0', j3?.data?.commentCount, 0)
   }
   {
     const { json } = await post('/api/comment', {
@@ -594,7 +614,7 @@ async function main() {
     // 跨笔记回复必须拦，否则两篇笔记的评论数会互相污染
     const other = await post('/api/note/publish', {
       token: auth,
-      body: { title: '另一篇', content: '另一篇的正文' },
+      body: { title: '另一篇', content: '另一篇的正文', imageUrls: [imageUrl] },
     })
     const otherId = other.json?.data?.id
     createdNoteIds.push(otherId)
@@ -708,11 +728,11 @@ async function main() {
   let ct2NoteId = null
   let ct3NoteId = null
   {
-    const n2 = await post('/api/note/publish', { token: ct2Auth, body: { title: '关注流测试一', content: 'ct2 的正文' } })
+    const n2 = await post('/api/note/publish', { token: ct2Auth, body: { title: '关注流测试一', content: 'ct2 的正文', imageUrls: [imageUrl] } })
     codeIs('ct2 发布笔记成功', n2.json, 0)
     ct2NoteId = n2.json?.data?.id
     createdNoteIds.push(ct2NoteId)
-    const n3 = await post('/api/note/publish', { token: actorAuth, body: { title: '关注流测试二', content: 'ct3 的正文' } })
+    const n3 = await post('/api/note/publish', { token: actorAuth, body: { title: '关注流测试二', content: 'ct3 的正文', imageUrls: [imageUrl] } })
     codeIs('ct3 发布笔记成功', n3.json, 0)
     ct3NoteId = n3.json?.data?.id
     createdNoteIds.push(ct3NoteId)
@@ -890,7 +910,7 @@ async function main() {
   {
     const { json } = await post('/api/note/publish', {
       token: auth,
-      body: { title: `星尘电台 ${searchUnique}`, content: '在银河系边缘收听毛球乐队', type: 1 },
+      body: { title: `星尘电台 ${searchUnique}`, content: '在银河系边缘收听毛球乐队', type: 1, imageUrls: [imageUrl] },
     })
     codeIs('搜索种子笔记发布成功（应进入 ES 索引）', json, 0)
     searchNoteId = json?.data?.id
@@ -1018,7 +1038,7 @@ async function main() {
   // 这里用 P8 里另一个账号（rlAuth）来发，理由是 P5 那几节已经把 auth 的
   // 笔记/评论都用过了，再往里塞幂等断言会让「哪个 id 是幂等产生的」不好认。
   const idem = (t) => ({ 'X-Idempotency-Key': t })
-  const idemNote = { title: `幂等${stamp}`, content: '同一个 token 连发两次', type: 1 }
+  const idemNote = { title: `幂等${stamp}`, content: '同一个 token 连发两次', type: 1, imageUrls: [imageUrl] }
   let rlNoteId = null
   {
     const token = `pub-${stamp}`
@@ -1067,21 +1087,21 @@ async function main() {
   {
     // 业务失败必须把 key 还回去：否则「参数写错了重发一次」会永远得到
     // 100004 重复提交，而正确的内容永远提交不上——比不做幂等更糟
-    // 必须用 rl <b>自己</b>的笔记：30007 是「不允许评论自己的笔记」，
-    // 拿别人的笔记去评论当然成功，这条就测不到释放占位的那条分支
+    // 触发源用「给不存在的笔记评论」：20001 在业务层抛出且不写数据。
+    // 注意不能再用「评论自己的笔记」：P11 起作者自评是允许的，那条分支已不存在
     const token = `cfail-${stamp}`
     const r1 = await post('/api/comment', {
       token: rlAuth,
-      body: { noteId: rlNoteId, content: '评论自己的笔记' },
+      body: { noteId: '123456789012345', content: '触发业务失败' },
       headers: idem(token),
     })
-    codeIs('评论自己的笔记被业务规则拒绝（30007）', r1.json, 30007)
+    codeIs('业务失败（给不存在的笔记评论）被拒（20001）', r1.json, 20001)
     const r2 = await post('/api/comment', {
       token: rlAuth,
-      body: { noteId: rlNoteId, content: '评论自己的笔记' },
+      body: { noteId: '123456789012345', content: '触发业务失败' },
       headers: idem(token),
     })
-    codeIs('失败后同 token 再来仍是真实业务错（不是 100004）', r2.json, 30007)
+    codeIs('失败后同 token 再来仍是真实业务错（20001，不是 100004）', r2.json, 20001)
   }
   {
     // 成功路径：同 token 发两次评论只落一条 —— 「同一条评论出现两遍」
@@ -1397,6 +1417,86 @@ async function main() {
   {
     const { json } = await del(`/api/comment/${likeCommentId}`, { token: actorAuth })
     codeIs('清理点赞测试评论（回归零状态）', json, 0)
+  }
+
+  // ---- 17.4 P11 删除笔记（DELETE /api/note/{id}，作者本人）
+  //
+  // 验证链：删除 → 作者/他人详情都 20001 → 作者主页消失 → 评论清空 → 索引移除。
+  // 删除先造好互动 + 评论（含子回复 + 评论点赞），专测「级联清理」没漏子表。
+  //
+  // <b>搜索词绝不能带共享的 ${stamp}</b>：ik_smart 会把「删除测试 <stamp>」拆成
+  // 删除/测试 + stamp 若干 token，multiMatch 是 OR 语义，一旦命中任何同样带
+  // 这个 stamp 的其它笔记标题，total 就恒≥1，轮询永远等不到 0（实测 20 撞车）。
+  // 用独立随机串做搜索锚点，跟 P7 的 searchUnique 同一个套路。
+  const delUnique = `delok${Math.random().toString(36).slice(2, 8)}`.toLowerCase()
+  let deleteMeId = null
+  {
+    const d = await post('/api/note/publish', {
+      token: rlAuth,
+      body: { title: `${delUnique} 待删除种子`, content: '删除后会从索引消失的种子', type: 1, imageUrls: [imageUrl] },
+    })
+    codeIs('删除测试笔记发布成功', d.json, 0)
+    deleteMeId = d.json?.data?.id
+    const like = await put(`/api/note/${deleteMeId}/like`, { token: actorAuth })
+    codeIs('给删除对象点赞成功（验证级联清 note_like）', like.json, 0)
+    const collect = await put(`/api/note/${deleteMeId}/collect`, { token: actorAuth })
+    codeIs('给删除对象收藏成功（验证级联清 note_collect）', collect.json, 0)
+    const root = await post('/api/comment', {
+      token: rlAuth,
+      body: { noteId: deleteMeId, content: '要跟着笔记一起删掉的评论' },
+    })
+    codeIs('删除对象上发一条评论', root.json, 0)
+    const reply = await post('/api/comment', {
+      token: rlAuth,
+      body: { noteId: deleteMeId, content: '跟着删的子回复', parentId: root.json?.data?.id },
+    })
+    codeIs('删除对象上发一条子回复（验证级联清 comment_like 依赖链）', reply.json, 0)
+    const cl = await put(`/api/comment/${root.json?.data?.id}/like`, { token: rlAuth })
+    codeIs('给删除对象的评论点赞成功', cl.json, 0)
+    check('删除对象 ID 有效', typeof deleteMeId === 'string' && /^\d+$/.test(deleteMeId), `id=${deleteMeId}`)
+  }
+  {
+    const { json } = await del(`/api/note/${deleteMeId}`)
+    codeIs('未登录删除被拒（10005）', json, 10005)
+  }
+  {
+    const { json } = await del(`/api/note/${deleteMeId}`, { token: actorAuth })
+    codeIs('非作者删除返回 20001（防探测）', json, 20001)
+  }
+  {
+    const d = await del(`/api/note/${deleteMeId}`, { token: rlAuth })
+    codeIs('作者删除成功', d.json, 0)
+    const mine = await get(`/api/note/${deleteMeId}`, { token: rlAuth })
+    codeIs('删除后作者自己也查不到（20001）', mine.json, 20001)
+    const other = await get(`/api/note/${deleteMeId}`, { token: actorAuth })
+    codeIs('删除后他人同样查不到', other.json, 20001)
+    const cm = await get(`/api/comment/list?noteId=${deleteMeId}&page=1&size=10`, { token: actorAuth })
+    // 删除后评论列表随笔记一起消失：CommentQueryServiceImpl 先校验笔记存在再分页，
+    // 已删笔记整口返回 20001，而不是「空列表」——没有半死状态
+    codeIs('删除后评论列表随笔记一同消失（20001，而非空列表）', cm.json, 20001)
+  }
+  {
+    const again = await del(`/api/note/${deleteMeId}`, { token: rlAuth })
+    codeIs('重复删除返回 20001（幂等语义走 NOT_FOUND）', again.json, 20001)
+  }
+  {
+    const me = await get('/api/user/me', { token: rlAuth })
+    const list = await get(`/api/note/user/${me.json?.data?.id}?page=1&size=100`, { token: rlAuth })
+    const cards = (list.json?.data?.list ?? []).filter((n) => n.id === deleteMeId)
+    eq('作者主页不再包含已删笔记', cards.length, 0)
+  }
+  {
+    // 删除 → afterCommit 事件 → Kafka → ES deleteById：轮询直到搜不到
+    // 用 rlAuth 而非 pollAuth：pollAuth 的 60/min 已被 P7 与 17.2 的轮询占满，
+    // 窄窗口内再叠加一段 25s 轮询必然被打回（实测 100005 抓到过）
+    const kw = encodeURIComponent(delUnique)
+    let gone = false
+    for (let i = 0; i < 50 && !gone; i++) {
+      const { json } = await get(`/api/search/note?keyword=${kw}&page=1&size=10`, { token: rlAuth })
+      gone = json?.code === 0 && (json?.data?.total ?? 0) === 0
+      if (!gone) await new Promise((r) => setTimeout(r, 500))
+    }
+    check('删除后经 Kafka 从搜索索引移除（25s 内搜不到）', gone)
   }
 
   // ---- 18. 不支持的方法

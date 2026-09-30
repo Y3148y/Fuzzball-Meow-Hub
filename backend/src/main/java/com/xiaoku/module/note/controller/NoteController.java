@@ -84,6 +84,17 @@ public class NoteController {
         return Result.success(noteService.changeStatus(id, dto.getStatus()));
     }
 
+    @Operation(summary = "删除笔记",
+            description = "作者本人。级联清理图片/点赞/收藏/评论，并从搜索索引移除。删除不存在或别人的笔记返回 20001")
+    // DELETE 天然幂等（重复删返回 20001），限流防批量自毁
+    @RateLimit(count = 20, seconds = 60, dimension = RateLimit.Dimension.USER,
+            message = "操作太频繁啦，1 分钟内最多 20 次")
+    @DeleteMapping("/{id}")
+    public Result<Void> delete(@Parameter(description = "笔记ID") @PathVariable Long id) {
+        noteService.delete(id);
+        return Result.success();
+    }
+
     @Operation(summary = "笔记详情", description = "含图片列表、作者信息、是否已点赞与是否已收藏")
     @GetMapping("/{id}")
     public Result<NoteVO> detail(@Parameter(description = "笔记ID") @PathVariable Long id) {

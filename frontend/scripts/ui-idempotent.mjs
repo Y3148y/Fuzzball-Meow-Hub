@@ -15,6 +15,10 @@
  * 跑法：npm run test:ui:idem
  */
 import { createSession, preflight } from './ui-cdp.mjs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import zlib from 'node:zlib'
 
 const BASE = 'http://localhost:5180'
 const API = 'http://localhost:8088'
@@ -28,6 +32,58 @@ try {
 }
 
 const s = await createSession({ name: 'idem' })
+
+/** 造一个 8x8 纯色 PNG（P11 起图文发布必须带图，发布流程都要先传图） */
+function makePng(name, r, g, b) {
+  const crc = (buf) => {
+    let c = ~0
+    for (const byte of buf) {
+      c ^= byte
+      for (let i = 0; i < 8; i++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1))
+    }
+    return ~c >>> 0
+  }
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4)
+    len.writeUInt32BE(data.length)
+    const body = Buffer.concat([Buffer.from(type, 'ascii'), data])
+    const c = Buffer.alloc(4)
+    c.writeUInt32BE(crc(body))
+    return Buffer.concat([len, body, c])
+  }
+  const ihdr = Buffer.alloc(13)
+  ihdr.writeUInt32BE(8, 0)
+  ihdr.writeUInt32BE(8, 4)
+  ihdr[8] = 8 // bit depth
+  ihdr[9] = 2 // color type RGB
+  const raw = []
+  for (let y = 0; y < 8; y++) {
+    raw.push(Buffer.from([0, r, g, b]))
+    for (let x = 0; x < 7; x++) raw.push(Buffer.from([r, g, b]))
+  }
+  const idat = zlib.deflateSync(Buffer.concat(raw))
+  const png = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', idat),
+    chunk('IEND', Buffer.alloc(0)),
+  ])
+  const p = join(mkdtempSync(join(tmpdir(), 'xk-idem-')), name)
+  writeFileSync(p, png)
+  return p
+}
+const pngA = makePng('a.png', 240, 120, 60)
+
+/** 通过 CDP 给 input[type=file] 注入文件列表 */
+async function setFiles(selector, files) {
+  const doc = await s.send('DOM.getDocument')
+  const { nodeId } = await s.send('DOM.querySelector', {
+    nodeId: doc.root.nodeId,
+    selector,
+  })
+  if (!nodeId) throw new Error(`找不到文件输入框 ${selector}`)
+  await s.send('DOM.setFileInputFiles', { nodeId, files })
+}
 
 /** 记录每个后端请求实际带的头，按 path 分桶 */
 const seen = []
@@ -76,6 +132,8 @@ try {
   `)
   await sleep(300)
   seen.length = 0
+  await setFiles('[data-test=note-file]', [pngA])
+  await sleep(500)
   await s.evaluate("document.querySelector('.submit').click()")
   await s.waitFor("location.hash.startsWith('#/note/')", '发布后跳详情', 25000)
 
@@ -103,6 +161,8 @@ try {
     })()
   `)
   await sleep(300)
+  await setFiles('[data-test=note-file]', [pngA])
+  await sleep(500)
   await s.evaluate("document.querySelector('.submit').click()")
   await s.waitFor("location.hash.startsWith('#/note/')", '第二次发布', 25000)
   const pub2 = idemOf('/api/note/publish')
@@ -157,6 +217,8 @@ try {
   `)
   await sleep(300)
   seen.length = 0
+  await setFiles('[data-test=note-file]', [pngA])
+  await sleep(500)
   await s.evaluate("document.querySelector('.submit').click()")
   await s.waitFor("location.hash.startsWith('#/note/')", '刷新后重放成功', 25000)
   await s.send('Fetch.disable')
@@ -175,8 +237,18 @@ try {
   const me = await (await fetch(`${API}/api/user/me`, {
     headers: { Authorization: `Bearer ${auth}` },
   })).json()
+  // P11 起图文发布必须带图，裸 fetch 也要先传图拿 URL
+  const imgResp = await (await fetch(`${API}/api/note/image`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${auth}` },
+    body: (() => {
+      const fd = new FormData()
+      fd.append('file', new Blob([readFileSync(pngA)], { type: 'image/png' }), 'dup.png')
+      return fd
+    })(),
+  })).json()
   const dupToken = `cdp-dup-${Date.now()}`
-  const body = { title: `${title}D`, content: '同一个 token 手写两次', type: 1 }
+  const body = { title: `${title}D`, content: '同一个 token 手写两次', type: 1, imageUrls: [imgResp.data.url] }
   const post2 = () =>
     fetch(`${API}/api/note/publish`, {
       method: 'POST',

@@ -154,6 +154,8 @@ export interface NoteVO {
   id: SnowflakeId
   /** 1 图文 2 视频 */
   type: number
+  /** 1 已发布 2 已下架（作者视角可见草稿/下架态，P10）；非作者永远只能看到 1 */
+  status: number
   title: string
   content: string
   cover: string | null

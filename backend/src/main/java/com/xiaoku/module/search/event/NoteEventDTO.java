@@ -34,10 +34,13 @@ public class NoteEventDTO implements Serializable {
     /** 事件动作：发布（入索引 / upsert 文档） */
     public static final String ACTION_PUBLISH = "PUBLISH";
 
-    /** 事件动作：下架（删除文档，预留——P3 起还没有下架接口） */
+    /** 事件动作：下架（删除文档） */
     public static final String ACTION_UNPUBLISH = "UNPUBLISH";
 
-    /** 事件动作：{@link #ACTION_PUBLISH} / {@link #ACTION_UNPUBLISH} */
+    /** 事件动作：删除笔记（删除文档，P11）——与 UNPUBLISH 同特效，语义上区分开 */
+    public static final String ACTION_DELETE = "DELETE";
+
+    /** 事件动作：{@link #ACTION_PUBLISH} / {@link #ACTION_UNPUBLISH} / {@link #ACTION_DELETE} */
     private String action;
 
     /** 笔记 ID，ES 文档的 _id */

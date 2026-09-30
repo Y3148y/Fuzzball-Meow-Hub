@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { showConfirmDialog, showSuccessToast } from 'vant'
-import { collectNote, getNoteDetail, likeNote, uncollectNote, unlikeNote } from '@/api/note'
+import { changeNoteStatus, collectNote, deleteNote, getNoteDetail, likeNote, uncollectNote, unlikeNote } from '@/api/note'
 import { followUser, unfollowUser } from '@/api/follow'
 import { createComment, deleteComment, likeComment, listComments, replyComment, unlikeComment } from '@/api/comment'
 import { BizError } from '@/api/request'
@@ -52,6 +52,68 @@ async function toggleFollowAuthor() {
     throw e
   } finally {
     followingAuthor.value = false
+  }
+}
+
+/* ---------------- 作者操作：编辑 / 上下架 / 删除 ---------------- */
+
+/**
+ * P10 的编辑/上下架只有后端接口，UI 一直没做；P11 把作者操作区补上。
+ * 只有作者本人能看到（接口本身也会拦，按钮隐藏只是不做无谓的探测）。
+ */
+const mutating = ref(false)
+
+async function toggleStatus() {
+  const target = note.value
+  if (!target || mutating.value) return
+  mutating.value = true
+  try {
+    const next = target.status === 2 ? 1 : 2
+    const r = await changeNoteStatus(target.id, next as 1 | 2)
+    note.value = { ...target, status: r.status }
+    showSuccessToast(next === 2 ? '已下架，他人将看不到这篇' : '已重新发布')
+  } catch (e) {
+    if (e instanceof BizError) {
+      errorMsg.value = e.message
+    } else {
+      throw e
+    }
+  } finally {
+    mutating.value = false
+  }
+}
+
+/**
+ * 删除是不可恢复操作，必须二次确认。删除后详情页也没了，回首页。
+ * 作者主页/搜索的一致性交给后端事务 + 事件，这里只处理跳转。
+ */
+async function removeNote() {
+  const target = note.value
+  if (!target || mutating.value) return
+  mutating.value = true
+  try {
+    await showConfirmDialog({
+      title: '删除这篇笔记？',
+      message: '图片、点赞、收藏和评论会一起删除，且不可恢复。',
+      confirmButtonText: '删除',
+      confirmButtonColor: '#e5484d',
+    })
+  } catch {
+    // 用户点了取消，showConfirmDialog 会 reject，直接吞掉
+    return
+  }
+  try {
+    await deleteNote(target.id)
+    showSuccessToast('已删除')
+    await router.replace('/')
+  } catch (e) {
+    if (e instanceof BizError) {
+      errorMsg.value = e.message
+    } else {
+      throw e
+    }
+  } finally {
+    mutating.value = false
   }
 }
 
@@ -353,6 +415,24 @@ onMounted(async () => {
         >
           {{ isFollowingAuthor ? '已关注' : '关注' }}
         </button>
+
+        <div v-else class="mine-ops" data-test="note-author-ops">
+          <button type="button" class="op" @click="router.push(`/edit/${note!.id}`)" data-test="note-edit-btn">
+            编辑
+          </button>
+          <button
+            type="button"
+            class="op"
+            :disabled="mutating"
+            @click="toggleStatus"
+            data-test="note-status-btn"
+          >
+            {{ note!.status === 2 ? '上架' : '下架' }}
+          </button>
+          <button type="button" class="op danger" :disabled="mutating" @click="removeNote" data-test="note-delete-btn">
+            删除
+          </button>
+        </div>
       </div>
 
       <p class="content" data-test="note-detail-content">{{ note.content }}</p>
@@ -648,6 +728,33 @@ onMounted(async () => {
 }
 
 .follow:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.mine-ops {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.op {
+  padding: 5px 12px;
+  border: var(--xk-stroke-w) solid var(--xk-border);
+  border-radius: 999px;
+  background: var(--xk-surface-2);
+  color: var(--xk-text-2);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.op.danger {
+  color: #e5484d;
+  border-color: rgba(229, 72, 77, 0.35);
+}
+
+.op:disabled {
   opacity: 0.6;
   cursor: not-allowed;
 }

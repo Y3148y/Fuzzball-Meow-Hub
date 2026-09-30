@@ -87,6 +87,27 @@ public class NoteCounterStore {
     }
 
     /**
+     * 笔记删除时清掉计数与待落库痕迹（P11）。
+     *
+     * <p>赞/收藏 ZSet 的 key 整个删掉即可——读路径会回退 DB 关系行，
+     * 而关系行已随笔记级联删除；脏标记也一并 SREM，免得 {@code NoteCounterFlushJob}
+     * 拿一个不存在的 ID 去空转。任一步失败都放行：DB 行删干净后，
+     * 遗留键无非是几个死 key，对账任务也不会再找它。
+     */
+    public void removeCounters(Long noteId) {
+        try {
+            redisTemplate.delete(List.of(RedisKey.NOTE_LIKE_USERS + noteId, RedisKey.NOTE_COLLECT_USERS + noteId));
+        } catch (RuntimeException e) {
+            log.warn("清理点赞/收藏计数 key 失败 noteId={}（Redis 不可用？），DB 行已删，不影响结果", noteId, e);
+        }
+        try {
+            redisTemplate.opsForSet().remove(RedisKey.NOTE_DIRTY, String.valueOf(noteId));
+        } catch (RuntimeException e) {
+            log.warn("清理待落库标记失败 noteId={}（Redis 不可用？）", noteId, e);
+        }
+    }
+
+    /**
      * 取一批待落库 ID（SPOP，取走的就得本轮对账，防止多实例重复处理）。
      * @return 空集合表示没有脏数据
      */

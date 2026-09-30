@@ -9,14 +9,22 @@
  * 往库里永久扔一个垃圾账号，要靠 SQL 定期清。固定账号撞 10003（已存在）
  * 就当注册通过，这样这个脚本可以反复跑而不留残留。
  *
- * <b>为什么要第二个账号？</b>后端禁止评论自己的笔记（30007），
- * 而点赞收藏没这个限制。所以前一半用演示账号测互动，后一半切固定账号测评论。
+ * <b>为什么要第二个账号？</b>后端禁止评论自己的笔记（30007）。
+ * 点赞收藏没这个限制。所以前一半用演示账号测互动，后一半切固定账号测评论。
  * 切号走真登录页而不是往 localStorage 塞 token——塞 token 骗得过后端，
  * 骗不过 userStore 初始化，页面会进入"已登录但昵称为空"的半吊子状态。
+ *
+ * <b>P11 起作者可以评论自己的笔记</b>，30007 语义已放开（契约里有专门断言），
+ * 这里依然用双账号是因为「跨账号互动」才覆盖完整：点赞者 ≠ 笔记作者、
+ * 被回复者 ≠ 回复者。互相独立，不冲突。
  *
  * 跑法：npm run test:ui
  */
 import { createSession, preflight } from './ui-cdp.mjs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import zlib from 'node:zlib'
 
 const BASE = 'http://localhost:5180'
 const API = 'http://localhost:8088'
@@ -40,7 +48,61 @@ try {
   process.exit(2)
 }
 
+/** 造一个 8x8 纯色 PNG 给 <input type=file> 用（DOM.setFileInputFiles 要真实文件路径） */
+function makePng(dir, name, r, g, b) {
+  const crc = (buf) => {
+    let c = ~0
+    for (const byte of buf) {
+      c ^= byte
+      for (let i = 0; i < 8; i++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1))
+    }
+    return ~c >>> 0
+  }
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4)
+    len.writeUInt32BE(data.length)
+    const body = Buffer.concat([Buffer.from(type, 'ascii'), data])
+    const c = Buffer.alloc(4)
+    c.writeUInt32BE(crc(body))
+    return Buffer.concat([len, body, c])
+  }
+  const ihdr = Buffer.alloc(13)
+  ihdr.writeUInt32BE(8, 0)
+  ihdr.writeUInt32BE(8, 4)
+  ihdr[8] = 8 // bit depth
+  ihdr[9] = 2 // color type RGB
+  const raw = []
+  for (let y = 0; y < 8; y++) {
+    raw.push(Buffer.from([0, r, g, b]))
+    for (let x = 0; x < 7; x++) raw.push(Buffer.from([r, g, b]))
+  }
+  const idat = zlib.deflateSync(Buffer.concat(raw))
+  const png = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', idat),
+    chunk('IEND', Buffer.alloc(0)),
+  ])
+  const p = join(dir, name)
+  writeFileSync(p, png)
+  return p
+}
+
+const pngDir = mkdtempSync(join(tmpdir(), 'xk-interact-'))
+const pngA = makePng(pngDir, 'a.png', 240, 120, 60)
+
 const s = await createSession({ name: 'interaction' })
+
+/** 通过 CDP 给 input[type=file] 注入文件列表（P11 起图文发布必须带图） */
+async function setFiles(selector, files) {
+  const doc = await s.send('DOM.getDocument')
+  const { nodeId } = await s.send('DOM.querySelector', {
+    nodeId: doc.root.nodeId,
+    selector,
+  })
+  if (!nodeId) throw new Error(`找不到文件输入框 ${selector}`)
+  await s.send('DOM.setFileInputFiles', { nodeId, files })
+}
 
 /**
  * 给 Vue 绑定的 input / textarea 赋值。
@@ -93,6 +155,8 @@ try {
   await s.waitFor("document.querySelector('[data-test=note-title]')", '发布页')
   await setValue('[data-test=note-title]', 'P5 互动测试笔记')
   await setValue('[data-test=note-content]', '这篇笔记专门用来测点赞、收藏和评论。')
+  await setFiles('[data-test=note-file]', [pngA])
+  await sleep(600)
   await s.evaluate("document.querySelector('.submit').click()")
   await s.waitFor("location.hash.startsWith('#/note/')", '发布并跳详情', 25000)
   const noteId = (await s.evaluate('location.hash')).split('/').pop()
@@ -257,6 +321,10 @@ try {
   await s.evaluate("document.querySelector('.van-dialog__confirm').click()")
   await s.waitFor("document.querySelector('[data-test=comment-empty]')", '删除后回到空态', 20000)
   s.check('删除根评论后列表回到空态', true)
+  // 计数合并是再拉一次详情的异步结果，等它落定再断言，别在同拍短读
+  await s
+    .waitFor("document.querySelector('[data-test=note-comment-count]').textContent.trim() === '0'", '详情评论计数归零', 20000)
+    .catch(() => false)
   s.check('删除后详情页评论计数归零（子树一起退掉）', (await num('note-comment-count')) === 0)
 } catch (e) {
   s.check('用例执行到底', false, String(e.message))

@@ -126,11 +126,11 @@ $env:XK_MYSQL_PASSWORD = "<.env 里的 MYSQL_ROOT_PASSWORD>"   # 不设就起不
 改后端接口 → 必须跑契约测试；改前端 → 必须跑 CDP 测试。**别攒到最后一起跑。**
 
 ```bash
-# 后端（需后端已在 8088 运行）→ 332 条
+# 后端（需后端已在 8088 运行）→ 355 条
 cd backend && node scripts/contract-test.mjs
 # 换地址：XK_API_BASE=http://ip:8088 node scripts/contract-test.mjs
 
-# 前端（需前端 5180 + 后端 8088 同时在跑）→ 18 + 8 + 17 + 26 + 52 + 25 + 19 + 9 = 174 条
+# 前端（需前端 5180 + 后端 8088 同时在跑）→ 18 + 8 + 27 + 26 + 52 + 25 + 19 + 9 = 184 条
 cd frontend && npm run test:ui
 
 # 单跑某一组：:smoke / :refresh / :note / :profile / :interaction / :follow / :search / :idempotent
@@ -259,7 +259,7 @@ get('/comment/list', { params: { noteId, page } })    // ❌ 发出 ?params[note
 后端收到「缺少必要参数：noteId」。**契约测试抓不到**，因为它走裸 HTTP
 绕开了整个前端封装层，只有真机点一下才会暴露。
 
-## 7. 已完成状态（2026-09-29）
+## 7. 已完成状态（2026-09-30）
 
 - P0 环境编排 / P1 统一响应与异常 / P2 用户模块 + JWT / P4 部分（登录 + 首页）已合并推送
 - 品牌改名已落地（`62ed4c5`），测试通过且未改任何测试断言
@@ -398,6 +398,42 @@ get('/comment/list', { params: { noteId, page } })    // ❌ 发出 ?params[note
     prod ES 容器；下次部署重新 `docker compose -f deploy/docker-compose.prod.yml
     --env-file .env.prod up -d --build` 时自然带上 IK。dev 已生效并回归（契约 332
     + 搜索 CDP 19 条全绿）
+- P11 小红书对齐已完工（本 commit）：作者自评放开 + 图文必带图 + 删除笔记
+  + 契约 **355 条**（+P11 23 条）+ CDP **184 条**（174 → 184，ui-note 17→27）
+  - **A 作者可评论自己笔记**：`CANNOT_COMMENT_SELF_NOTE`(30007) 枚举保留不删，
+    只移除 `CommentServiceImpl` 的检查（自评/自回复合法）。契约 14 节断言翻转
+    （作者自评成功 + 自删 + commentCount 归 0），16.2 幂等「业务失败」触发源改
+    成「给不存在的笔记评论 20001」（原来自评触发 30007 的路径已合法）。
+  - **B 图文发布必须至少一张图**：`validatePublishParams(dto, requireGraphicImage)`
+    —— publish 传 `true`，update 传 `false`（保留 P10「编辑可清空图片」语义）。
+    空/缺/空组 `imageUrls` 一律 10001。契约 11 节新增断言。
+  - **C 删除笔记**：`DELETE /api/note/{id}` 作者本人，非作者/不存在一律 20001
+    （防探测）。事务内级联 `comment_like → comment → note_like → note_collect →
+    note_image → note`；afterCommit 发 `ACTION_DELETE` 事件由
+    `NoteSearchConsumer` `deleteById`；`NoteCounterStore.removeCounters` 清 Redis
+    ZSet/dirty 键（fail-open）。用户头像/笔记图片文件本体仍留在
+    `backend/uploads/`（gitignore），要清就整个目录删。
+  - **契约测试 17.4「删除」段 & 三个踩过的坑**：①搜索断言词必须用独立随机锚点
+    `delUnique='delok'+random`，**不能复用共享 stamp**——ik_smart 拆词 + multiMatch
+    OR 会撞车同 stamp 的其它笔记（实测 total=20 永不归零）；②轮询/评论改用
+    `rlAuth`（`pollAuth` 的 60/min 被 P7+17.2 轮询打空，`actorAuth` 的评论
+    10/min 被打满）；③`/api/comment/list` 对已删笔记返回 **20001** 而非空列表
+    （断言按 20001 写）。17.4 全链：发一条带图笔记→互动→评论→删除→详情 20001
+    →重复删 20001→作者主页消失→评论列表 20001→ES 轮询消失。
+  - **前端**：`api/note.ts` 新增 `updateNote` / `changeNoteStatus` / `deleteNote`；
+    新建 `NoteEditView.vue`（`/edit/:id(\d+)`，编辑+新图即传+全量覆盖，可移除图片，
+    可直接手输 URL 但非作者会被后端 20001 拦）；`NoteDetailView.vue` 作者操作区
+    `[data-test=note-author-ops]`（编辑/下架·上架/删除，删除有 Vant 二次确认）。
+    `types.ts` 的 `NoteVO` 补上 P10 就有的 `status` 字段（**P10 漏补，typecheck 抓**）。
+  - **P11 起 CDP 所有发布流程都要先传图**：ui-interaction / ui-idempotent 补了
+    `makePng + setFiles`。Node 裸 fetch 上传（ui-idempotent 第 5 节）有个坑：
+    `new Blob([buf])` 默认 `application/octet-stream` 会被内容类型白名单
+    100001 拒掉，**必须 `{ type: 'image/png' }`**。ui-note 27 条含新增作者操作段
+    （编辑回填/保存 / 下架按钮切换 + 作者仍可见 / 删除确认→首页→20001），
+    复用当次发布的笔记，不额外消耗登录/注册限流。
+  - interaction 组的「删除后详情页评论计数归零」断言原来是同拍短读，偶发读到
+    旧值 flake；已按本文件惯例改成「先 waitFor 落定再断言」。
+  - git 标签：v1.0（P11 收官 commit）。
 
 ### P3 已知缺口（不是遗漏，是当前阶段做不到）
 

@@ -178,6 +178,72 @@ try {
     headers: { Authorization: `Bearer ${await s.evaluate("localStorage.getItem('xk_token')")}` },
   })).json()
   s.check('查不存在的笔记返回 20001', missing.code === 20001, `code=${missing.code}`)
+
+  // ---- 10. 作者操作区（P10 编辑器 UI 一直没做，P11 补齐）
+  // 当前在「CDP 测试笔记」的详情页上，作者就是演示账号，三枚管理按钮应可见
+  await s.waitFor("document.querySelector('[data-test=note-author-ops]')", '作者操作区渲染', 10000)
+  s.check('作者自己的详情页显示编辑/上下架/删除按钮', true)
+  const noteId = (await s.evaluate('location.hash')).split('/').pop()
+
+  // ---- 11. 编辑：进编辑页、回填、改正文、保存回详情
+  await s.evaluate("document.querySelector('[data-test=note-edit-btn]').click()")
+  await s.waitFor(`location.hash === '#/edit/' + ${JSON.stringify(noteId)}`, '跳到编辑页', 20000)
+  s.check('点「编辑」跳到 #/edit/{id}', true, await s.evaluate('location.hash'))
+  await s.waitFor("document.querySelector('[data-test=note-edit-title]')", '编辑表单渲染')
+  s.check(
+    '编辑表单回填原标题',
+    (await s.evaluate("document.querySelector('[data-test=note-edit-title]').value")) === 'CDP 测试笔记',
+  )
+  await s.evaluate(`
+    (() => {
+      const set = (el, v) => {
+        const proto = el instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+        Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, v)
+        el.dispatchEvent(new Event('input', { bubbles: true }))
+      }
+      set(document.querySelector('[data-test=note-edit-title]'), 'CDP 测试笔记（已编辑）')
+      set(document.querySelector('[data-test=note-edit-content]'), '编辑后的正文内容，由 P11 CDP 改写。')
+    })()
+  `)
+  await sleep(300)
+  await s.evaluate("document.querySelector('.submit').click()")
+  await s.waitFor(`location.hash === '#/note/' + ${JSON.stringify(noteId)}`, '保存后回详情', 25000)
+  s.check('保存后回到原笔记详情', true, await s.evaluate('location.hash'))
+  await s.waitFor(
+    "document.querySelector('[data-test=note-detail-title]')?.textContent?.trim() === 'CDP 测试笔记（已编辑）'",
+    '详情标题更新为编辑值',
+    10000,
+  )
+  s.check('编辑保存后详情页标题为新值', true)
+
+  // ---- 12. 下架：作者仍可见，按钮切到「上架」
+  await s.evaluate("document.querySelector('[data-test=note-status-btn]').click()")
+  await s.waitFor(
+    "document.querySelector('[data-test=note-status-btn]').textContent?.trim() === '上架'",
+    '下架后按钮变上架',
+    10000,
+  )
+  s.check('下架成功且按钮文案切换为「上架」', true)
+  s.check('作者看已下架的笔记详情仍可访问', await s.evaluate("!!document.querySelector('[data-test=note-detail]')"))
+  await s.evaluate("document.querySelector('[data-test=note-status-btn]').click()")
+  await s.waitFor(
+    "document.querySelector('[data-test=note-status-btn]').textContent?.trim() === '下架'",
+    '上架后按钮切回下架',
+    10000,
+  )
+
+  // ---- 13. 删除：确认弹窗 -> 回首页 -> 详情 20001
+  await s.evaluate("document.querySelector('[data-test=note-delete-btn]').click()")
+  await s.waitFor("document.querySelector('.van-dialog')", '删除确认弹窗', 10000)
+  s.check('删除前先弹确认框，不静默删', true)
+  await s.evaluate("document.querySelector('.van-dialog__confirm').click()")
+  await s.waitFor("location.hash === '#/'", '删除后回首页', 20000)
+  s.check('删除成功并回到首页', true, await s.evaluate('location.hash'))
+  const deleted = await (await fetch(`${API}/api/note/${noteId}`, {
+    headers: { Authorization: `Bearer ${await s.evaluate("localStorage.getItem('xk_token')")}` },
+  })).json()
+  s.check('删除后详情接口返回 20001', deleted.code === 20001, `code=${deleted.code}`)
 } catch (e) {
   s.check('用例执行到底', false, String(e.message))
 } finally {

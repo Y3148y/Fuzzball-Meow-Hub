@@ -42,4 +42,12 @@ public interface NoteService {
      * 直接返回当前详情，不重复产生索引事件。
      */
     NoteVO changeStatus(Long noteId, Integer status);
+
+    /**
+     * 删除笔记（作者本人，P11）。
+     *
+     * <p>级联清理：图片、点赞/收藏关系、评论（含子树）与评论点赞、Redis 计数键，
+     * 事务提交后发送 DELETE 事件移除 ES 文档。非作者/不存在一律 20001。
+     */
+    void delete(Long noteId);
 }

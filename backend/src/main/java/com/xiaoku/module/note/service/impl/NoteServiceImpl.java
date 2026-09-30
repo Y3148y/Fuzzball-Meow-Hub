@@ -4,16 +4,25 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.xiaoku.common.context.UserContextHolder;
 import com.xiaoku.common.exception.BizException;
 import com.xiaoku.common.result.ErrorCodeEnum;
-import com.xiaoku.common.support.NoteIdBloomFilter;
 import com.xiaoku.common.storage.ImageStorage;
+import com.xiaoku.common.support.NoteIdBloomFilter;
+import com.xiaoku.module.comment.entity.CommentEntity;
+import com.xiaoku.module.comment.entity.CommentLikeEntity;
+import com.xiaoku.module.comment.mapper.CommentLikeMapper;
+import com.xiaoku.module.comment.mapper.CommentMapper;
 import com.xiaoku.module.note.converter.NoteConverter;
 import com.xiaoku.module.note.dto.NotePublishDTO;
+import com.xiaoku.module.note.entity.NoteCollectEntity;
 import com.xiaoku.module.note.entity.NoteEntity;
 import com.xiaoku.module.note.entity.NoteImageEntity;
+import com.xiaoku.module.note.entity.NoteLikeEntity;
+import com.xiaoku.module.note.mapper.NoteCollectMapper;
 import com.xiaoku.module.note.mapper.NoteImageMapper;
+import com.xiaoku.module.note.mapper.NoteLikeMapper;
 import com.xiaoku.module.note.mapper.NoteMapper;
 import com.xiaoku.module.note.service.NoteQueryService;
 import com.xiaoku.module.note.service.NoteService;
+import com.xiaoku.module.note.support.NoteCounterStore;
 import com.xiaoku.module.note.vo.NoteVO;
 import com.xiaoku.module.search.event.NoteEventDTO;
 import com.xiaoku.module.user.service.UserQueryService;
@@ -49,11 +58,16 @@ public class NoteServiceImpl implements NoteService {
 
     private final NoteMapper noteMapper;
     private final NoteImageMapper noteImageMapper;
+    private final NoteLikeMapper noteLikeMapper;
+    private final NoteCollectMapper noteCollectMapper;
+    private final CommentMapper commentMapper;
+    private final CommentLikeMapper commentLikeMapper;
     private final NoteQueryService noteQueryService;
     private final UserQueryService userQueryService;
     private final ImageStorage imageStorage;
     private final KafkaTemplate<String, Object> kafkaTemplate;
     private final NoteIdBloomFilter bloomFilter;
+    private final NoteCounterStore counterStore;
 
     @Value("${xiaoku.kafka.note-topic}")
     private String noteEventTopic;
@@ -62,8 +76,7 @@ public class NoteServiceImpl implements NoteService {
     @Transactional(rollbackFor = Exception.class)
     public NoteVO publish(NotePublishDTO dto) {
         Long userId = UserContextHolder.requireUserId();
-        PublishParams params = validatePublishParams(dto);
-
+        PublishParams params = validatePublishParams(dto, true);
         NoteEntity note = new NoteEntity();
         note.setUserId(userId);
         note.setType(params.type());
@@ -105,7 +118,7 @@ public class NoteServiceImpl implements NoteService {
         if (note == null || !userId.equals(note.getUserId())) {
             throw new BizException(ErrorCodeEnum.NOTE_NOT_FOUND);
         }
-        PublishParams params = validatePublishParams(dto);
+        PublishParams params = validatePublishParams(dto, false);
 
         // 用 LambdaUpdateWrapper 显式 set 而不是 updateById：全项目配了
         // update-strategy not_null，updateById 会把「清空的字段」（cover / videoUrl）
@@ -188,6 +201,42 @@ public class NoteServiceImpl implements NoteService {
         return imageStorage.store(file);
     }
 
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void delete(Long noteId) {
+        Long userId = UserContextHolder.requireUserId();
+        NoteEntity note = noteMapper.selectById(noteId);
+        // 别人的笔记一律按「不存在」处理（防探测），和 update / changeStatus / 评论删除同一套策略
+        if (note == null || !userId.equals(note.getUserId())) {
+            throw new BizException(ErrorCodeEnum.NOTE_NOT_FOUND);
+        }
+
+        // 先捞评论 id，再删评论点赞（comment_like 依赖 comment）→ 评论（含子树，一行 WHERE note_id 全带走）
+        List<Long> commentIds = commentMapper.selectList(Wrappers.<CommentEntity>lambdaQuery()
+                        .select(CommentEntity::getId)
+                        .eq(CommentEntity::getNoteId, noteId))
+                .stream().map(CommentEntity::getId).toList();
+        if (!commentIds.isEmpty()) {
+            commentLikeMapper.delete(Wrappers.<CommentLikeEntity>lambdaQuery()
+                    .in(CommentLikeEntity::getCommentId, commentIds));
+            commentMapper.delete(Wrappers.<CommentEntity>lambdaQuery()
+                    .eq(CommentEntity::getNoteId, noteId));
+        }
+        noteLikeMapper.delete(Wrappers.<NoteLikeEntity>lambdaQuery().eq(NoteLikeEntity::getNoteId, noteId));
+        noteCollectMapper.delete(Wrappers.<NoteCollectEntity>lambdaQuery().eq(NoteCollectEntity::getNoteId, noteId));
+        noteImageMapper.delete(Wrappers.<NoteImageEntity>lambdaQuery().eq(NoteImageEntity::getNoteId, noteId));
+        noteMapper.deleteById(noteId);
+
+        // Redis 计数键清掉（赞/收藏 ZSet + 待落库标记），DB 行删完不留死 key
+        counterStore.removeCounters(noteId);
+
+        // 事件只用 noteId：消费者按 _id 删文档，不需要标题/正文
+        NoteEntity eventNote = new NoteEntity();
+        eventNote.setId(noteId);
+        registerAfterCommit(NoteEventDTO.ACTION_DELETE, eventNote);
+        log.info("笔记已删除 noteId={} userId={} cascadeComments={}", noteId, userId, commentIds.size());
+    }
+
     /**
      * 登记「事务提交后发笔记索引事件」。见 publish 里的说明。
      */
@@ -238,9 +287,13 @@ public class NoteServiceImpl implements NoteService {
     }
 
     /**
-     * {@code publish} 与会 {@code update} 共用的「类型/图片/视频地址」校验。
+     * {@code publish} 与 {@code update} 共用的「类型/图片/视频地址」校验。
+     *
+     * @param requireGraphicImage P11 起图文笔记创建必须至少一张图；编辑时传入 false，
+     *                            因为「编辑清空图片」是 P10 刻意保留的语义（全量覆盖），
+     *                            不让内容修订卡在创建期的规则上。
      */
-    private PublishParams validatePublishParams(NotePublishDTO dto) {
+    private PublishParams validatePublishParams(NotePublishDTO dto, boolean requireGraphicImage) {
         int type = dto.getType() == null ? TYPE_GRAPHICAL : dto.getType();
         if (type != TYPE_GRAPHICAL && type != TYPE_VIDEO) {
             throw new BizException(ErrorCodeEnum.PARAM_VALIDATION_ERROR, "笔记类型只能是 1图文 或 2视频");
@@ -253,6 +306,10 @@ public class NoteServiceImpl implements NoteService {
         }
         if (type == TYPE_VIDEO && (dto.getVideoUrl() == null || dto.getVideoUrl().isBlank())) {
             throw new BizException(ErrorCodeEnum.PARAM_VALIDATION_ERROR, "视频笔记必须填写视频地址");
+        }
+        // P11 起图文笔记必须至少一张图（对齐小红书），仅创建时强制
+        if (requireGraphicImage && type == TYPE_GRAPHICAL && images.isEmpty()) {
+            throw new BizException(ErrorCodeEnum.PARAM_VALIDATION_ERROR, "图文笔记必须至少上传一张图片");
         }
         images.forEach(NoteServiceImpl::checkImageUrl);
         return new PublishParams(type, images);

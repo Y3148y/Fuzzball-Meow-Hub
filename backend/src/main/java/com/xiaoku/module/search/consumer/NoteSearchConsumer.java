@@ -45,9 +45,9 @@ public class NoteSearchConsumer {
                 noteSearchRepository.save(toDoc(event));
                 log.info("索引已更新 noteId={} action=PUBLISH", event.getNoteId());
             }
-            case NoteEventDTO.ACTION_UNPUBLISH -> {
+            case NoteEventDTO.ACTION_UNPUBLISH, NoteEventDTO.ACTION_DELETE -> {
                 noteSearchRepository.deleteById(event.getNoteId());
-                log.info("索引已删除 noteId={} action=UNPUBLISH", event.getNoteId());
+                log.info("索引已删除 noteId={} action={}", event.getNoteId(), event.getAction());
             }
             default -> log.warn("未知事件动作 action={} noteId={}，已忽略", event.getAction(), event.getNoteId());
         }

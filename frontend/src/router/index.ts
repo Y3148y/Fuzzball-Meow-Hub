@@ -34,6 +34,14 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '发布笔记', requiresAuth: true },
   },
   {
+    // 编辑入口只放在「自己笔记的详情页」操作区；直接手输 URL 进别人的笔记
+    // 会由后端 20001 拦掉（防探测语义），这里不需要再单独做权限判断
+    path: '/edit/:id(\\d+)',
+    name: 'note-edit',
+    component: () => import('@/views/NoteEditView.vue'),
+    meta: { title: '编辑笔记', requiresAuth: true },
+  },
+  {
     // 关键词走 query 而不走路径参数，中文不用 encode 进 URL，刷新也能保持
     path: '/search',
     name: 'search',

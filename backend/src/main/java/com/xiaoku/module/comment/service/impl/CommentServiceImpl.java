@@ -55,10 +55,9 @@ public class CommentServiceImpl implements CommentService {
         if (note.getStatus() == null || note.getStatus() != STATUS_PUBLISHED) {
             throw new BizException(ErrorCodeEnum.NOTE_STATUS_ILLEGAL, "该笔记当前状态不支持评论");
         }
-        // 兑现 P0 就定好的规则：不能评论自己的笔记
-        if (note.getUserId().equals(userId)) {
-            throw new BizException(ErrorCodeEnum.CANNOT_COMMENT_SELF_NOTE);
-        }
+        // P11 起作者可以在自己的笔记下评论/回复：运营上「作者回复评论区」是常态，
+        // 对齐小红书。旧规则的 CANNOT_COMMENT_SELF_NOTE(30007) 错误码保留未删（兼容），
+        // 只是不再抛。
 
         CommentEntity comment = new CommentEntity();
         comment.setNoteId(noteId);

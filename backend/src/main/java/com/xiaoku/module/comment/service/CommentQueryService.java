@@ -15,4 +15,11 @@ public interface CommentQueryService {
      * 现在是一级评论分页，每页的每条自带全部子回复。
      */
     PageVO<CommentVO> listByNote(Long noteId, int page, int size);
+
+    /**
+     * 查单条评论（点赞/取消点赞后回填最新状态用）。
+     *
+     * <p>不存在的评论抛 {@code COMMENT_NOT_FOUND}，和写接口的语义对齐。
+     */
+    CommentVO getOne(Long commentId);
 }

@@ -50,6 +50,9 @@ public class NoteVO implements Serializable {
     @Schema(description = "视频URL")
     private String videoUrl;
 
+    @Schema(description = "状态 0草稿 1正常 2下架")
+    private Integer status;
+
     @Schema(description = "点赞数")
     private Integer likeCount;
 

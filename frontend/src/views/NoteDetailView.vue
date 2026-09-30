@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { showConfirmDialog, showSuccessToast } from 'vant'
 import { collectNote, getNoteDetail, likeNote, uncollectNote, unlikeNote } from '@/api/note'
 import { followUser, unfollowUser } from '@/api/follow'
-import { createComment, deleteComment, listComments, replyComment } from '@/api/comment'
+import { createComment, deleteComment, likeComment, listComments, replyComment, unlikeComment } from '@/api/comment'
 import { BizError } from '@/api/request'
 import { ErrorCode } from '@/api/types'
 import type { CommentVO, NoteVO, PageVO } from '@/api/types'
@@ -231,6 +231,59 @@ async function refreshCounters() {
   note.value = { ...note.value!, likeCount: fresh.likeCount, collectCount: fresh.collectCount, commentCount: fresh.commentCount }
 }
 
+/* ---------------- 评论点赞 ---------------- */
+
+/**
+ * 正在点赞/取消的评论 ID（空串表示空闲）。和笔记点赞一样用 busy 挡连点，
+ * 不为评论单独做乐观更新：等一次往返拿到后端权威值，界面永远不撒谎。
+ */
+const likingCommentId = ref('')
+
+async function toggleCommentLike(c: CommentVO) {
+  if (likingCommentId.value) return
+  likingCommentId.value = c.id
+  try {
+    // 只合并 liked / likeCount 这一维，不整包覆盖：
+    // 评论响应里的其它字段是这个事务快照的旧值，覆盖会引入过期数据
+    const r = c.liked ? await unlikeComment(c.id) : await likeComment(c.id)
+    patchComment(r)
+  } catch (e) {
+    if (e instanceof BizError) {
+      // 30001/30002 说明本地状态和后端已不同步（多标签页攒出来的），
+      // 静默整页重拉纠正，别弹「已经点过赞」这种让人困惑的提示
+      if (e.code === ErrorCode.COMMENT_ALREADY_LIKED || e.code === ErrorCode.COMMENT_NOT_LIKED) {
+        await loadComments()
+        return
+      }
+    }
+    throw e
+  } finally {
+    likingCommentId.value = ''
+  }
+}
+
+/**
+ * 把响应里的 liked / likeCount 并回对应评论。
+ *
+ * <p>评论列表有嵌套（根评论带 replies），先递归找 ID；找到就只并自己这一维，
+ * 和「笔记点赞只合并 liked/likeCount」同一个道理——避免把响应里过期的
+ * 其它字段覆盖成脏值。
+ */
+function patchComment(next: CommentVO) {
+  const walk = (list: CommentVO[]): boolean => {
+    for (const it of list) {
+      if (it.id === next.id) {
+        it.liked = next.liked
+        it.likeCount = next.likeCount
+        return true
+      }
+      if (it.replies?.length && walk(it.replies)) return true
+    }
+    return false
+  }
+  walk(comments.value)
+}
+
 function scrollToComments() {
   document.querySelector('[data-test="comment-section"]')?.scrollIntoView({ behavior: 'smooth' })
 }
@@ -404,6 +457,18 @@ onMounted(async () => {
 
               <div class="c-ops">
                 <button
+                  class="c-op like"
+                  :class="{ on: c.liked }"
+                  type="button"
+                  :aria-pressed="c.liked"
+                  :disabled="!!likingCommentId"
+                  data-test="comment-like-btn"
+                  @click="toggleCommentLike(c)"
+                >
+                  <span class="ico">{{ c.liked ? '♥' : '♡' }}</span>
+                  <span class="num" data-test="comment-like-count">{{ c.likeCount }}</span>
+                </button>
+                <button
                   class="c-op"
                   type="button"
                   data-test="comment-reply-btn"
@@ -437,6 +502,20 @@ onMounted(async () => {
                     <template v-else>{{ r.nickname }}</template>
                   </p>
                   <p class="c-content">{{ r.content }}</p>
+                  <p class="c-ops reply-ops">
+                    <button
+                      class="c-op like"
+                      :class="{ on: r.liked }"
+                      type="button"
+                      :aria-pressed="r.liked"
+                      :disabled="!!likingCommentId"
+                      data-test="comment-reply-like-btn"
+                      @click="toggleCommentLike(r)"
+                    >
+                      <span class="ico">{{ r.liked ? '♥' : '♡' }}</span>
+                      <span class="num" data-test="comment-reply-like-count">{{ r.likeCount }}</span>
+                    </button>
+                  </p>
                 </li>
               </ul>
 
@@ -822,6 +901,26 @@ onMounted(async () => {
 
 .c-op.danger {
   color: #e5484d;
+}
+
+.c-op.like {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.c-op.like .ico {
+  font-size: 12px;
+  line-height: 1;
+}
+
+.c-op.like.on {
+  color: #f5a623;
+  font-weight: 700;
+}
+
+.reply-ops {
+  margin-top: 3px;
 }
 
 .c-op:disabled {

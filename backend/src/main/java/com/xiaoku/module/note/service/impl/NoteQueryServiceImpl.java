@@ -81,8 +81,10 @@ public class NoteQueryServiceImpl implements NoteQueryService {
             // 否则就能靠错误码差异探测出某篇草稿是否存在。
             throw new BizException(ErrorCodeEnum.NOTE_NOT_FOUND);
         }
-        if (status == STATUS_TAKEN_DOWN) {
-            // 下架过说明这篇曾经公开过，明确告知「已下架」比装作不存在更准确
+        if (status == STATUS_TAKEN_DOWN && !isAuthor) {
+            // 下架过说明这篇曾经公开过，明确告知「已下架」比装作不存在更准确。
+            // 作者本人可见自己的下架笔记（P10「明明是自己的，却突然 404」的编辑入口
+            // 需要它），这是与 P3 门禁的唯一差异。
             throw new BizException(ErrorCodeEnum.NOTE_STATUS_ILLEGAL, "该笔记已被下架");
         }
 
@@ -143,12 +145,17 @@ public class NoteQueryServiceImpl implements NoteQueryService {
         }
 
         Page<NoteEntity> pageInfo = new Page<>(page, size);
-        Page<NoteEntity> result = noteMapper.selectPage(pageInfo,
-                Wrappers.<NoteEntity>lambdaQuery()
-                        .eq(NoteEntity::getUserId, userId)
-                        .eq(NoteEntity::getStatus, STATUS_PUBLISHED)
-                        .orderByDesc(NoteEntity::getCreateTime)
-                        .orderByDesc(NoteEntity::getId));
+        var query = Wrappers.<NoteEntity>lambdaQuery()
+                .eq(NoteEntity::getUserId, userId)
+                .orderByDesc(NoteEntity::getCreateTime)
+                .orderByDesc(NoteEntity::getId);
+        // 本人主页 = 「我的笔记」管理视图，草稿/下架的也要能看到；
+        // 他人主页 = 公开视图，只展示已发布。否则作者会发现自己
+        // 「下架后就再也没法从列表进自己的笔记」。
+        if (!currentUserId.equals(userId)) {
+            query.eq(NoteEntity::getStatus, STATUS_PUBLISHED);
+        }
+        Page<NoteEntity> result = noteMapper.selectPage(pageInfo, query);
 
         // 这一页全是同一个作者的笔记，authorFollowed 算一次即可
         boolean authorFollowed = userFollowQueryService.isFollowing(currentUserId, userId);

@@ -5,6 +5,7 @@ import com.xiaoku.common.annotation.RateLimit;
 import com.xiaoku.common.result.PageVO;
 import com.xiaoku.common.result.Result;
 import com.xiaoku.module.note.dto.NotePublishDTO;
+import com.xiaoku.module.note.dto.NoteStatusDTO;
 import com.xiaoku.module.note.service.NoteInteractionService;
 import com.xiaoku.module.note.service.NoteQueryService;
 import com.xiaoku.module.note.service.NoteService;
@@ -59,6 +60,28 @@ public class NoteController {
             @Parameter(description = "图片文件", required = true)
             @RequestParam("file") MultipartFile file) {
         return Result.success(Map.of("url", noteService.uploadImage(file)));
+    }
+
+    @Operation(summary = "编辑笔记",
+            description = "作者本人，请求体字段与发布一致（全量更新：标题/正文/类型/图片/视频）")
+    // PUT 本身幂等（重试多次结果一致），限流与发布对齐，避免改稿被刷
+    @RateLimit(count = 20, seconds = 60, dimension = RateLimit.Dimension.USER,
+            message = "编辑太频繁啦，1 分钟内最多 20 次")
+    @PutMapping("/{id}")
+    public Result<NoteVO> update(@Parameter(description = "笔记ID") @PathVariable Long id,
+                                 @RequestBody @Valid NotePublishDTO dto) {
+        return Result.success(noteService.update(id, dto));
+    }
+
+    @Operation(summary = "上架 / 下架笔记",
+            description = "作者本人。body 传 {status: 2} 下架、{status: 1} 重新发布；只认 1/2，0 走参数校验错误")
+    // 状态变更天然幂等，同样按登录用户收紧
+    @RateLimit(count = 20, seconds = 60, dimension = RateLimit.Dimension.USER,
+            message = "操作太频繁啦，1 分钟内最多 20 次")
+    @PutMapping("/{id}/status")
+    public Result<NoteVO> changeStatus(@Parameter(description = "笔记ID") @PathVariable Long id,
+                                       @RequestBody @Valid NoteStatusDTO dto) {
+        return Result.success(noteService.changeStatus(id, dto.getStatus()));
     }
 
     @Operation(summary = "笔记详情", description = "含图片列表、作者信息、是否已点赞与是否已收藏")

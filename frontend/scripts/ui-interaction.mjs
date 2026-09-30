@@ -208,6 +208,48 @@ try {
   // 不足 3 条子回复时不该出现「共 N 条回复」
   s.check('子回复没超上限时不显示「共 N 条回复」', (await exists('comment-more-replies')) === false)
 
+  /* ============ 评论点赞 ============ */
+  s.check('根评论初始未点赞', (await pressed('comment-like-btn')) === false)
+  s.check('根评论初始点赞数为 0', (await num('comment-like-count')) === 0)
+
+  await click('comment-like-btn')
+  await s.waitFor(
+    "document.querySelector('[data-test=comment-like-count]').textContent.trim() === '1'",
+    '评论点赞后计数变 1',
+  )
+  s.check('评论点赞后计数为 1', (await num('comment-like-count')) === 1)
+  s.check('评论点赞后按钮进入已赞状态（aria-pressed=true）', (await pressed('comment-like-btn')) === true)
+
+  // 再来一下取消，验证它是开关而不是单向累加
+  await click('comment-like-btn')
+  await s.waitFor(
+    "document.querySelector('[data-test=comment-like-count]').textContent.trim() === '0'",
+    '评论取消点赞后计数回 0',
+  )
+  s.check('再点一下取消评论点赞，计数回到 0', (await num('comment-like-count')) === 0)
+  s.check('取消后评论按钮回到未赞状态', (await pressed('comment-like-btn')) === false)
+
+  // 回复同样可以点赞（i 是回复自己的 liked/likeCount，跟根评论互不影响）
+  s.check('回复初始点赞数为 0', (await num('comment-reply-like-count')) === 0)
+  await s.evaluate("document.querySelector('[data-test=comment-reply-like-btn]').click()")
+  await s.waitFor(
+    "document.querySelector('[data-test=comment-reply-like-count]').textContent.trim() === '1'",
+    '回复点赞后计数变 1',
+  )
+  s.check('回复点赞后计数为 1', (await num('comment-reply-like-count')) === 1)
+  s.check('回复点赞不影响根评论计数（仍是 0）', (await num('comment-like-count')) === 0)
+  s.check(
+    '回复点赞后按钮进入已赞状态（aria-pressed=true）',
+    (await s.evaluate("document.querySelector('[data-test=comment-reply-like-btn]').getAttribute('aria-pressed')")) === 'true',
+  )
+  // 复位，给删除用例留干净基线
+  await s.evaluate("document.querySelector('[data-test=comment-reply-like-btn]').click()")
+  await s.waitFor(
+    "document.querySelector('[data-test=comment-reply-like-count]').textContent.trim() === '0'",
+    '回复取消点赞后计数回 0',
+  )
+  s.check('回复取消点赞后计数回到 0', (await num('comment-reply-like-count')) === 0)
+
   // 删除根评论：Vant 确认弹窗
   await s.evaluate("document.querySelector('[data-test=comment-delete-btn]').click()")
   await s.waitFor("document.querySelector('.van-dialog')", '删除确认弹窗', 10000)

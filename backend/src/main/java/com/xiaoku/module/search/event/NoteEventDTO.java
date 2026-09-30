@@ -52,7 +52,7 @@ public class NoteEventDTO implements Serializable {
     /** 笔记类型：1 图文 2 视频 */
     private Integer type;
 
-    /** 发布时状态，恒为 1（1 正常 / 0 草稿 / 2 下架） */
+    /** 事件携带的状态：PUBLISH 时为 1（正常），UNPUBLISH 时为 2（下架） */
     private Integer status;
 
     /** 作者 ID */

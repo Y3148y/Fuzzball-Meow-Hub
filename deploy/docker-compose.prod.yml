@@ -107,9 +107,12 @@ services:
 
   # ---------------------------------------------------------
   # Elasticsearch —— 单节点，关闭安全认证（与后端配置保持一致）
+  #   同 dev：自建镜像加装 IK 分词，改 analyzer 后重新 build
   # ---------------------------------------------------------
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.17.6
+    build:
+      context: ./es
     restart: unless-stopped
     expose:
       - "9200"

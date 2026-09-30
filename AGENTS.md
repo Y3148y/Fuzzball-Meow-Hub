@@ -126,11 +126,11 @@ $env:XK_MYSQL_PASSWORD = "<.env 里的 MYSQL_ROOT_PASSWORD>"   # 不设就起不
 改后端接口 → 必须跑契约测试；改前端 → 必须跑 CDP 测试。**别攒到最后一起跑。**
 
 ```bash
-# 后端（需后端已在 8088 运行）→ 276 条
+# 后端（需后端已在 8088 运行）→ 332 条
 cd backend && node scripts/contract-test.mjs
 # 换地址：XK_API_BASE=http://ip:8088 node scripts/contract-test.mjs
 
-# 前端（需前端 5180 + 后端 8088 同时在跑）→ 18 + 8 + 17 + 26 + 41 + 25 + 19 + 9 = 163 条
+# 前端（需前端 5180 + 后端 8088 同时在跑）→ 18 + 8 + 17 + 26 + 52 + 25 + 19 + 9 = 174 条
 cd frontend && npm run test:ui
 
 # 单跑某一组：:smoke / :refresh / :note / :profile / :interaction / :follow / :search / :idempotent
@@ -367,12 +367,43 @@ get('/comment/list', { params: { noteId, page } })    // ❌ 发出 ?params[note
   - 注意：loadtest 会在库里留下 `xk_lt_*` 账号与笔记（`ct` 清理 SQL 的 REGEXP
     不会碰到它们，正常跑不受影响）；压测目标走 prod 栈 nginx 18080 而非 dev 8088，
     因为 dev profile 是 debug+SQL 打印，会拉偏数据
+- P10 五件套已完工（本 commit）：笔记编辑/上下架 + 评论点赞 + IK 分词
+  + 补 P0–P9 标签 + 清理压测残留，契约 **332 条**（+P10 56 条）+ CDP **174 条**
+  （+11 条评论点赞断言：interaction 41→52）
+  - **笔记编辑 / 上下架**：`PUT /api/note/{id}`（body=NotePublishDTO 全量更新）+
+    `PUT /api/note/{id}/status`（body `{status:1|2}`，0 走 100001）。详情门禁：
+    作者可见自己 status 0/2；非作者 0→20001、2→20002。`pageUserNotes`：本人=管理
+    视图全状态，他人=仅 status=1。图片=删旧重插；更新用 LambdaUpdateWrapper 显式
+    set（含 null，避开 not_null 策略吞掉清空的 cover/videoUrl）；事件在 afterCommit
+    发：编辑已发布→PUBLISH、已下架→UNPUBLISH、下架→UNPUBLISH、上架→PUBLISH
+    （createTime 保持首发值）。两端点 @RateLimit(20/min, USER)，PUT 幂等不加头。
+    契约 17.2 段覆盖「下架→搜索消失、上架→恢复可搜」的 Kafka 链路。
+  - **评论点赞**：`PUT/DELETE /api/comment/{id}/like`，与笔记共用 30001/30002。
+    like：评存在（30005）+ 父笔记 status=1（20002）；唯一索引防重→30001；
+    仅插入成功才 `like_count+1`。unlike：评论存在（30005）；删 0 行→30002；
+    `GREATEST(0, like_count-1)`；**刻意不做笔记状态门禁**，规避笔记侧
+    「下架后取消失败连带回滚」的坑（P5 缺口之一）。前端详情页根评论 + 回复都可赞，
+    只合并 liked/likeCount 单维（对齐 P8 并发语义），30001/30002 静默整页重拉。
+  - **IK 中文分词**：`deploy/es/Dockerfile` 自建 ES 镜像装 analysis-ik 8.17.6
+    （zip 在 `deploy/es/ik/` 且 gitignore 不入库），dev/prod compose 的
+    elasticsearch 均改 `build:`。`NoteSearchDoc` 索引用 `ik_max_word`、
+    查询用 `ik_smart`（标准用法）。换 analyzer 后必须重建索引
+    （`POST /api/search/reindex`），旧 mapping 不会自动升级——本次就是这么抓的：
+    先 reindex 后 mapping 仍是 standard，因为跑的是改动前旧类，重启后端再 reindex 才对。
+  - 清理：删了 dev `ct_%` 测试账号 + prod `xk_lt_*`/`prod_smoke1` 压测残留
+    （prod 27 笔记 + 80 评论 + 10 关注），prod/dev ES 都 reindex 清掉已删笔记的
+    孤儿文档（prod 用临时账号 `prod_clean` 注册→reindex→删号）
+  - git 标签：v0.3–v0.9 已补（对应 P3–P9 收官 commit），与既有 v0.1/v0.2 同风格
+  - **prod ES 仍是旧 standard 镜像**：只改了 prod compose 的 `build:`，没重建
+    prod ES 容器；下次部署重新 `docker compose -f deploy/docker-compose.prod.yml
+    --env-file .env.prod up -d --build` 时自然带上 IK。dev 已生效并回归（契约 332
+    + 搜索 CDP 19 条全绿）
 
 ### P3 已知缺口（不是遗漏，是当前阶段做不到）
 
-- **草稿 / 下架分支没有测试覆盖**：`NoteQueryServiceImpl` 里那段判断要靠
-  `status=0` 或 `status=2` 触发，而 P3 没有编辑/下架接口，测试造不出这个状态。
-  要覆盖得先加管理端接口。
+- **草稿（status=0）分支仍没有创建入口**：下架（status=2）自 P10 起有接口可造，
+  门禁已被契约 17.2 覆盖；但「投稿即草稿」的创建路径后端刻意不做，只有管理端
+  做出来才能造出 status=0 数据。`NoteQueryServiceImpl` 里它的判断分支仍未实测。
 - **`S3ImageStorage` 未实测**：本机没有 S3 端点，只验证了 `type=local` 分支。
   代码能编译但没跑过真实请求，别当成「已验证」。
 - **笔记详情需要登录**：`/api/note/{id}` 带路径变量，无法用 `MvcConfig` 的
@@ -405,7 +436,8 @@ get('/comment/list', { params: { noteId, page } })    // ❌ 发出 ?params[note
 
 - **没用 IK 中文分词**：`NoteSearchDoc` 用的是 ES 默认 standard 分析器，
   中文基本按单字切，召回够用（「笔记」能搜到）但语义相关性远不如 IK。
-  要换就改注解上的 `analyzer` + 装 IK 插件，重建索引。
+  要换就改注解上的 `analyzer` + 装 IK 插件，重建索引。（<b>P10 已实现</b>，
+  见上方 P10「IK 中文分词」段，此条保留仅作历史记录。）
 - **`createTime` 用 Long 存 epochMillis 有 WARN**：`@Field(type = Date, epoch_millis)`
   配 `Long` 会被 Spring Data ES 判为不支持类型，实际落成 number 字段。
   排序（`SortOptions.of` 的 createTime desc）和检索都正常，但映射不是日期类型，

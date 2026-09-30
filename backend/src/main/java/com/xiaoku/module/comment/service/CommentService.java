@@ -21,4 +21,19 @@ public interface CommentService {
      * 因为子回复脱离父评论没有意义。
      */
     void delete(Long commentId);
+
+    /**
+     * 点赞评论，返回点赞后的最新评论状态。
+     *
+     * <p>重复点赞抛 {@code ALREADY_LIKED}；已下架笔记的评论不可再点赞。
+     */
+    CommentVO like(Long commentId);
+
+    /**
+     * 取消点赞评论，返回取消后的最新评论状态。
+     *
+     * <p>未点赞时取消抛 {@code NOT_LIKED_YET}。刻意不做「笔记状态」门禁：
+     * 点赞可以因为笔记下架而失效，但<b>撤销一个已有的赞</b>不涉及该语义。
+     */
+    CommentVO unlike(Long commentId);
 }

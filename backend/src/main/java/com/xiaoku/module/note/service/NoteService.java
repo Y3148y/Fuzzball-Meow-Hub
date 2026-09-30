@@ -26,4 +26,20 @@ public interface NoteService {
      * 这类孤儿文件由定时任务清理（P9），不阻塞发布主流程。
      */
     String uploadImage(MultipartFile file);
+
+    /**
+     * 编辑笔记（作者本人），请求体与发布同构（全量更新）。
+     *
+     * <p>非作者一律按「笔记不存在」处理：编辑入口本身不暴露「这篇笔记存在」
+     * 的信息，和删除/评论同一套防探测策略。
+     */
+    NoteVO update(Long noteId, NotePublishDTO dto);
+
+    /**
+     * 上架 / 下架笔记（作者本人）。
+     *
+     * <p>status 只接受 1（发布）或 2（下架）。重复设置同一状态是幂等的，
+     * 直接返回当前详情，不重复产生索引事件。
+     */
+    NoteVO changeStatus(Long noteId, Integer status);
 }

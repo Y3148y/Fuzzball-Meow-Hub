@@ -31,6 +31,8 @@ pnpm-debug.log*
 backend/uploads/
 backend/data/
 *.log
+# ===== IK 分词插件素材（十几 MB，不入库；Dockerfile 里 COPY 用）=====
+deploy/es/ik/
 
 # ===== 系统 =====
 .DS_Store

@@ -25,8 +25,9 @@
 | P7 | Elasticsearch 搜索 + Kafka 异步同步 | ✅ 已完成 |
 | P8 | 限流 / 幂等 / 布隆过滤器 / 分布式锁 / Redis 计数权威 + 异步落库 | ✅ 已完成 |
 | P9 | 压测报告 + 完整文档 + 部署脚本 | ✅ 已完成 |
+| P10 | 笔记编辑/上下架 + 评论点赞 + IK 分词 + 补 git tag + 清理压测残留 | ✅ 已完成 |
 
-> 架构图 / ER 图 / 部署脚本 / 压测数据都在「P9」节；git tag 见各版本提交记录。
+> 架构图 / ER 图 / 部署脚本 / 压测数据都在「P9」节；git tag 见各版本提交记录（P10 补全 v0.3–v0.9）。
 
 ---
 
@@ -258,7 +259,7 @@ red-book/
 | 2 | access token 正常过期时用户被踢下线 | 响应拦截器已解包成 `body.data`，刷新逻辑又读 `res.data` 得 `undefined` → 走失败分支 | 成功路径和失败路径类型都是合法的 |
 | 3 | 填错密码时点登录毫无反应 | `canSubmit` 把「长度不够」也算作按钮 `disabled` | 不是错误，是设计选择 |
 
-**防复发**：登录链路一旦改动，跑 `npm run test:ui`（163 条断言，见下）。第 1、2 条都有对应用例。
+**防复发**：登录链路一旦改动，跑 `npm run test:ui`（174 条断言，见下）。第 1、2 条都有对应用例。
 
 ### 测试基建：`npm run test:ui`
 
@@ -271,11 +272,11 @@ red-book/
 | `npm run test:ui:refresh` | 坏 access 自动 refresh + 重放原请求、双 token 同步轮换、双 token 失效清理、无 refresh 安全降级 |
 | `npm run test:ui:note` | 发布页守卫、空表单禁用、字数计数、本地预览、9 张上限、发布跳详情、详情图片**真实解码**（非碎图） |
 | `npm run test:ui:profile` | 我的页守卫、资料回填、昵称超长前端拦截、保存后**回查后端**确认落库、取消不写库、演示账号自还原 |
-| `npm run test:ui:interaction` | 点赞/收藏开关往返、两者互不影响、并发复位收敛、跨账号评论、回复嵌套与被回复者昵称、删根评论的确认弹窗与子树级联 |
+| `npm run test:ui:interaction` | 点赞/收藏开关往返、两者互不影响、并发复位收敛、跨账号评论、回复嵌套与被回复者昵称、**评论点赞开关往返（根评论与回复）**、删根评论的确认弹窗与子树级联 |
 | `npm run test:ui:follow` | 作者主页关注 → 关注流出现 → 详情页取关 → 关注流消失、行内关注按钮、关注/粉丝列表、粉丝空态、自己主页无关注按钮 |
 | `npm run test:ui:search` | 首页搜索框跳搜索页、命中素材笔记、卡片作者昵称来自 MySQL 回填、进详情、无结果空态、空关键词不发请求、带 `?keyword=` 直链刷新 |
 | `npm run test:ui:idempotent` | 幂等 key 随请求存活期滚动、坏 access 触发 refresh 时幂等头不丢、手动改坏 token 精确模拟 401 |
-| `npm run test:ui` | 八者全跑（163 条） |
+| `npm run test:ui` | 八者全跑（174 条） |
 
 **验证 refresh 链路的做法**：把 `localStorage` 里的 `xk_token` 改成垃圾串后**整页重载**。
 冷启动时 token 的 `ref` 会读到这个坏值，`isLogin` 仍为 `true`，
@@ -499,13 +500,13 @@ ES 文档只存**检索字段**（id / title / content / type / status / userId 
 消费失败经 `FixedBackOff(1s, 3)` 重试后进 `<topic>.DLT`（`DeadLetterPublishingRecoverer`），
 坏消息不卡分区。
 
-**已知缺口**：未引入 IK 分词，用的是 ES 默认 standard 分析器（中文按单字切，
-召回够用但与 IK 有差距）；本机无 S3 端点，`S3ImageStorage` 仍未实测。
+**已知缺口**：本机无 S3 端点，`S3ImageStorage` 仍未实测。
+（IK 分词已在 P10 接入：自建 ES 镜像装 analysis-ik，索引用 `ik_max_word` + 查询 `ik_smart`。）
 
 ### 后端契约测试：`node backend/scripts/contract-test.mjs`
 
 P2 那 7 条断言原本是临时脚本，跑完就丢了，`git log` 里看不出「怎么测的」。
-现在固化成落盘的契约快照，276 条（P2 44 + P3 32 + P5 58 + P6 69 + P7 19 + P8 54）：
+现在固化成落盘的契约快照，332 条（P2 44 + P3 32 + P5 58 + P6 69 + P7 19 + P8 54 + P10 56）：
 
 ```bash
 cd backend
@@ -518,7 +519,7 @@ XK_API_BASE=http://ip:8088 node scripts/contract-test.mjs   # 换地址
 VO 有没有漏出敏感字段。裸 HTTP 打一遍最直接，零依赖意味着任何人不装 Maven 插件、
 不起容器也能跑。service 层的分支测试留给后续按需引入 Mockito。
 
-覆盖的 6 组：
+覆盖的分组：
 
 | 组 | 断言要点 |
 |---|---|
@@ -533,6 +534,8 @@ VO 有没有漏出敏感字段。裸 HTTP 打一遍最直接，零依赖意味�
 | P6 关注域 | 关注/取关各自开关注并重复操作 40001/40002、自关注 40003、目标不存在 10001、**关注/粉丝列表的 followed 是「当前浏览者是否也关注」**、互关后两列表都有 true、作者主页笔记列表 20001 区分「无笔记」与「用户不存在」、作者卡片一次往返拿全、feed 只含关注中作者的笔记、**取关后计数回滚且从 feed 消失** |
 | P6 feed | JOIN 不 IN、列表含作者信息、空 feed、分页回显、未登录 10005 |
 | P7 搜索域 | 空关键词 50002、未登录 10005、发布后**轮询等异步入索引**再断命中、命中首条就是种子笔记、卡片作者昵称来自 MySQL 回填、`authorFollowed` 为当前值、`total` 与 `list` 长度一致、无关词返回空列表不报错、分页回显、`/api/search/reindex` 重建后仍可搜到 |
+| P10 编辑/上下架 | 空标题/图片清空（cover 与 videoUrl 置 null）后不回退、非作者编辑/下架 100001、status 只认 1|2（0 走 100001）、**下架→搜索消失、上架→恢复可搜**（真实 Kafka 链路）、作者主页对已下架笔记 status=2 可见、他人主页不含、重复下架幂等 |
+| P10 评论点赞 | 开关往返各自生效、重复赞 30001 / 未赞取消 30002、**下架笔记的评论点赞被拒 20002 但取消不被拦**（规避 P5 回滚坑）、列表 `liked` 状态走 IN 批量判定、计数加减正确 |
 
 最后一条是安全断言：Entity 有 `password`，靠 `@JsonIgnore` 兜底属于「靠注解赌后人不忘」，
 断言字段名才能在有人不小心把 Entity 直接返回时立刻炸出来。

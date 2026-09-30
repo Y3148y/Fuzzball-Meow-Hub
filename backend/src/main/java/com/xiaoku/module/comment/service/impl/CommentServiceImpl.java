@@ -7,7 +7,10 @@ import com.xiaoku.common.result.ErrorCodeEnum;
 import com.xiaoku.module.comment.converter.CommentConverter;
 import com.xiaoku.module.comment.dto.CommentCreateDTO;
 import com.xiaoku.module.comment.entity.CommentEntity;
+import com.xiaoku.module.comment.entity.CommentLikeEntity;
+import com.xiaoku.module.comment.mapper.CommentLikeMapper;
 import com.xiaoku.module.comment.mapper.CommentMapper;
+import com.xiaoku.module.comment.service.CommentQueryService;
 import com.xiaoku.module.comment.service.CommentService;
 import com.xiaoku.module.comment.vo.CommentVO;
 import com.xiaoku.module.note.entity.NoteEntity;
@@ -15,6 +18,7 @@ import com.xiaoku.module.note.mapper.NoteMapper;
 import com.xiaoku.module.user.service.UserQueryService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -30,8 +34,10 @@ public class CommentServiceImpl implements CommentService {
     private static final int STATUS_PUBLISHED = 1;
 
     private final CommentMapper commentMapper;
+    private final CommentLikeMapper commentLikeMapper;
     private final NoteMapper noteMapper;
     private final UserQueryService userQueryService;
+    private final CommentQueryService commentQueryService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -113,6 +119,78 @@ public class CommentServiceImpl implements CommentService {
 
         // 一条 SQL 退掉"自己 + 子回复"的总和，不要循环调多次
         noteMapper.decreaseCommentCount(comment.getNoteId(), -(children + 1));
+    }
+
+    /**
+     * 防重策略与笔记点赞同构：<b>只 insert，让唯一索引当裁判</b>，
+     * 不写「先 select 再 insert」——那是 check-then-act 竞态，
+     * 并发下两条会同时看到「还没点过」然后结果依赖索引加锁。
+     * 这边和 {@code NoteInteractionServiceImpl.like} 的取舍完全一致。
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public CommentVO like(Long commentId) {
+        Long userId = UserContextHolder.requireUserId();
+        requireLikeableComment(commentId);
+
+        CommentLikeEntity like = new CommentLikeEntity();
+        like.setUserId(userId);
+        like.setCommentId(commentId);
+        try {
+            commentLikeMapper.insert(like);
+        } catch (DuplicateKeyException e) {
+            throw new BizException(ErrorCodeEnum.ALREADY_LIKED);
+        }
+        // 评论量级远比笔记小，计数不走 Redis，直接行上 +1（见 CommentMapper 注释）
+        commentMapper.increaseLikeCount(commentId);
+        return commentQueryService.getOne(commentId);
+    }
+
+    /**
+     * 取消页面刻意不做「笔记状态」门禁：点赞可以因为笔记下架而不再生效，
+     * 但<b>撤销</b>一个没点掉的赞不依赖笔记状态，永远允许。
+     * 这也回避了笔记点赞那个「下架后取消连带回滚」的坑——末尾的
+     * {@code getOne} 不检查笔记状态，不会把已执行的删除一起回滚。
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public CommentVO unlike(Long commentId) {
+        Long userId = UserContextHolder.requireUserId();
+        // 确认评论存在本身：不存在时 delete 永远 0 行，得把「从未点赞」和
+        // 「评论根本不存在」分开，才不误导前端
+        requireCommentExists(commentId);
+
+        int deleted = commentLikeMapper.delete(Wrappers.<CommentLikeEntity>lambdaQuery()
+                .eq(CommentLikeEntity::getUserId, userId)
+                .eq(CommentLikeEntity::getCommentId, commentId));
+        if (deleted == 0) {
+            throw new BizException(ErrorCodeEnum.NOT_LIKED_YET);
+        }
+        commentMapper.decreaseLikeCount(commentId);
+        return commentQueryService.getOne(commentId);
+    }
+
+    /**
+     * 点赞前确认评论属于一篇状态正常（status=1）的笔记。
+     *
+     * <p>和 {@code create} 同一个理由：给已下架笔记的评论点赞没有意义，
+     * 而且「评论永远存在只是笔记下架了」这个状态不该被子回复的赞顶上去。
+     */
+    private void requireLikeableComment(Long commentId) {
+        CommentEntity comment = commentMapper.selectById(commentId);
+        if (comment == null) {
+            throw new BizException(ErrorCodeEnum.COMMENT_NOT_FOUND);
+        }
+        NoteEntity note = noteMapper.selectById(comment.getNoteId());
+        if (note == null || note.getStatus() == null || note.getStatus() != STATUS_PUBLISHED) {
+            throw new BizException(ErrorCodeEnum.NOTE_STATUS_ILLEGAL, "该笔记当前状态不支持点赞评论");
+        }
+    }
+
+    private void requireCommentExists(Long commentId) {
+        if (commentMapper.selectById(commentId) == null) {
+            throw new BizException(ErrorCodeEnum.COMMENT_NOT_FOUND);
+        }
     }
 
     private int countChildren(Long rootCommentId) {

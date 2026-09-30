@@ -1,5 +1,6 @@
 package com.xiaoku.module.note.service.impl;
 
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.xiaoku.common.context.UserContextHolder;
 import com.xiaoku.common.exception.BizException;
 import com.xiaoku.common.result.ErrorCodeEnum;
@@ -11,6 +12,7 @@ import com.xiaoku.module.note.entity.NoteEntity;
 import com.xiaoku.module.note.entity.NoteImageEntity;
 import com.xiaoku.module.note.mapper.NoteImageMapper;
 import com.xiaoku.module.note.mapper.NoteMapper;
+import com.xiaoku.module.note.service.NoteQueryService;
 import com.xiaoku.module.note.service.NoteService;
 import com.xiaoku.module.note.vo.NoteVO;
 import com.xiaoku.module.search.event.NoteEventDTO;
@@ -25,9 +27,11 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 
 @Slf4j
 @Service
@@ -40,8 +44,12 @@ public class NoteServiceImpl implements NoteService {
     private static final int TYPE_GRAPHICAL = 1;
     private static final int TYPE_VIDEO = 2;
 
+    private static final int STATUS_PUBLISHED = 1;
+    private static final int STATUS_TAKEN_DOWN = 2;
+
     private final NoteMapper noteMapper;
     private final NoteImageMapper noteImageMapper;
+    private final NoteQueryService noteQueryService;
     private final UserQueryService userQueryService;
     private final ImageStorage imageStorage;
     private final KafkaTemplate<String, Object> kafkaTemplate;
@@ -54,51 +62,125 @@ public class NoteServiceImpl implements NoteService {
     @Transactional(rollbackFor = Exception.class)
     public NoteVO publish(NotePublishDTO dto) {
         Long userId = UserContextHolder.requireUserId();
-
-        int type = dto.getType() == null ? TYPE_GRAPHICAL : dto.getType();
-        if (type != TYPE_GRAPHICAL && type != TYPE_VIDEO) {
-            throw new BizException(ErrorCodeEnum.PARAM_VALIDATION_ERROR, "笔记类型只能是 1图文 或 2视频");
-        }
-
-        List<String> images = dto.getImageUrls() == null ? List.of() : dto.getImageUrls();
-        if (images.size() > MAX_IMAGE_COUNT) {
-            throw new BizException(ErrorCodeEnum.NOTE_IMAGE_LIMIT_EXCEED,
-                    "单篇笔记最多上传 " + MAX_IMAGE_COUNT + " 张图片");
-        }
-        if (type == TYPE_VIDEO && (dto.getVideoUrl() == null || dto.getVideoUrl().isBlank())) {
-            throw new BizException(ErrorCodeEnum.PARAM_VALIDATION_ERROR, "视频笔记必须填写视频地址");
-        }
-        images.forEach(NoteServiceImpl::checkImageUrl);
+        PublishParams params = validatePublishParams(dto);
 
         NoteEntity note = new NoteEntity();
         note.setUserId(userId);
-        note.setType(type);
+        note.setType(params.type());
         note.setTitle(dto.getTitle().trim());
         note.setContent(dto.getContent().trim());
         note.setVideoUrl(dto.getVideoUrl());
         // 封面缺省取第一张图，省得前端每篇都单独上传一张
-        note.setCover(images.isEmpty() ? null : images.get(0));
+        note.setCover(params.images().isEmpty() ? null : params.images().get(0));
         note.setStatus(1);
         noteMapper.insert(note);
         // 提前置位（事务提交前）：假阳性只多查一次库，「漏置位 = 详情 404」才是要命的。
         // 详见 NoteIdBloomFilter 的类注释
         bloomFilter.add(note.getId());
 
-        for (int i = 0; i < images.size(); i++) {
+        for (int i = 0; i < params.images().size(); i++) {
             NoteImageEntity image = new NoteImageEntity();
             image.setNoteId(note.getId());
-            image.setUrl(images.get(i));
+            image.setUrl(params.images().get(i));
             image.setSort(i);
             noteImageMapper.insert(image);
         }
 
-        log.info("笔记发布成功 noteId={} userId={} images={}", note.getId(), userId, images.size());
+        log.info("笔记发布成功 noteId={} userId={} images={}", note.getId(), userId, params.images().size());
         // 稀缺：规划 ES 索引的异步同步。必须在 afterCommit 发送而不是在事务内直接发，
         // 否则「消息进了 Kafka、事务却回滚」会产生索引里有、库里没有的幽灵文档。
         // 发送是异步的且失败只记日志：搜索索引可被 /api/search/reindex 一键重建，不值得拖成功接口
-        registerAfterCommit(note);
+        registerAfterCommit(NoteEventDTO.ACTION_PUBLISH, note);
         // 刚发布的笔记必然没有点赞/收藏/关注作者（自己不能关注自己），三者都是 false
-        return NoteConverter.toVO(note, userQueryService.getUserVO(userId), images, false, false, false);
+        return NoteConverter.toVO(note, userQueryService.getUserVO(userId), params.images(), false, false, false);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public NoteVO update(Long noteId, NotePublishDTO dto) {
+        Long userId = UserContextHolder.requireUserId();
+        NoteEntity note = noteMapper.selectById(noteId);
+        // 别人的笔记一律按「不存在」处理（和评论删除同一套防探测策略）：
+        // 编辑入口不暴露「这篇笔记是否存在」给非作者
+        if (note == null || !userId.equals(note.getUserId())) {
+            throw new BizException(ErrorCodeEnum.NOTE_NOT_FOUND);
+        }
+        PublishParams params = validatePublishParams(dto);
+
+        // 用 LambdaUpdateWrapper 显式 set 而不是 updateById：全项目配了
+        // update-strategy not_null，updateById 会把「清空的字段」（cover / videoUrl）
+        // 当 null 跳过，导致旧值残留。wrapper 的 set 连 null 一起写，语义才是完整覆盖。
+        noteMapper.update(null, Wrappers.<NoteEntity>lambdaUpdate()
+                .eq(NoteEntity::getId, noteId)
+                .set(NoteEntity::getType, params.type())
+                .set(NoteEntity::getTitle, dto.getTitle().trim())
+                .set(NoteEntity::getContent, dto.getContent().trim())
+                .set(NoteEntity::getVideoUrl, dto.getVideoUrl())
+                .set(NoteEntity::getCover, params.images().isEmpty() ? null : params.images().get(0))
+                .set(NoteEntity::getUpdateTime, LocalDateTime.now()));
+
+        // 图片策略：删旧重插。增删/换序都用「整表重建」表达，不做逐张 diff——
+        // 编辑是低频操作，diff 的复杂度不值得省那点 IO，也回避「删了没插、插了没删」
+        // 的中间态
+        noteImageMapper.delete(Wrappers.<NoteImageEntity>lambdaQuery()
+                .eq(NoteImageEntity::getNoteId, noteId));
+        for (int i = 0; i < params.images().size(); i++) {
+            NoteImageEntity image = new NoteImageEntity();
+            image.setNoteId(noteId);
+            image.setUrl(params.images().get(i));
+            image.setSort(i);
+            noteImageMapper.insert(image);
+        }
+
+        log.info("笔记更新成功 noteId={} userId={}", noteId, userId);
+        // 编辑不会让一篇笔记「重新上热搜」：已下架的继续发 UNPUBLISH（确保索引里没有），
+        // 正常的才带新标题/正文 re-upsert
+        int curStatus = note.getStatus() == null ? STATUS_PUBLISHED : note.getStatus();
+        String action = curStatus == STATUS_PUBLISHED
+                ? NoteEventDTO.ACTION_PUBLISH
+                : NoteEventDTO.ACTION_UNPUBLISH;
+        registerAfterCommit(action, ofEventNote(note, params, dto, curStatus));
+        return noteQueryService.getDetail(noteId);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public NoteVO changeStatus(Long noteId, Integer status) {
+        if (status == null || (status != STATUS_PUBLISHED && status != STATUS_TAKEN_DOWN)) {
+            throw new BizException(ErrorCodeEnum.PARAM_VALIDATION_ERROR, "状态只能是 1（发布）或 2（下架）");
+        }
+        Long userId = UserContextHolder.requireUserId();
+        NoteEntity note = noteMapper.selectById(noteId);
+        if (note == null || !userId.equals(note.getUserId())) {
+            throw new BizException(ErrorCodeEnum.NOTE_NOT_FOUND);
+        }
+        if (Objects.equals(note.getStatus(), status)) {
+            // 幂等：已经是目标状态就什么都不动（拿不到「状态是几」的写接口除外），
+            // 重复点按钮不产生多余事件和 update
+            return noteQueryService.getDetail(noteId);
+        }
+
+        noteMapper.update(null, Wrappers.<NoteEntity>lambdaUpdate()
+                .eq(NoteEntity::getId, noteId)
+                .set(NoteEntity::getStatus, status)
+                .set(NoteEntity::getUpdateTime, LocalDateTime.now()));
+
+        // 用原行拼事件，保证 createTime 与作者不变：上架后重新入索引，
+        // 发布时间保持首发值，搜索结果里顺序不回退
+        NoteEntity eventNote = new NoteEntity();
+        eventNote.setId(noteId);
+        eventNote.setUserId(userId);
+        eventNote.setType(note.getType());
+        eventNote.setTitle(note.getTitle());
+        eventNote.setContent(note.getContent());
+        eventNote.setStatus(status);
+        eventNote.setCreateTime(note.getCreateTime());
+        String action = status == STATUS_TAKEN_DOWN
+                ? NoteEventDTO.ACTION_UNPUBLISH
+                : NoteEventDTO.ACTION_PUBLISH;
+        registerAfterCommit(action, eventNote);
+        log.info("笔记状态变更 noteId={} userId={} status={}", noteId, userId, status);
+        return noteQueryService.getDetail(noteId);
     }
 
     @Override
@@ -109,18 +191,18 @@ public class NoteServiceImpl implements NoteService {
     /**
      * 登记「事务提交后发笔记索引事件」。见 publish 里的说明。
      */
-    private void registerAfterCommit(NoteEntity note) {
+    private void registerAfterCommit(String action, NoteEntity note) {
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
-                sendNoteEvent(note);
+                sendNoteEvent(action, note);
             }
         });
     }
 
-    private void sendNoteEvent(NoteEntity note) {
+    private void sendNoteEvent(String action, NoteEntity note) {
         NoteEventDTO event = NoteEventDTO.builder()
-                .action(NoteEventDTO.ACTION_PUBLISH)
+                .action(action)
                 .noteId(String.valueOf(note.getId()))
                 .title(note.getTitle())
                 .content(note.getContent())
@@ -137,6 +219,46 @@ public class NoteServiceImpl implements NoteService {
         } catch (RuntimeException e) {
             log.error("笔记索引事件发送失败，可运行 POST /api/search/reindex 重建。noteId={}", event.getNoteId(), e);
         }
+    }
+
+    /**
+     * 用原行 + 本轮编辑结果拼索引事件载体，createTime/status 保持「当前状态」
+     * 而不是裸取 dto（dto 里没有这两个字段）。
+     */
+    private NoteEntity ofEventNote(NoteEntity base, PublishParams params, NotePublishDTO dto, Integer status) {
+        NoteEntity eventNote = new NoteEntity();
+        eventNote.setId(base.getId());
+        eventNote.setUserId(base.getUserId());
+        eventNote.setType(params.type());
+        eventNote.setTitle(dto.getTitle().trim());
+        eventNote.setContent(dto.getContent().trim());
+        eventNote.setStatus(status);
+        eventNote.setCreateTime(base.getCreateTime());
+        return eventNote;
+    }
+
+    /**
+     * {@code publish} 与会 {@code update} 共用的「类型/图片/视频地址」校验。
+     */
+    private PublishParams validatePublishParams(NotePublishDTO dto) {
+        int type = dto.getType() == null ? TYPE_GRAPHICAL : dto.getType();
+        if (type != TYPE_GRAPHICAL && type != TYPE_VIDEO) {
+            throw new BizException(ErrorCodeEnum.PARAM_VALIDATION_ERROR, "笔记类型只能是 1图文 或 2视频");
+        }
+
+        List<String> images = dto.getImageUrls() == null ? List.of() : dto.getImageUrls();
+        if (images.size() > MAX_IMAGE_COUNT) {
+            throw new BizException(ErrorCodeEnum.NOTE_IMAGE_LIMIT_EXCEED,
+                    "单篇笔记最多上传 " + MAX_IMAGE_COUNT + " 张图片");
+        }
+        if (type == TYPE_VIDEO && (dto.getVideoUrl() == null || dto.getVideoUrl().isBlank())) {
+            throw new BizException(ErrorCodeEnum.PARAM_VALIDATION_ERROR, "视频笔记必须填写视频地址");
+        }
+        images.forEach(NoteServiceImpl::checkImageUrl);
+        return new PublishParams(type, images);
+    }
+
+    private record PublishParams(int type, List<String> images) {
     }
 
     /**

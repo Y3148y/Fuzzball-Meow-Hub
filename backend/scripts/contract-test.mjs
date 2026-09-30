@@ -1184,6 +1184,221 @@ async function main() {
     eq('全部还原后 collectCount=0', d3.json?.data?.collectCount, 0)
   }
 
+  // ---- 17.1 P10 笔记编辑（PUT /api/note/{id}，作者本人，全量更新）
+  {
+    const { json } = await put(`/api/note/${noteId}`, { token: actorAuth, body: { title: 'x', content: 'y' } })
+    codeIs('非作者编辑返回 20001（不泄露存在性，和删除/评论同一套防探测）', json, 20001)
+  }
+  {
+    const { json } = await put(`/api/note/${noteId}`, { body: { title: 'x', content: 'y' } })
+    codeIs('未登录编辑被拒（10005）', json, 10005)
+  }
+  {
+    const { json } = await put('/api/note/123456789012345', { token: auth, body: { title: 'x', content: 'y' } })
+    codeIs('编辑不存在的笔记返回 20001', json, 20001)
+  }
+  {
+    const { json } = await put(`/api/note/${noteId}`, { token: auth, body: { title: '', content: 'y' } })
+    codeIs('编辑时空标题被拦（100001）', json, 100001)
+  }
+  {
+    // 视频类型缺 videoUrl 的兜底和发布同构
+    const { json } = await put(`/api/note/${noteId}`, { token: auth, body: { title: '改视频', content: 'y', type: 2 } })
+    codeIs('编辑成视频却缺 videoUrl 被拦（100001）', json, 100001)
+  }
+  let editImageUrl = null
+  {
+    const up = await uploadImage(auth)
+    editImageUrl = up.json?.data?.url
+    const { json } = await put(`/api/note/${noteId}`, {
+      token: auth,
+      body: { title: '编辑后的标题', content: '编辑后的正文', imageUrls: [editImageUrl] },
+    })
+    codeIs('作者编辑笔记成功', json, 0)
+    eq('编辑后标题生效', json?.data?.title, '编辑后的标题')
+    eq('编辑后正文生效', json?.data?.content, '编辑后的正文')
+    eq('编辑后封面取新图', json?.data?.cover, editImageUrl)
+    eq('编辑后图片整表重建为新列表', JSON.stringify(json?.data?.images), JSON.stringify([editImageUrl]))
+    eq('编辑不动状态（仍是 status=1）', json?.data?.status, 1)
+    eq('编辑不动计数', json?.data?.likeCount, 0)
+  }
+  {
+    const { json } = await get(`/api/note/${noteId}`, { token: auth })
+    eq('详情回读标题是编辑后的', json?.data?.title, '编辑后的标题')
+    eq('详情图片与编辑一致', JSON.stringify(json?.data?.images), JSON.stringify([editImageUrl]))
+  }
+  {
+    // 清空图片：cover 要走「显式 set null」路径（updateById 的 not_null 会跳过空值，旧封面残留）
+    const { json } = await put(`/api/note/${noteId}`, {
+      token: auth,
+      body: { title: '编辑后的标题', content: '编辑后的正文' },
+    })
+    codeIs('编辑清空图片成功', json, 0)
+    eq('清空后 images 为空数组', JSON.stringify(json?.data?.images), JSON.stringify([]))
+    check('清空后 cover 为 null，旧封面没有残留', json?.data?.cover == null, `cover=${JSON.stringify(json?.data?.cover)}`)
+  }
+
+  // ---- 17.2 P10 上下架（PUT /api/note/{id}/status，只认 1/2）+ 搜索可见性
+  {
+    const { json } = await put(`/api/note/${searchNoteId}/status`, { token: auth, body: { status: 0 } })
+    codeIs('status=0（草稿）不允许走接口被拦（100001）', json, 100001)
+  }
+  {
+    const { json } = await put(`/api/note/${searchNoteId}/status`, { token: auth, body: {} })
+    codeIs('status 缺失被拦（100001）', json, 100001)
+  }
+  {
+    const { json } = await put(`/api/note/${searchNoteId}/status`, { token: auth, body: { status: 3 } })
+    codeIs('status=3 被拦（100001）', json, 100001)
+  }
+  {
+    const { json } = await put(`/api/note/${searchNoteId}/status`, { token: actorAuth, body: { status: 2 } })
+    codeIs('非作者下架返回 20001（防探测）', json, 20001)
+  }
+  {
+    const { json } = await put(`/api/note/${searchNoteId}/status`, { token: auth, body: { status: 2 } })
+    codeIs('作者下架成功', json, 0)
+    eq('下架后详情 status=2', json?.data?.status, 2)
+  }
+  {
+    // 曾经公开过，对非作者明确报「已下架」而不是装不存在
+    const { json } = await get(`/api/note/${searchNoteId}`, { token: actorAuth })
+    codeIs('非作者看已下架笔记返回 20002', json, 20002)
+  }
+  {
+    // P10 门禁改动：作者本人能看到自己的下架笔记（否则编辑入口会「自己的东西突然 404」）
+    const { json } = await get(`/api/note/${searchNoteId}`, { token: auth })
+    codeIs('作者本人看自己的下架笔记成功', json, 0)
+    eq('作者视角详情 status=2', json?.data?.status, 2)
+  }
+  {
+    // 下架 → Kafka → ES 删除文档：轮询直到搜不到（复用轮询账号的独立限流额度）
+    let gone = false
+    for (let i = 0; i < 50 && !gone; i++) {
+      const { json } = await get(`/api/search/note?keyword=${encodeURIComponent(searchUnique)}`, { token: pollAuth })
+      gone = json?.code === 0 && (json?.data?.total ?? 0) === 0
+      if (!gone) await new Promise((r) => setTimeout(r, 500))
+    }
+    check('下架后经 Kafka 从索引移除（25s 内搜不到）', gone)
+  }
+  {
+    const { json } = await get(`/api/search/note?keyword=${encodeURIComponent(searchUnique)}`, { token: auth })
+    eq('下架后的确认搜索 total=0', json?.data?.total, 0)
+  }
+  {
+    // 他人主页 = 公开视图，只含已发布
+    const { json } = await get(`/api/note/user/${userId}?page=1&size=100`, { token: actorAuth })
+    const cards = (json?.data?.list ?? []).filter((n) => n.id === searchNoteId)
+    eq('他人视角作者主页不含下架笔记', cards.length, 0)
+  }
+  {
+    // 作者自己的主页 = 管理视图，草稿/下架都能看到
+    const { json } = await get(`/api/note/user/${userId}?page=1&size=100`, { token: auth })
+    const cards = (json?.data?.list ?? []).filter((n) => n.id === searchNoteId)
+    check('作者自己主页能看到下架笔记且 status=2',
+      cards.length === 1 && cards[0]?.status === 2, `cards=${JSON.stringify(cards)}`)
+  }
+  {
+    const { json } = await put(`/api/note/${searchNoteId}/status`, { token: auth, body: { status: 1 } })
+    codeIs('作者重新上架成功', json, 0)
+    eq('上架后详情 status=1', json?.data?.status, 1)
+  }
+  {
+    // 幂等：设置成当前状态不该报错、不该产生多余事件
+    const { json } = await put(`/api/note/${searchNoteId}/status`, { token: auth, body: { status: 1 } })
+    codeIs('重复设置为已上架成功（幂等）', json, 0)
+  }
+  {
+    // 上架 → 重新入索引：等 Kafka 回灌（createTime 保持首发值）
+    let back = false
+    for (let i = 0; i < 50 && !back; i++) {
+      const { json } = await get(`/api/search/note?keyword=${encodeURIComponent(searchUnique)}`, { token: pollAuth })
+      back = json?.code === 0 && (json?.data?.total ?? 0) > 0
+      if (!back) await new Promise((r) => setTimeout(r, 500))
+    }
+    check('上架后重新入索引（25s 内恢复可搜到）', back)
+    const { json } = await get(`/api/search/note?keyword=${encodeURIComponent(searchUnique)}`, { token: auth })
+    eq('上架后的确认搜索首条仍是该笔记', json?.data?.list?.[0]?.id, searchNoteId)
+  }
+
+  // ---- 17.3 P10 评论点赞（PUT/DELETE /api/comment/{id}/like）
+  //
+  // 用 actorAuth 的评论：它发过不少评论（已烧掉一部分 10/分钟 的桶），
+  // 只用 1 次额度就够，避免「恰好卡在 10 次」这种脆断言。
+  {
+    const { json } = await del('/api/comment/123456789012345/like', { token: actorAuth })
+    codeIs('给不存在的评论取消点赞返回 30005', json, 30005)
+  }
+  {
+    const { json } = await put('/api/comment/123456789012345/like', { token: actorAuth })
+    codeIs('给不存在的评论点赞返回 30005', json, 30005)
+  }
+  let likeCommentId = null
+  {
+    const { json } = await post('/api/comment', {
+      token: actorAuth,
+      body: { noteId, content: 'P10 评论点赞测试' },
+    })
+    codeIs('发布一条用于点赞测试的评论', json, 0)
+    likeCommentId = json?.data?.id
+    eq('新评论 likeCount=0', json?.data?.likeCount, 0)
+    eq('发布者自己 liked=false', json?.data?.liked, false)
+  }
+  {
+    const { json } = await put(`/api/comment/${likeCommentId}/like`, { token: rlAuth })
+    codeIs('评论点赞成功', json, 0)
+    eq('点赞后 likeCount=1', json?.data?.likeCount, 1)
+    eq('点赞者 liked=true', json?.data?.liked, true)
+  }
+  {
+    const { json } = await put(`/api/comment/${likeCommentId}/like`, { token: rlAuth })
+    codeIs('重复点赞返回 30001（唯一索引当裁判，不是先查后插）', json, 30001)
+  }
+  {
+    const { json } = await put(`/api/comment/${likeCommentId}/like`, { token: actorAuth })
+    codeIs('评论作者也能给自己的评论点赞', json, 0)
+    eq('第二个人点赞后 likeCount=2', json?.data?.likeCount, 2)
+  }
+  {
+    const { json } = await del(`/api/comment/${likeCommentId}/like`, { token: rlAuth })
+    codeIs('取消点赞成功', json, 0)
+    eq('取消后 likeCount=1（作者的赞还在）', json?.data?.likeCount, 1)
+    eq('取消者 liked=false', json?.data?.liked, false)
+  }
+  {
+    const { json } = await del(`/api/comment/${likeCommentId}/like`, { token: rlAuth })
+    codeIs('没点赞却取消返回 30002', json, 30002)
+  }
+  {
+    // 已下架笔记的评论不能再点赞（requireLikeableComment 的 20002 分支）
+    await put(`/api/note/${noteId}/status`, { token: auth, body: { status: 2 } })
+    const { json } = await put(`/api/comment/${likeCommentId}/like`, { token: actorAuth })
+    codeIs('已下架笔记的评论点赞被拒（20002）', json, 20002)
+    await put(`/api/note/${noteId}/status`, { token: auth, body: { status: 1 } })
+  }
+  {
+    // 取消点赞不被「笔记已下架」阻拦（撤销一个已有的赞不依赖笔记状态）
+    // 与笔记点赞「下架后无法取消」那个已知缺口对照，评论侧刻意没这个坑
+    await put(`/api/note/${noteId}/status`, { token: auth, body: { status: 2 } })
+    const { json } = await del(`/api/comment/${likeCommentId}/like`, { token: actorAuth })
+    codeIs('笔记下架后仍能取消自己的评论赞', json, 0)
+    eq('取消后 likeCount=0', json?.data?.likeCount, 0)
+    await put(`/api/note/${noteId}/status`, { token: auth, body: { status: 1 } })
+  }
+  {
+    // actorAuth 的赞刚在上一步取消了，先把赞点回去再断言列表状态
+    const like = await put(`/api/comment/${likeCommentId}/like`, { token: actorAuth })
+    codeIs('列表断言前先把自己的赞点回去', like.json, 0)
+    const { json } = await get(`/api/comment/list?noteId=${noteId}&page=1&size=10`, { token: actorAuth })
+    const row = (json?.data?.list ?? []).find((c) => c.id === likeCommentId)
+    check('点赞后列表里该评论 liked 状态正确（loadLikedIds 走 IN 批量判）',
+      typeof row === 'object' && row?.liked === true, `liked=${row?.liked}`)
+  }
+  {
+    const { json } = await del(`/api/comment/${likeCommentId}`, { token: actorAuth })
+    codeIs('清理点赞测试评论（回归零状态）', json, 0)
+  }
+
   // ---- 18. 不支持的方法
   {
     const { json } = await call('DELETE', '/api/user/login')

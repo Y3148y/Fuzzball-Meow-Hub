@@ -19,9 +19,10 @@ import java.time.ZoneOffset;
  * 好处是作者改昵称、点赞数变化不会让搜索卡片过期——「DB 是权威，ES 只管检索」
  * 和全项目「计数一致性推迟」的口径一致。
  *
- * <p>中文分词：镜像没装 IK/Pinyin 插件，用缺省 {@code standard} 分析器走
- * <b>单字切分</b>，中文关键词命中原样可用，只是不做词义召回。要词级召回得
- * 自建镜像，记入已知缺口。
+ * <p>中文分词：镜像自建加装 IK（deploy/es/Dockerfile）。索引用
+ * {@code ik_max_word}（最大粒度切词，召回全），查询用 {@code ik_smart}
+ * （粗粒度，命中友好）——标准用法。改 analyzer 记得重建索引
+ * （POST /api/search/reindex），旧 mapping 不会自动升级。
  */
 @Data
 @Document(indexName = "xk_note", createIndex = true)
@@ -32,10 +33,10 @@ public class NoteSearchDoc {
     private String id;
 
     /** 标题：检索时权重 2（multi_match fields 里 title^2） */
-    @Field(type = FieldType.Text, analyzer = "standard", searchAnalyzer = "standard")
+    @Field(type = FieldType.Text, analyzer = "ik_max_word", searchAnalyzer = "ik_smart")
     private String title;
 
-    @Field(type = FieldType.Text, analyzer = "standard", searchAnalyzer = "standard")
+    @Field(type = FieldType.Text, analyzer = "ik_max_word", searchAnalyzer = "ik_smart")
     private String content;
 
     @Field(type = FieldType.Integer)

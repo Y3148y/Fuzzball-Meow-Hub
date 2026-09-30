@@ -39,6 +39,9 @@ public class NoteListItemVO implements Serializable {
     @Schema(description = "封面图URL")
     private String cover;
 
+    @Schema(description = "状态 0草稿 1正常 2下架")
+    private Integer status;
+
     @Schema(description = "点赞数")
     private Integer likeCount;
 

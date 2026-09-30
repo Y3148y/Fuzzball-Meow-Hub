@@ -1,4 +1,4 @@
-import { del, get, post } from './request'
+import { del, get, post, put } from './request'
 import type { CommentCreateDTO, CommentVO, PageVO } from './types'
 
 /**
@@ -40,4 +40,19 @@ export function replyComment(noteId: string, content: string, parentId: string) 
 /** 删除评论。删根评论会连它的子树一起删 */
 export function deleteComment(id: string) {
   return del<void>(`/comment/${id}`)
+}
+
+/**
+ * 给评论点赞（根评论和回复都可以）。
+ *
+ * <p>后端和笔记点赞共用 30001/30002：重复赞 / 赞不存在。
+ * 幂等性由「唯一索引裁判 + 返回 30001」保证，前端不需要额外的幂等头。
+ */
+export function likeComment(id: string) {
+  return put<CommentVO>(`/comment/${id}/like`)
+}
+
+/** 取消评论点赞 */
+export function unlikeComment(id: string) {
+  return del<CommentVO>(`/comment/${id}/like`)
 }

@@ -95,12 +95,16 @@ services:
       - xiaoku-net
 
   # ---------------------------------------------------------
-  # Elasticsearch 8.17 —— 单节点，关闭安全认证
+  # Elasticsearch 8.17.6 —— 单节点，关闭安全认证
   #   宿主机端口 9250（本机 9200 已被 cpolar 占用）
   #   Spring Data Elasticsearch 5.5.x 官方对齐 ES 8.x，勿用 9.x
+  #   本服务用 deploy/es/Dockerfile 自建镜像（加装 IK 中文分词），
+  #   改动 analyzer 后要重新 `docker compose build elasticsearch` 再 up
   # ---------------------------------------------------------
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.17.6
+    build:
+      context: ./deploy/es
     container_name: xiaoku-elasticsearch
     restart: unless-stopped
     ports:

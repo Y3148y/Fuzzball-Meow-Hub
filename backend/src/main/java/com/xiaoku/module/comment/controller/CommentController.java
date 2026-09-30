@@ -61,4 +61,24 @@ public class CommentController {
         commentService.delete(id);
         return Result.success();
     }
+
+    // ------------------------------------------------------------------
+    // 评论点赞
+    //
+    // 与笔记点赞同样的 PUT/DELETE 幂等语义。刻意不挂限流/幂等注解：
+    // 点赞是无副作用的轻操作（不会产生两条数据），刷量成本低于评论/发布，
+    // 和笔记侧 like/unlike 的取舍保持一致。
+    // ------------------------------------------------------------------
+
+    @Operation(summary = "点赞评论", description = "重复点赞返回 30001；已下架笔记的评论不可再点赞")
+    @PutMapping("/{id}/like")
+    public Result<CommentVO> like(@Parameter(description = "评论ID") @PathVariable Long id) {
+        return Result.success(commentService.like(id));
+    }
+
+    @Operation(summary = "取消点赞评论", description = "未点赞时取消失败返回 30002")
+    @DeleteMapping("/{id}/like")
+    public Result<CommentVO> unlike(@Parameter(description = "评论ID") @PathVariable Long id) {
+        return Result.success(commentService.unlike(id));
+    }
 }

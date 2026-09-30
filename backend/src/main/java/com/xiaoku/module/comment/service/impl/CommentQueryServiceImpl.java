@@ -114,6 +114,25 @@ public class CommentQueryServiceImpl implements CommentQueryService {
         return PageVO.of(voList, roots.getTotal(), page, size);
     }
 
+    @Override
+    public CommentVO getOne(Long commentId) {
+        CommentEntity comment = commentMapper.selectById(commentId);
+        if (comment == null) {
+            throw new BizException(ErrorCodeEnum.COMMENT_NOT_FOUND);
+        }
+        Long currentUserId = currentUserId();
+        boolean mine = currentUserId != null && currentUserId.equals(comment.getUserId());
+        boolean liked = currentUserId != null && commentLikeMapper.selectCount(Wrappers.<CommentLikeEntity>lambdaQuery()
+                .eq(CommentLikeEntity::getUserId, currentUserId)
+                .eq(CommentLikeEntity::getCommentId, commentId)) > 0;
+        UserVO replyTo = comment.getReplyUserId() == null || comment.getReplyUserId() == 0L
+                ? null
+                : userQueryService.findUserVO(comment.getReplyUserId());
+        return CommentConverter.toVO(comment,
+                userQueryService.findUserVO(comment.getUserId()),
+                replyTo, liked, mine, null, null);
+    }
+
     /** 评论读接口也要求登录，但这里是软读：拿不到登录态就当"没人点过赞"，不该 500 */
     private Long currentUserId() {
         LoginUser loginUser = UserContextHolder.get();

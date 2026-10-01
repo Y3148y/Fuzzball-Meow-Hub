@@ -57,6 +57,42 @@
   --xk-radius-blob: 22px 26px 20px 28px / 26px 20px 28px 22px;
   --xk-radius-blob-sm: 14px 17px 13px 18px / 17px 13px 18px 14px;
 
+  /*
+   * 字阶（P13 无障碍收口）。规则：
+   * - 文本入口一律 ≥16px —— iOS Safari 对 <16px 的输入框聚焦会自动放大页面，
+   *   这是无障碍基线不是审美问题；
+   * - meta/辅助文字最低 12px，不再有 11px 这种"装饰性小字"；
+   * - 全站 font-size 只允许写 var(--xk-fs-*)，数值本身禁再散写
+   *   （体检表 `--report` 会打字号直方图，出现阶外值=违规）。
+   */
+  --xk-fs-12: 12px;
+  --xk-fs-13: 13px;
+  --xk-fs-14: 14px;
+  --xk-fs-15: 15px;
+  --xk-fs-16: 16px;
+  --xk-fs-17: 17px;
+  --xk-fs-20: 20px;
+  --xk-fs-22: 22px;
+  --xk-fs-24: 24px;
+  --xk-fs-30: 30px;
+
+  /* 间距阶：text 内外边距、字段间距、卡片 padding 统一取这里 */
+  --xk-space-1: 4px;
+  --xk-space-2: 8px;
+  --xk-space-3: 12px;
+  --xk-space-4: 16px;
+  --xk-space-5: 20px;
+  --xk-space-6: 24px;
+  --xk-space-7: 32px;
+  --xk-space-8: 48px;
+
+  /*
+   * 卡片内边距。P13 实测发现：详情/发布/编辑/我的/搜索 的 `.card`
+   * **从来没有 padding 规则**（文字贴着描边），只有首页/登录/作者页写了 18px。
+   * 收进一个 token，一处改、所有卡片（含将来新增的）一起生效。
+   */
+  --xk-card-pad: 18px;
+
   /* 桥接 Vant：让组件库跟着品牌色走 */
   --van-primary-color: var(--xk-amber);
   --van-background: var(--xk-bg);
@@ -163,20 +199,21 @@ body {
  */
 .page {
   min-height: 100%;
-  padding: calc(16px + env(safe-area-inset-top)) 20px calc(24px + env(safe-area-inset-bottom));
+  padding: calc(var(--xk-space-4) + env(safe-area-inset-top)) var(--xk-space-5)
+    calc(var(--xk-space-6) + env(safe-area-inset-bottom));
   max-width: 480px;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--xk-space-4);
 }
 
 /* ≥768px：过渡态，稍微拉宽 */
 @media (min-width: 768px) {
   .page {
     max-width: 640px;
-    padding-left: 24px;
-    padding-right: 24px;
+    padding-left: var(--xk-space-6);
+    padding-right: var(--xk-space-6);
   }
 }
 
@@ -184,9 +221,9 @@ body {
 @media (min-width: 1024px) {
   .page {
     max-width: 1200px;
-    padding-left: 32px;
-    padding-right: 32px;
-    gap: 20px;
+    padding-left: var(--xk-space-7);
+    padding-right: var(--xk-space-7);
+    gap: var(--xk-space-5);
   }
 }
 
@@ -198,6 +235,11 @@ body {
   box-shadow: var(--xk-shadow-hard);
 }
 
+/* .card 是页面级卡片的通用类：内边距全局兜底（组件里同名规则只是历史遗留） */
+.card {
+  padding: var(--xk-card-pad);
+}
+
 .xk-card--flat {
   box-shadow: none;
 }
@@ -207,15 +249,15 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: var(--xk-space-2);
   width: 100%;
   min-height: 48px;
-  padding: 12px 20px;
+  padding: var(--xk-space-3) var(--xk-space-5);
   border: var(--xk-stroke-w) solid var(--xk-stroke);
   border-radius: var(--xk-radius-blob-sm);
   background: var(--xk-amber);
   color: var(--xk-amber-ink);
-  font-size: 16px;
+  font-size: var(--xk-fs-16);
   font-weight: 700;
   letter-spacing: 0.04em;
   cursor: pointer;
@@ -270,12 +312,12 @@ a:focus-visible {
 .xk-input {
   width: 100%;
   min-height: 48px;
-  padding: 12px 14px;
+  padding: var(--xk-space-3) var(--xk-space-4);
   border: var(--xk-stroke-w) solid var(--xk-border);
   border-radius: var(--xk-radius-blob-sm);
   background: var(--xk-surface-2);
   color: var(--xk-text);
-  font-size: 15px;
+  font-size: var(--xk-fs-16);
   outline: none;
   transition:
     border-color 0.15s ease,
@@ -327,6 +369,9 @@ a:focus-visible {
     /* 不对称 blob 圆角（手绘轮廓）→ 常规圆角 */
     --xk-radius-blob: 16px;
     --xk-radius-blob-sm: 10px;
+
+    /* 桌面卡片呼吸感更大一档 */
+    --xk-card-pad: 24px;
 
     /* Vant 不吃 --xk-*：它自家的圆角阶（默认 2/4/8px）在桌面上太碎，
      * 一并推到与 blob 同节奏。对话框默认 16px 已经对齐，不用动。 */

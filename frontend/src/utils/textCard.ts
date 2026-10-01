@@ -49,6 +49,98 @@ const PALETTES: Record<TextTheme, TextCardPalette> = {
   },
 }
 
+/**
+ * 文字卡模板（小红书式的「模板选择」）。
+ *
+ * 模板决定卡片外观，**与 app 深浅主题解耦**：选了琥珀卡就是琥珀卡，
+ * 不随主题翻转；`defaultTemplateId()` 只是按主题给出默认项。
+ * 每套模板自带你这调色板 —— canvas 读不到 CSS 变量，颜色必须写死在这里。
+ * text2 均按 ≥4.5:1 对比度选的（黄/粉/绿/蓝四套都手算过）。
+ */
+export type CardDecor = 'circles' | 'lines' | 'dots' | 'plain'
+
+export interface CardTemplate {
+  id: string
+  name: string
+  decor: CardDecor
+  palette: TextCardPalette
+}
+
+export const CARD_TEMPLATES: CardTemplate[] = [
+  { id: 'paper', name: '纸感', decor: 'circles', palette: PALETTES.light },
+  { id: 'ink', name: '墨黑', decor: 'circles', palette: PALETTES.dark },
+  {
+    id: 'amber',
+    name: '琥珀',
+    decor: 'lines',
+    palette: {
+      surface: '#ffedbe',
+      bgSoft: '#f6d98d',
+      text: '#43300f',
+      text2: '#6e5a2e',
+      text3: '#96814d',
+      stroke: '#4a3416',
+      amber: '#ffffff',
+      amberInk: '#43300f',
+    },
+  },
+  {
+    id: 'mint',
+    name: '青瓷',
+    decor: 'dots',
+    palette: {
+      surface: '#e4f4ec',
+      bgSoft: '#cfeadc',
+      text: '#153a2d',
+      text2: '#3f6b5c',
+      text3: '#71988a',
+      stroke: '#1d4a3b',
+      amber: '#2f9e73',
+      amberInk: '#ffffff',
+    },
+  },
+  {
+    id: 'blush',
+    name: '腮红',
+    decor: 'lines',
+    palette: {
+      surface: '#fde9ec',
+      bgSoft: '#f9d5da',
+      text: '#4a1f28',
+      text2: '#7c4b55',
+      text3: '#a97f88',
+      stroke: '#5d2f39',
+      amber: '#e5484d',
+      amberInk: '#ffffff',
+    },
+  },
+  {
+    id: 'blue',
+    name: '雾蓝',
+    decor: 'dots',
+    palette: {
+      surface: '#e9effc',
+      bgSoft: '#d7e1f8',
+      text: '#1b2b52',
+      text2: '#4a5c8c',
+      text3: '#7d8cb5',
+      stroke: '#24345f',
+      amber: '#5b7ad6',
+      amberInk: '#ffffff',
+    },
+  },
+]
+
+/** 按 id 取模板，找不到（脏数据）回退第一套，绝不抛错 */
+export function getTemplate(id: string): CardTemplate {
+  return CARD_TEMPLATES.find((t) => t.id === id) ?? CARD_TEMPLATES[0]
+}
+
+/** 发布页的默认模板：跟 app 主题走一次（深色→墨黑，其余→纸感） */
+export function defaultTemplateId(): string {
+  return document.documentElement.dataset.theme === 'dark' ? 'ink' : 'paper'
+}
+
 /* 画布尺寸：900×1200，3:4 竖版，跟小红书默认文字卡同比例 */
 export const CARD_W = 900
 export const CARD_H = 1200
@@ -63,7 +155,14 @@ const FOLLOW_PAGE_LINES = 17
 const MAX_PAGES = 6
 
 const TITLE_FONT = 'bold 46px ' + FONT_STACK
-const CONTENT_FONT = '30px ' + FONT_STACK
+/**
+ * 正文 32px / 行高 56（1.75）：卡片展示宽只有 ~340px（900 缩到 0.38 倍），
+ * 原 30px 折算过去才 11.3px，读起来发虚 —— 这是「卡片排版不对」的主因之一。
+ * 预算复核：两行标题最深 170+124+48=342 起排，13 行 56 → 末行基线 342+12*56=1014
+ *          仍在落款(1136)之上；续页 140+16*56=1036 同样安全。
+ */
+const CONTENT_FONT = '32px ' + FONT_STACK
+const CONTENT_LH = 56
 const BRAND_FONT = '22px ' + FONT_STACK
 const FOOT_FONT = '24px ' + FONT_STACK
 
@@ -89,20 +188,31 @@ function measureWidth(ctx: CanvasRenderingContext2D, font: string, text: string)
 /**
  * 中文逐字符换行。英文单词会被硬切，本项目正文以中文为主，够用；
  * 要兼顾英文得按候选断点回溯，暂不值得。
+ *
+ * **先按 \n 切段再逐段折行**：段间空行保留为一整行。
+ * 之前从不看 \n，裸换行会被 fillText 画成空格宽的缺口 ——
+ * 用户报的「按了换行键却变成空格」就是这条（2026-10-01 诊断）。
  */
 export function wrapText(ctx: CanvasRenderingContext2D, font: string, text: string, maxWidth: number): string[] {
+  if (!text) return []
   const out: string[] = []
-  let line = ''
-  for (const ch of text) {
-    const next = line + ch
-    if (line && measureWidth(ctx, font, next) > maxWidth) {
-      out.push(line)
-      line = ch
-    } else {
-      line = next
+  for (const para of text.split('\n')) {
+    if (para === '') {
+      out.push('')
+      continue
     }
+    let line = ''
+    for (const ch of para) {
+      const next = line + ch
+      if (line && measureWidth(ctx, font, next) > maxWidth) {
+        out.push(line)
+        line = ch
+      } else {
+        line = next
+      }
+    }
+    if (line) out.push(line)
   }
-  if (line) out.push(line)
   return out
 }
 
@@ -166,11 +276,11 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
 
 /**
  * 把某一页画进 canvas（覆盖全部像素）。页码用「count down 计数」逻辑，
- * 续页不重复画标题。
+ * 续页不重复画标题。模板决定配色 + 底纹。
  */
-export function drawPage(canvas: HTMLCanvasElement, page: TextPage, theme: TextTheme) {
+export function drawPage(canvas: HTMLCanvasElement, page: TextPage, tpl: CardTemplate) {
   const ctx = canvas.getContext('2d')!
-  const p = PALETTES[theme]
+  const p = tpl.palette
   canvas.width = CARD_W
   canvas.height = CARD_H
   // 必须校正字体基线，否则 fillText 的字体会比预期高一点
@@ -184,14 +294,30 @@ export function drawPage(canvas: HTMLCanvasElement, page: TextPage, theme: TextT
   roundRect(ctx, 8, 8, CARD_W - 16, CARD_H - 16, 48)
   ctx.stroke()
 
-  // 背景装饰：左上、右下各一枚淡色圆，压在手写卡纸后面
+  // 底纹（模板决定）：软圆 / 横线纸 / 点阵 / 素面
   ctx.fillStyle = p.bgSoft
-  ctx.beginPath()
-  ctx.arc(-90, -90, 180, 0, Math.PI * 2)
-  ctx.fill()
-  ctx.beginPath()
-  ctx.arc(CARD_W + 80, CARD_H + 40, 160, 0, Math.PI * 2)
-  ctx.fill()
+  if (tpl.decor === 'circles') {
+    // 左上、右下各一枚淡色圆，压在手写卡纸后面
+    ctx.beginPath()
+    ctx.arc(-90, -90, 180, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.beginPath()
+    ctx.arc(CARD_W + 80, CARD_H + 40, 160, 0, Math.PI * 2)
+    ctx.fill()
+  } else if (tpl.decor === 'lines') {
+    // 横线纸：等距细线铺满内容区（不压到描边）
+    for (let y = 148; y < CARD_H - 110; y += 56) {
+      ctx.fillRect(SIDE, y, CARD_W - SIDE * 2, 2)
+    }
+  } else if (tpl.decor === 'dots') {
+    for (let y = 40; y < CARD_H - 40; y += 56) {
+      for (let x = 40; x < CARD_W - 40; x += 56) {
+        ctx.beginPath()
+        ctx.arc(x, y, 2.5, 0, Math.PI * 2)
+        ctx.fill()
+      }
+    }
+  }
 
   // 品牌行：左上品牌字，右上「喵」印章
   ctx.fillStyle = p.text3
@@ -261,7 +387,7 @@ function drawContent(
   ctx.font = CONTENT_FONT
   const shown = lines.slice(0, budget)
   for (let i = 0; i < shown.length; i++) {
-    ctx.fillText(shown[i], SIDE, startBaseline + i * 52)
+    ctx.fillText(shown[i], SIDE, startBaseline + i * CONTENT_LH)
   }
 }
 
@@ -292,32 +418,39 @@ function canvasToBlob(canvas: HTMLCanvasElement): Promise<Blob> {
 /**
  * 主入口：把标题 + 正文切成最多 N 张 3:4 文字卡片，返回 PNG Blob 列表。
  * 调用方逐张 new File([blob], 'text-card.png', { type: 'image/png' }) 后走 uploadImage。
+ * templateId 缺省（''/undefined/脏值）回退第一套模板，不抛错。
  */
-export async function textCardBlobs(title: string, content: string, theme: TextTheme): Promise<Blob[]> {
+export async function textCardBlobs(title: string, content: string, templateId?: string): Promise<Blob[]> {
+  const tpl = getTemplate(templateId ?? '')
   const pages = buildTextPages(title, content)
   const canvas = document.createElement('canvas')
   canvas.width = CARD_W
   canvas.height = CARD_H
   const blobs: Blob[] = []
   for (const page of pages) {
-    drawPage(canvas, page, theme)
+    drawPage(canvas, page, tpl)
     blobs.push(await canvasToBlob(canvas))
   }
   return blobs
 }
 
-/** 生成第 1 页的 dataURL，用于发布/编辑页的实时预览 */
-export function textCardPreview(title: string, content: string, theme: TextTheme): string {
+/**
+ * 生成第 pageIndex 页的 dataURL，用于发布/编辑页的实时预览。
+ * 配合 textCardPageCount 做分页器 —— 预览只显示第 1 页会让用户以为
+ * 超长正文被「吞」了，必须能翻到后面几页。
+ */
+export function textCardPreview(title: string, content: string, templateId?: string, pageIndex = 0): string {
+  const tpl = getTemplate(templateId ?? '')
   const pages = buildTextPages(title, content)
   if (!pages.length) return ''
   const canvas = document.createElement('canvas')
-  drawPage(canvas, pages[0], theme)
+  drawPage(canvas, pages[Math.min(Math.max(pageIndex, 0), pages.length - 1)], tpl)
   return canvas.toDataURL('image/png')
 }
 
-/** 当前主题快捷判断，跟 index.html 内联脚本一致 */
-export function currentTextTheme(): TextTheme {
-  return document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light'
+/** 当前标题/正文会切成几页（0 = 空内容不出卡） */
+export function textCardPageCount(title: string, content: string): number {
+  return buildTextPages(title, content).length
 }
 
 /* ===================================================================== */

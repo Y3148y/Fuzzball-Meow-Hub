@@ -147,19 +147,19 @@ onMounted(load)
 }
 
 .back {
-  width: 30px;
-  height: 30px;
+  width: 40px;
+  height: 40px;
   border: 0;
   background: none;
   color: var(--xk-text-2);
-  font-size: 20px;
+  font-size: var(--xk-fs-20);
   line-height: 1;
   cursor: pointer;
   padding: 0 0 2px;
 }
 
 .brand {
-  font-size: 15px;
+  font-size: var(--xk-fs-15);
   font-weight: 700;
 }
 
@@ -167,7 +167,7 @@ onMounted(load)
   margin: 40px 0 0;
   text-align: center;
   color: var(--xk-text-3);
-  font-size: 13px;
+  font-size: var(--xk-fs-13);
 }
 
 .hint.err {
@@ -217,7 +217,7 @@ onMounted(load)
 }
 
 .nick {
-  font-size: 14px;
+  font-size: var(--xk-fs-14);
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -226,7 +226,7 @@ onMounted(load)
 
 .uname {
   margin-top: 2px;
-  font-size: 12px;
+  font-size: var(--xk-fs-12);
   color: var(--xk-text-3);
 }
 
@@ -237,7 +237,7 @@ onMounted(load)
   border-radius: 999px;
   background: var(--xk-surface-2);
   color: var(--xk-text-2);
-  font-size: 12px;
+  font-size: var(--xk-fs-12);
   cursor: pointer;
 }
 

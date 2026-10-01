@@ -645,18 +645,23 @@ onMounted(async () => {
 }
 
 .brand {
-  font-size: 15px;
+  font-size: var(--xk-fs-15);
   font-weight: 700;
 }
 
 .back {
+  min-width: 40px;
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: 0;
   background: none;
-  font-size: 26px;
+  font-size: var(--xk-fs-24);
   line-height: 1;
   color: var(--xk-text-2);
   cursor: pointer;
-  padding: 0 4px;
+  padding: 0;
 }
 
 .hint {
@@ -664,7 +669,7 @@ onMounted(async () => {
   padding: 40px 0;
   text-align: center;
   color: var(--xk-text-3);
-  font-size: 14px;
+  font-size: var(--xk-fs-14);
 }
 
 .err {
@@ -672,8 +677,8 @@ onMounted(async () => {
 }
 
 .title {
-  margin: 0 0 14px;
-  font-size: 20px;
+  margin: 0 0 var(--xk-space-4);
+  font-size: var(--xk-fs-20);
   line-height: 1.4;
   word-break: break-word;
 }
@@ -681,8 +686,8 @@ onMounted(async () => {
 .who {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 14px;
+  gap: var(--xk-space-3);
+  margin-bottom: var(--xk-space-4);
 }
 
 .avatar {
@@ -698,13 +703,13 @@ onMounted(async () => {
 
 .nickname {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--xk-fs-14);
   font-weight: 600;
 }
 
 .time {
   margin: 2px 0 0;
-  font-size: 12px;
+  font-size: var(--xk-fs-12);
   color: var(--xk-text-3);
 }
 
@@ -715,7 +720,7 @@ onMounted(async () => {
   border-radius: 999px;
   background: var(--xk-surface-2);
   color: var(--xk-text-2);
-  font-size: 12px;
+  font-size: var(--xk-fs-12);
   cursor: pointer;
 }
 
@@ -744,7 +749,7 @@ onMounted(async () => {
   border-radius: 999px;
   background: var(--xk-surface-2);
   color: var(--xk-text-2);
-  font-size: 12px;
+  font-size: var(--xk-fs-12);
   cursor: pointer;
 }
 
@@ -760,7 +765,7 @@ onMounted(async () => {
 
 .content {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--xk-fs-16);
   line-height: 1.7;
   white-space: pre-wrap;
   word-break: break-word;
@@ -844,7 +849,7 @@ onMounted(async () => {
   }
 
   .title {
-    font-size: 22px;
+    font-size: var(--xk-fs-22);
     margin-top: 0;
   }
 
@@ -914,21 +919,21 @@ onMounted(async () => {
 
 .stats .ico {
   display: block;
-  font-size: 18px;
+  font-size: var(--xk-fs-17);
   line-height: 1.2;
 }
 
 .stats .cap {
   display: block;
   margin-top: 2px;
-  font-size: 12px;
+  font-size: var(--xk-fs-12);
   color: var(--xk-text-3);
 }
 
 .stats .num {
   display: block;
   margin-top: 3px;
-  font-size: 16px;
+  font-size: var(--xk-fs-16);
   font-weight: 700;
 }
 
@@ -942,13 +947,13 @@ onMounted(async () => {
 
 .c-title {
   margin: 0 0 12px;
-  font-size: 15px;
+  font-size: var(--xk-fs-15);
   font-weight: 700;
 }
 
 .c-total {
   margin-left: 4px;
-  font-size: 13px;
+  font-size: var(--xk-fs-13);
   font-weight: 400;
   color: var(--xk-text-3);
 }
@@ -962,7 +967,7 @@ onMounted(async () => {
 
 .replying {
   margin-bottom: 8px;
-  font-size: 12px;
+  font-size: var(--xk-fs-12);
   color: var(--xk-text-2);
 }
 
@@ -971,7 +976,7 @@ onMounted(async () => {
   border: 0;
   background: none;
   color: #e5484d;
-  font-size: 12px;
+  font-size: var(--xk-fs-12);
   cursor: pointer;
   padding: 0;
 }
@@ -985,8 +990,8 @@ onMounted(async () => {
   background: var(--xk-surface-2);
   color: var(--xk-text);
   font: inherit;
-  font-size: 14px;
-  padding: 9px 10px;
+  font-size: var(--xk-fs-16);
+  padding: var(--xk-space-2) var(--xk-space-3);
   resize: vertical;
 }
 
@@ -999,7 +1004,7 @@ onMounted(async () => {
 }
 
 .c-len {
-  font-size: 12px;
+  font-size: var(--xk-fs-12);
   color: var(--xk-text-3);
 }
 
@@ -1013,7 +1018,7 @@ onMounted(async () => {
   padding: 7px 18px;
   background: #f5a623;
   color: #fff;
-  font-size: 13px;
+  font-size: var(--xk-fs-13);
   font-weight: 600;
   cursor: pointer;
 }
@@ -1027,7 +1032,7 @@ onMounted(async () => {
   margin: 0;
   padding: 20px 0;
   text-align: center;
-  font-size: 13px;
+  font-size: var(--xk-fs-13);
   color: var(--xk-text-3);
 }
 
@@ -1059,7 +1064,7 @@ onMounted(async () => {
 
 .c-nick {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--xk-fs-13);
   font-weight: 600;
   color: var(--xk-text-2);
 }
@@ -1070,7 +1075,7 @@ onMounted(async () => {
 
 .c-content {
   margin: 3px 0 0;
-  font-size: 14px;
+  font-size: var(--xk-fs-15);
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
@@ -1078,7 +1083,7 @@ onMounted(async () => {
 
 .c-meta {
   margin: 4px 0 0;
-  font-size: 11px;
+  font-size: var(--xk-fs-12);
   color: var(--xk-text-3);
 }
 
@@ -1092,7 +1097,7 @@ onMounted(async () => {
   border: 0;
   background: none;
   padding: 0;
-  font-size: 12px;
+  font-size: var(--xk-fs-12);
   color: var(--xk-text-3);
   cursor: pointer;
 }
@@ -1108,7 +1113,7 @@ onMounted(async () => {
 }
 
 .c-op.like .ico {
-  font-size: 12px;
+  font-size: var(--xk-fs-12);
   line-height: 1;
 }
 
@@ -1138,12 +1143,12 @@ onMounted(async () => {
 }
 
 .c-reply .c-content {
-  font-size: 13px;
+  font-size: var(--xk-fs-13);
 }
 
 .c-more {
   margin: 6px 0 0;
-  font-size: 12px;
+  font-size: var(--xk-fs-12);
   color: var(--xk-text-3);
 }
 
@@ -1155,13 +1160,13 @@ onMounted(async () => {
   border-radius: var(--xk-radius-blob-sm);
   background: var(--xk-surface-2);
   color: var(--xk-text-2);
-  font-size: 13px;
+  font-size: var(--xk-fs-13);
   cursor: pointer;
 }
 
 .gone {
   margin: 12px 0 0;
-  font-size: 12px;
+  font-size: var(--xk-fs-12);
   color: var(--xk-text-3);
   text-align: center;
 }

@@ -5,11 +5,15 @@ import { showSuccessToast } from 'vant'
 import { publishNote, uploadImage } from '@/api/note'
 import { BizError } from '@/api/request'
 import { ErrorCode, NOTE_IMAGE_LIMIT } from '@/api/types'
-import { currentTextTheme, textCardBlobs, textCardPreview } from '@/utils/textCard'
-import { useTheme } from '@/composables/useTheme'
+import {
+  CARD_TEMPLATES,
+  defaultTemplateId,
+  textCardBlobs,
+  textCardPageCount,
+  textCardPreview,
+} from '@/utils/textCard'
 
 const router = useRouter()
-const { isDark } = useTheme()
 
 const title = ref('')
 const content = ref('')
@@ -19,6 +23,11 @@ const submitting = ref(false)
 const errorMsg = ref('')
 /** 纯文字模式的实时卡片预览（dataURL，只在没选图时生成） */
 const previewUrl = ref('')
+/** 选中的文字卡模板（模板只决定卡片外观，不跟 app 主题翻转） */
+const tplId = ref(defaultTemplateId())
+/** 预览分页：正文超过一页时能翻，避免看起来像「正文被吞了」 */
+const previewPage = ref(0)
+const previewPages = ref(1)
 
 const titleLen = computed(() => title.value.length)
 const contentLen = computed(() => content.value.length)
@@ -36,17 +45,37 @@ const canSubmit = computed(
 
 /* 打字时防抖刷新预览，别把每个 keydown 都变成一次 canvas 重绘 */
 let previewTimer: number | undefined
+function renderPreview() {
+  if (textMode.value && title.value.trim() && content.value.trim()) {
+    previewPages.value = Math.max(textCardPageCount(title.value.trim(), content.value.trim()), 1)
+    if (previewPage.value >= previewPages.value) previewPage.value = 0
+    previewUrl.value = textCardPreview(
+      title.value.trim(),
+      content.value.trim(),
+      tplId.value,
+      previewPage.value,
+    )
+  } else {
+    previewUrl.value = ''
+    previewPages.value = 1
+    previewPage.value = 0
+  }
+}
 function schedulePreview() {
   if (previewTimer !== undefined) window.clearTimeout(previewTimer)
-  previewTimer = window.setTimeout(() => {
-    if (textMode.value && title.value.trim() && content.value.trim()) {
-      previewUrl.value = textCardPreview(title.value.trim(), content.value.trim(), currentTextTheme())
-    } else {
-      previewUrl.value = ''
-    }
-  }, 200)
+  previewTimer = window.setTimeout(renderPreview, 200)
 }
-watch([title, content, () => files.value.length, isDark], schedulePreview)
+function pickTpl(id: string) {
+  tplId.value = id
+  previewPage.value = 0
+  renderPreview()
+}
+function flipPage(d: number) {
+  if (previewPages.value <= 1) return
+  previewPage.value = (previewPage.value + d + previewPages.value) % previewPages.value
+  renderPreview()
+}
+watch([title, content, () => files.value.length], schedulePreview)
 onMounted(schedulePreview)
 
 const TYPE_ACCEPT = 'image/jpeg,image/png,image/webp,image/gif'
@@ -104,7 +133,7 @@ async function submit() {
       // 纯文字模式：标题+正文渲成 3:4 文字卡片（最多几张）再走同一上传链。
       // 卡片 PNG 的 content-type 是 image/png，过得了后端的白名单检查，
       // 后端「图文必须带图」的规则在这里自然被满足。
-      const blobs = await textCardBlobs(title.value.trim(), content.value.trim(), currentTextTheme())
+      const blobs = await textCardBlobs(title.value.trim(), content.value.trim(), tplId.value)
       for (const b of blobs) {
         const file = new File([b], 'text-card.png', { type: 'image/png' })
         const { url } = await uploadImage(file)
@@ -185,6 +214,29 @@ async function submit() {
       <p v-if="textMode" class="text-tip" data-test="text-mode-tip">
         没选图片 = 纯文字笔记：发布时自动生成一张文字卡片（小红书同款做法）
       </p>
+
+      <div v-if="textMode" class="tpls" role="group" aria-label="文字卡模板" data-test="tpl-list">
+        <button
+          v-for="t in CARD_TEMPLATES"
+          :key="t.id"
+          type="button"
+          class="tpl"
+          :class="{ on: tplId === t.id }"
+          :data-test="`tpl-${t.id}`"
+          :aria-pressed="tplId === t.id"
+          @click="pickTpl(t.id)"
+        >
+          <span
+            class="swatch"
+            :style="{ background: t.palette.surface, borderColor: t.palette.stroke }"
+            aria-hidden="true"
+          >
+            <i :style="{ background: t.palette.amber }"></i>
+          </span>
+          {{ t.name }}
+        </button>
+      </div>
+
       <img
         v-if="textMode && previewUrl"
         :src="previewUrl"
@@ -192,6 +244,11 @@ async function submit() {
         alt="文字卡片预览"
         data-test="text-card-preview"
       />
+      <div v-if="textMode && previewUrl && previewPages > 1" class="pager" data-test="text-card-pager">
+        <button type="button" data-test="pager-prev" aria-label="上一页" @click="flipPage(-1)">‹</button>
+        <span data-test="pager-index">{{ previewPage + 1 }}/{{ previewPages }}</span>
+        <button type="button" data-test="pager-next" aria-label="下一页" @click="flipPage(1)">›</button>
+      </div>
 
       <ul v-if="previews.length" class="grid" data-test="note-previews">
         <li v-for="(src, i) in previews" :key="src" class="cell">
@@ -283,18 +340,23 @@ async function submit() {
 }
 
 .brand {
-  font-size: 15px;
+  font-size: var(--xk-fs-15);
   font-weight: 700;
 }
 
 .back {
+  min-width: 40px;
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: 0;
   background: none;
-  font-size: 26px;
+  font-size: var(--xk-fs-24);
   line-height: 1;
   color: var(--xk-text-2);
   cursor: pointer;
-  padding: 0 4px;
+  padding: 0;
 }
 
 .submit {
@@ -306,7 +368,7 @@ async function submit() {
    * 浅色主题下等于隐形。全站强调色只有 --xk-amber。 */
   background: var(--xk-amber);
   color: var(--xk-amber-ink);
-  font-size: 14px;
+  font-size: var(--xk-fs-14);
   font-weight: 600;
   cursor: pointer;
 }
@@ -330,14 +392,14 @@ async function submit() {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   grid-template-rows: auto auto;
-  column-gap: 8px;
-  margin-bottom: 16px;
+  column-gap: var(--xk-space-2);
+  margin-bottom: var(--xk-space-5);
 }
 
 .label {
   grid-area: 1 / 1 / 2 / 2;
-  margin-bottom: 6px;
-  font-size: 13px;
+  margin-bottom: var(--xk-space-2);
+  font-size: var(--xk-fs-13);
   color: var(--xk-text-3);
 }
 
@@ -345,13 +407,12 @@ async function submit() {
   grid-area: 2 / 1 / 3 / 3;
   width: 100%;
   box-sizing: border-box;
-  /* 右侧 56px 是给绝对定位计数让位的补丁，计数搬走后一起删掉 */
-  padding: 10px 12px;
+  padding: var(--xk-space-3) var(--xk-space-4);
   border: var(--xk-stroke-w) solid var(--xk-border);
   border-radius: var(--xk-radius-blob-sm);
   background: var(--xk-surface-2);
   color: var(--xk-text);
-  font-size: 15px;
+  font-size: var(--xk-fs-16);
   font-family: inherit;
 }
 
@@ -365,7 +426,7 @@ async function submit() {
   grid-area: 1 / 2 / 2 / 3;
   align-self: start;
   justify-self: end;
-  font-size: 12px;
+  font-size: var(--xk-fs-12);
   color: var(--xk-text-3);
 }
 
@@ -383,12 +444,12 @@ async function submit() {
 
 .pics-head h2 {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--xk-fs-15);
 }
 
 .text-tip {
   margin: -4px 0 8px;
-  font-size: 12px;
+  font-size: var(--xk-fs-12);
   line-height: 1.5;
   color: var(--xk-text-3);
 }
@@ -398,7 +459,80 @@ async function submit() {
   width: 100%;
   border-radius: var(--xk-radius-blob-sm);
   border: var(--xk-stroke-w) solid var(--xk-border);
-  margin-bottom: 12px;
+  margin-bottom: var(--xk-space-3);
+}
+
+/* 文字卡模板选择器：色块直观预览，选中态用描边加重 */
+.tpls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--xk-space-2);
+  margin: 0 0 var(--xk-space-3);
+}
+
+.tpl {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 4px 10px;
+  border: var(--xk-stroke-w) solid var(--xk-border);
+  border-radius: var(--xk-radius-blob-sm);
+  background: var(--xk-surface-2);
+  color: var(--xk-text-2);
+  font-size: var(--xk-fs-12);
+  cursor: pointer;
+}
+
+.tpl.on {
+  border-color: var(--xk-stroke);
+  background: var(--xk-surface);
+  color: var(--xk-text);
+  font-weight: 700;
+  box-shadow: var(--xk-shadow-hard-sm);
+}
+
+.tpl .swatch {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 2px solid;
+  border-radius: 7px;
+}
+
+.tpl .swatch i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+/* 预览分页：正文 >1 页时翻页，别让用户以为超长正文被吞了 */
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--xk-space-4);
+  margin: calc(-1 * var(--xk-space-2)) 0 var(--xk-space-3);
+}
+
+.pager button {
+  min-width: 40px;
+  min-height: 40px;
+  border: var(--xk-stroke-w) solid var(--xk-border);
+  border-radius: 50%;
+  background: var(--xk-surface-2);
+  color: var(--xk-text);
+  font-size: var(--xk-fs-20);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pager span {
+  font-size: var(--xk-fs-13);
+  color: var(--xk-text-2);
+  font-variant-numeric: tabular-nums;
 }
 
 .grid {
@@ -435,7 +569,7 @@ async function submit() {
   border-radius: 50%;
   background: rgba(0, 0, 0, 0.6);
   color: #fff;
-  font-size: 14px;
+  font-size: var(--xk-fs-14);
   line-height: 1;
   cursor: pointer;
 }
@@ -447,7 +581,7 @@ async function submit() {
   border-radius: var(--xk-radius-blob-sm);
   text-align: center;
   color: var(--xk-text-3);
-  font-size: 14px;
+  font-size: var(--xk-fs-14);
   cursor: pointer;
 }
 
@@ -458,7 +592,7 @@ async function submit() {
 .err {
   margin: 12px 0 0;
   color: #e5484d;
-  font-size: 13px;
+  font-size: var(--xk-fs-13);
   line-height: 1.5;
 }
 </style>

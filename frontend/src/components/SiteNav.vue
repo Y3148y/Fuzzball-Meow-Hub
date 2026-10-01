@@ -85,7 +85,7 @@ async function logout() {
   border: 0;
   background: none;
   color: var(--xk-text);
-  font-size: 16px;
+  font-size: var(--xk-fs-16);
   font-weight: 700;
   letter-spacing: 0.08em;
   cursor: pointer;
@@ -114,7 +114,7 @@ async function logout() {
   border-radius: var(--xk-radius-blob-sm);
   background: var(--xk-surface-2);
   color: var(--xk-text);
-  font-size: 14px;
+  font-size: var(--xk-fs-16);
 }
 
 .input:focus {
@@ -143,11 +143,14 @@ async function logout() {
 }
 
 .link {
-  padding: 6px 10px;
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  padding: 6px var(--xk-space-3);
   border: 0;
   background: none;
   color: var(--xk-text-2);
-  font-size: 14px;
+  font-size: var(--xk-fs-14);
   cursor: pointer;
   border-radius: 999px;
 }

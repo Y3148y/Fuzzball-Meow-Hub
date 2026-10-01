@@ -252,7 +252,7 @@ async function submit() {
 }
 
 .brand {
-  font-size: 15px;
+  font-size: var(--xk-fs-15);
   font-weight: 700;
   letter-spacing: 0.12em;
   color: var(--xk-text-2);
@@ -283,18 +283,18 @@ async function submit() {
 
 .title {
   margin: 4px 0 0;
-  font-size: 28px;
+  font-size: var(--xk-fs-30);
   letter-spacing: 0.02em;
 }
 
 .tagline {
   margin: 6px 0 0;
   color: var(--xk-text-2);
-  font-size: 14px;
+  font-size: var(--xk-fs-14);
 }
 
 .card {
-  padding: 18px;
+  padding: var(--xk-card-pad);
 }
 
 .tabs {
@@ -310,7 +310,7 @@ async function submit() {
   border-radius: var(--xk-radius-blob-sm);
   background: var(--xk-surface-2);
   color: var(--xk-text-2);
-  font-size: 15px;
+  font-size: var(--xk-fs-15);
   font-weight: 700;
   cursor: pointer;
   transition:
@@ -338,7 +338,7 @@ async function submit() {
 }
 
 .label {
-  font-size: 13px;
+  font-size: var(--xk-fs-13);
   font-weight: 600;
   color: var(--xk-text-2);
   padding-left: 4px;
@@ -358,7 +358,7 @@ async function submit() {
   border-radius: var(--xk-radius-blob-sm);
   background: color-mix(in srgb, var(--xk-danger) 12%, transparent);
   color: var(--xk-danger);
-  font-size: 13px;
+  font-size: var(--xk-fs-13);
   line-height: 1.5;
 }
 
@@ -377,7 +377,7 @@ async function submit() {
   border: none;
   background: none;
   color: var(--xk-text-3);
-  font-size: 12px;
+  font-size: var(--xk-fs-12);
   text-align: center;
   cursor: pointer;
 }
@@ -391,14 +391,14 @@ async function submit() {
   border-radius: 6px;
   background: var(--xk-surface-2);
   color: var(--xk-text-2);
-  font-size: 12px;
+  font-size: var(--xk-fs-12);
 }
 
 .foot {
   margin: 0;
   text-align: center;
   color: var(--xk-text-3);
-  font-size: 12px;
+  font-size: var(--xk-fs-12);
   letter-spacing: 0.06em;
 }
 </style>

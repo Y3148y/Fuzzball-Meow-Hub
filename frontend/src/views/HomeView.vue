@@ -231,14 +231,14 @@ onMounted(loadFeed)
 }
 
 .brand {
-  font-size: 15px;
+  font-size: var(--xk-fs-15);
   font-weight: 700;
   letter-spacing: 0.12em;
   color: var(--xk-text-2);
 }
 
 .card {
-  padding: 18px;
+  padding: var(--xk-card-pad);
 }
 
 .who {
@@ -260,7 +260,7 @@ onMounted(loadFeed)
 
 .nickname {
   margin: 0;
-  font-size: 21px;
+  font-size: var(--xk-fs-20);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -269,13 +269,13 @@ onMounted(loadFeed)
 .username {
   margin: 3px 0 0;
   color: var(--xk-text-3);
-  font-size: 13px;
+  font-size: var(--xk-fs-13);
 }
 
 .bio {
   margin: 14px 0 0;
   color: var(--xk-text-2);
-  font-size: 14px;
+  font-size: var(--xk-fs-14);
   line-height: 1.6;
 }
 
@@ -306,12 +306,12 @@ onMounted(loadFeed)
 
 .stat dt {
   color: var(--xk-text-3);
-  font-size: 12px;
+  font-size: var(--xk-fs-12);
 }
 
 .stat dd {
   margin: 4px 0 0;
-  font-size: 18px;
+  font-size: var(--xk-fs-17);
   font-weight: 700;
 }
 
@@ -334,7 +334,7 @@ onMounted(loadFeed)
   border-top: var(--xk-stroke-w) solid var(--xk-border);
   background: none;
   color: var(--xk-text-3);
-  font-size: 13px;
+  font-size: var(--xk-fs-13);
   cursor: pointer;
 }
 
@@ -354,7 +354,7 @@ onMounted(loadFeed)
   border-radius: var(--xk-radius-blob-sm);
   background: var(--xk-surface-2);
   color: var(--xk-text);
-  font-size: 14px;
+  font-size: var(--xk-fs-16);
 }
 
 .search-input:focus {
@@ -380,14 +380,14 @@ onMounted(loadFeed)
 
 .feed-title {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--xk-fs-15);
 }
 
 .hint {
   margin: 0;
   text-align: center;
   color: var(--xk-text-3);
-  font-size: 13px;
+  font-size: var(--xk-fs-13);
   line-height: 1.6;
 }
 
@@ -442,7 +442,7 @@ onMounted(loadFeed)
 
 .title {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--xk-fs-15);
   font-weight: 600;
   line-height: 1.4;
   display: -webkit-box;
@@ -454,7 +454,7 @@ onMounted(loadFeed)
 .meta {
   margin: 0;
   color: var(--xk-text-3);
-  font-size: 12px;
+  font-size: var(--xk-fs-12);
 }
 
 .who-line {
@@ -469,7 +469,7 @@ onMounted(loadFeed)
   border: 0;
   background: none;
   color: var(--xk-text-2);
-  font-size: 13px;
+  font-size: var(--xk-fs-13);
   cursor: pointer;
 }
 
@@ -479,7 +479,7 @@ onMounted(loadFeed)
   border-radius: 999px;
   background: var(--xk-surface-2);
   color: var(--xk-text-2);
-  font-size: 12px;
+  font-size: var(--xk-fs-12);
   cursor: pointer;
 }
 

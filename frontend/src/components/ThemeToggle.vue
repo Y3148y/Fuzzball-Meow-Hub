@@ -28,7 +28,7 @@ const { isDark, toggle } = useTheme()
   border-radius: 50%;
   background: var(--xk-surface);
   color: var(--xk-text);
-  font-size: 20px;
+  font-size: var(--xk-fs-20);
   cursor: pointer;
   box-shadow: var(--xk-shadow-hard-sm);
   transition:

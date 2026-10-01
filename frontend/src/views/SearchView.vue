@@ -142,18 +142,21 @@ function goAuthor(id: string) {
 }
 
 .brand {
-  font-size: 15px;
+  font-size: var(--xk-fs-15);
   font-weight: 700;
   letter-spacing: 0.12em;
   color: var(--xk-text-2);
 }
 
 .back {
-  padding: 0;
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--xk-space-2);
   border: 0;
   background: none;
   color: var(--xk-amber);
-  font-size: 13px;
+  font-size: var(--xk-fs-13);
   cursor: pointer;
 }
 
@@ -171,7 +174,7 @@ function goAuthor(id: string) {
   border-radius: var(--xk-radius-blob-sm);
   background: var(--xk-surface-2);
   color: var(--xk-text);
-  font-size: 14px;
+  font-size: var(--xk-fs-16);
 }
 
 .input:focus {
@@ -197,7 +200,7 @@ function goAuthor(id: string) {
   margin: 0;
   text-align: center;
   color: var(--xk-text-3);
-  font-size: 13px;
+  font-size: var(--xk-fs-13);
   line-height: 1.6;
 }
 
@@ -252,7 +255,7 @@ function goAuthor(id: string) {
 
 .title {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--xk-fs-15);
   font-weight: 600;
   line-height: 1.4;
   display: -webkit-box;
@@ -264,7 +267,7 @@ function goAuthor(id: string) {
 .meta {
   margin: 0;
   color: var(--xk-text-3);
-  font-size: 12px;
+  font-size: var(--xk-fs-12);
 }
 
 .who-line {
@@ -279,14 +282,14 @@ function goAuthor(id: string) {
   border: 0;
   background: none;
   color: var(--xk-text-2);
-  font-size: 13px;
+  font-size: var(--xk-fs-13);
   cursor: pointer;
 }
 
 .more {
   align-self: center;
   padding: 8px 18px;
-  font-size: 13px;
+  font-size: var(--xk-fs-13);
 }
 
 /* 桌面端：搜索结果改三列瀑布（小红书搜索页的做法） */

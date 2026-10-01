@@ -284,17 +284,17 @@ async function logout() {
 /* ---------- 我的笔记（移动端 = 单列列表，桌面端由上面的媒体查询改成瀑布） ---------- */
 
 .notes {
-  padding: 16px;
+  padding: var(--xk-card-pad);
 }
 
 .notes-title {
   margin: 0 0 4px;
-  font-size: 15px;
+  font-size: var(--xk-fs-15);
 }
 
 .hint {
   margin: 8px 0;
-  font-size: 13px;
+  font-size: var(--xk-fs-13);
   color: var(--xk-text-3);
 }
 
@@ -346,7 +346,7 @@ async function logout() {
 
 .title {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--xk-fs-15);
   font-weight: 600;
   line-height: 1.4;
   display: -webkit-box;
@@ -358,7 +358,7 @@ async function logout() {
 .meta {
   margin: 0;
   color: var(--xk-text-3);
-  font-size: 12px;
+  font-size: var(--xk-fs-12);
 }
 
 .top {
@@ -368,7 +368,7 @@ async function logout() {
 }
 
 .brand {
-  font-size: 15px;
+  font-size: var(--xk-fs-15);
   font-weight: 700;
 }
 
@@ -392,7 +392,7 @@ async function logout() {
 
 .nickname {
   margin: 0;
-  font-size: 21px;
+  font-size: var(--xk-fs-20);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -401,7 +401,10 @@ async function logout() {
 .username {
   margin: 3px 0 0;
   color: var(--xk-text-3);
-  font-size: 13px;
+  font-size: var(--xk-fs-13);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .edit {
@@ -411,14 +414,14 @@ async function logout() {
   border-radius: 999px;
   background: var(--xk-surface-2);
   color: var(--xk-text-2);
-  font-size: 13px;
+  font-size: var(--xk-fs-13);
   cursor: pointer;
 }
 
 .bio {
   margin: 14px 0 0;
   color: var(--xk-text-2);
-  font-size: 14px;
+  font-size: var(--xk-fs-14);
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
@@ -442,12 +445,12 @@ async function logout() {
 
 .stat dt {
   color: var(--xk-text-3);
-  font-size: 12px;
+  font-size: var(--xk-fs-12);
 }
 
 .stat dd {
   margin: 4px 0 0;
-  font-size: 18px;
+  font-size: var(--xk-fs-17);
   font-weight: 700;
 }
 
@@ -464,7 +467,7 @@ async function logout() {
   grid-column: 1;
   grid-row: 1;
   margin-bottom: 6px;
-  font-size: 13px;
+  font-size: var(--xk-fs-13);
   color: var(--xk-text-3);
 }
 
@@ -493,7 +496,7 @@ async function logout() {
   grid-row: 1;
   align-self: start;
   justify-self: end;
-  font-size: 12px;
+  font-size: var(--xk-fs-12);
   color: var(--xk-text-3);
 }
 
@@ -513,7 +516,7 @@ async function logout() {
   border-radius: 999px;
   background: var(--xk-surface-2);
   color: var(--xk-text-2);
-  font-size: 13px;
+  font-size: var(--xk-fs-13);
   cursor: pointer;
 }
 
@@ -535,7 +538,7 @@ async function logout() {
 .err {
   margin: 0 0 12px;
   color: var(--xk-danger);
-  font-size: 13px;
+  font-size: var(--xk-fs-13);
   line-height: 1.5;
 }
 
@@ -546,7 +549,7 @@ async function logout() {
   border: 0;
   background: none;
   color: var(--xk-text-2);
-  font-size: 15px;
+  font-size: var(--xk-fs-15);
   text-align: left;
   cursor: pointer;
 }
@@ -555,12 +558,15 @@ async function logout() {
   border-top: var(--xk-stroke-w) solid var(--xk-border);
 }
 
-/* 骨架默认在 main.css；这里是有意覆盖：桌面改「左 260 资料栏 + 右 笔记瀑布」 */
+/* 骨架默认在 main.css；这里是有意覆盖：桌面改「左 300 资料栏 + 右 笔记瀑布」。
+   300 不是拍的：卡片 padding 24×2 + 头像 62 + 双 gap 28 + 编辑按钮 56
+   之后，`.names` 至少要留 ~106px 才装得下 13px 的 `@xiaoku_demo`（88px），
+   260 时只剩 64px，用户名会溢出压到编辑按钮上（layout-audit 抓过）。 */
 @media (min-width: 1024px) {
   .page {
     max-width: 1100px;
     display: grid;
-    grid-template-columns: 260px minmax(0, 1fr);
+    grid-template-columns: 300px minmax(0, 1fr);
     grid-template-areas:
       'top   top'
       'side  notes';

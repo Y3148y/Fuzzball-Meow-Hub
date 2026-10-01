@@ -136,7 +136,7 @@ cd backend && node scripts/contract-test.mjs
 # 换地址：XK_API_BASE=http://ip:8088 node scripts/contract-test.mjs
 
 # 前端（需前端 5180 + 后端 8088 同时在跑）
-# → 24 + 8 + 36 + 26 + 52 + 25 + 19 + 9 + 27 = 226 条
+# → 24 + 8 + 46 + 26 + 52 + 25 + 19 + 9 + 31 = 240 条
 cd frontend && npm run test:ui
 
 # 单跑某一组：:smoke / :refresh / :note / :profile / :interaction / :follow / :search / :idempotent / :layout
@@ -563,6 +563,36 @@ get('/comment/list', { params: { noteId, page } })    // ❌ 发出 ?params[note
     「取关后素材笔记从关注流消失」永远等不到超时。改成**按标题找卡片**。
     ② `ui-interaction` 的「评论计数同步为 1」是同拍短读（列表渲染 ≠ 详情重拉
     的数字跟上），偶发读到 0，按 P11 的惯例先 `waitFor` 落定再断言。
+- P13 字号/间距阶 + 文字卡模板 + 卡片内边距（本 commit）：契约仍 355 条，
+  CDP **240 条**（226 → 240：ui-note 36→46、layout 27→31）。用户反馈
+  「卡片排版不对、详情页展示不对」，两个真根因：
+  - **根因一 `wrapText` 不认 `\n`**：逐字符排版把换行折进同一行，canvas
+    `fillText` 又不画 `\n`，段落结构画成「一个空格宽的缺口」。改为按段切行、
+    空行保留（`if (!text) return []` 防空内容多页）。像素复测（临时脚本，
+    不入库）量墨带：行距恰 56、空行保留、正文不压落款 y≈1136。
+  - **根因二 `.card` 从来没有 padding**：详情/发布/编辑/我的/搜索的卡片
+    padding 历来是 0（git 历史查无规则，P12-C 几何体检不查 padding 所以没
+    暴露），文字贴着 2px 描边。`main.css` 补全局 `.card { padding:
+    var(--xk-card-pad) }`（18px，≥1024 覆盖 24px），scoped 里的字面量同步换 token。
+  - **字阶/间距阶收口**（Track 1 遗留，拍板后本轮做完）：`--xk-fs-*`
+    （12/13/14/15/16/17/20/22/24/30）+ `--xk-space-*`（4…48），全站
+    `font-size: Npx` 机械归阶（11→12、18→17、21→20、26→24、28→30，leftover 0）；
+    **文本输入框一律 16px**（iOS 聚焦自动缩放）；返回键/顶栏链接/模板按钮
+    热区 ≥40px。
+  - **文字卡 6 套模板**（paper/ink/amber/mint/blush/blue，palette 手算对比度
+    ≥4.5:1）+ 发布/编辑页选择器（`tpl-list` / `tpl-{id}`）+ 预览分页器
+    （`text-card-pager`，长文 `1/N` 翻页、缩回单页自动收起）。模板与 app 主题
+    **解耦**（`defaultTemplateId()` 只给起步值：暗色→墨黑，之后跟人走）；
+    `currentTextTheme` 删除。正文 30→32px / 行高 56。
+  - **layout-audit 新增 4 条**（双视口 ×2）：详情卡 padding>0、发布页输入
+    ≥16px。正是它们抓出这次的 Profile 桌面回归：全局 padding 让侧栏 `.names`
+    从 112 压到 64px，`@xiaoku_demo`（88px）溢出压「编辑」按钮 —— 侧栏
+    260→300px + `.username` 省略号兜底（长用户名本来就该省略）。
+  - **ui-note 新增 10 条**：模板切换改预览 dataURL、`buildTextPages` 按 `\n`
+    切行（模块级直接 import 断言）、长文分页器 `1/2→2/2` 且预览换图、缩回短文
+    分页器收起、输入字号 ≥16px、详情卡 padding>0 + `white-space: pre-wrap`。
+  - **调试可用的通用资产**：CDP `CSS.getMatchedStylesForNode` 查规则、
+    「先 waitFor 登录序列再量」的诊断模板，本轮都验证过；一次性诊断脚本用完即删。
 
 ### P3 已知缺口（不是遗漏，是当前阶段做不到）
 

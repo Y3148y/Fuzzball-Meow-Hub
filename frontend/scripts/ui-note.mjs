@@ -5,6 +5,8 @@
  * 上传图片拿到预览、发布后跳详情且图片真的解码成功（不是碎图）、
  * 超过 9 张被前端拦下、详情页对不存在的 ID 给出可读提示、作者管理操作，
  * 以及 P11 后「纯文字→自动生成文字卡片」的无图发布链路。
+ * P13 追加：6 套模板切换、正文 \n 按行切分、长文预览分页器翻页/收起、
+ * 文本输入 ≥16px、详情卡 padding>0 与 white-space: pre-wrap。
  *
  * 跑法：npm run test:ui
  */
@@ -133,6 +135,10 @@ try {
     "[...document.querySelectorAll('.field .count')].map(e=>e.textContent.trim()).join(' | ')",
   )
   s.check('字数计数器跟随输入', counters === '8/64 | 24/2000', counters)
+  const inputFont = await s.evaluate(
+    "getComputedStyle(document.querySelector('[data-test=note-title]')).fontSize",
+  )
+  s.check('文本输入框字号 ≥16px（防 iOS 聚焦自动缩放）', parseFloat(inputFont) >= 16, inputFont)
 
   // ---- 5. 上传两张图片 -> 出现预览
   await setFiles('[data-test=note-file]', [pngA, pngB])
@@ -172,6 +178,20 @@ try {
     '详情页正文与输入一致',
     (await s.evaluate("document.querySelector('[data-test=note-detail-content]')?.textContent?.trim()"))
       === '这是由 ui-note.mjs 发布的正文内容。',
+  )
+  // ---- 8.4 P13：此前详情卡从无 padding（文字贴着描边），这里钉死
+  const detailPad = await s.evaluate(
+    "getComputedStyle(document.querySelector('[data-test=note-detail]')).padding",
+  )
+  s.check('详情卡四周有内边距（文字不再贴描边）', parseFloat(detailPad) > 0, detailPad)
+  const detailContent = await s.evaluate(`(() => {
+    const cs = getComputedStyle(document.querySelector('[data-test=note-detail-content]'))
+    return JSON.stringify({ font: cs.fontSize, ws: cs.whiteSpace })
+  })()`)
+  s.check(
+    '详情正文 16px 且保留显式换行（white-space: pre-wrap）',
+    detailContent === '{"font":"16px","ws":"pre-wrap"}',
+    detailContent,
   )
 
   // ---- 8.5 桌面端两栏：1280 宽下图片独占左栏、标题在右栏；切回手机恢复单列
@@ -297,6 +317,65 @@ try {
     '预览是真实 PNG dataURL',
     (await s.evaluate("document.querySelector('[data-test=text-card-preview]').src")).startsWith('data:image/png;base64,'),
   )
+
+  // ---- 14.5 P13：模板选择 + 显式换行切段 + 长文分页预览
+  const tplCount = await s.evaluate("document.querySelectorAll('[data-test=tpl-list] .tpl').length")
+  s.check('纯文字模式展示 6 套文字卡模板', tplCount === 6, `count=${tplCount}`)
+  const src0 = await s.evaluate("document.querySelector('[data-test=text-card-preview]').src")
+  await s.evaluate("document.querySelector('[data-test=tpl-mint]').click()")
+  await sleep(150)
+  const src1 = await s.evaluate("document.querySelector('[data-test=text-card-preview]').src")
+  s.check('切换模板后实时预览跟着换图', src0 !== src1, `${src0.length} -> ${src1.length}`)
+  s.check(
+    '切中的模板按钮进入选中态',
+    await s.evaluate("document.querySelector('[data-test=tpl-mint]').classList.contains('on')"),
+  )
+
+  const nlLines = await s.evaluate(`(async () => {
+    const m = await import('/src/utils/textCard.ts')
+    const ps = m.buildTextPages('换行测试', '第一段\\n第二段\\n\\n第四段')
+    return JSON.stringify(ps[0].contentLines)
+  })()`)
+  s.check(
+    '正文显式换行按行切分、空行保留（旧 bug：\\n 被画成空格）',
+    nlLines === JSON.stringify(['第一段', '第二段', '', '第四段']),
+    nlLines,
+  )
+
+  await s.evaluate(`
+    (() => {
+      const el = document.querySelector('[data-test=note-content]')
+      const lines = []
+      for (let i = 1; i <= 15; i++) lines.push('第' + i + '段')
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(el, lines.join('\\n'))
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+    })()
+  `)
+  await sleep(450)
+  await s.waitFor("!!document.querySelector('[data-test=text-card-pager]')", '长文预览出现分页器', 10000)
+  const pg0 = await s.evaluate("document.querySelector('[data-test=pager-index]').textContent.trim()")
+  s.check('长文自动分页且预览显示 1/2', /^1\/[2-9]$/.test(pg0), pg0)
+  const psrc0 = await s.evaluate("document.querySelector('[data-test=text-card-preview]').src")
+  await s.evaluate("document.querySelector('[data-test=pager-next]').click()")
+  await sleep(150)
+  const pg1 = await s.evaluate("document.querySelector('[data-test=pager-index]')?.textContent?.trim()")
+  const psrc1 = await s.evaluate("document.querySelector('[data-test=text-card-preview]').src")
+  s.check('点「下一页」翻页且预览同步换页', !!pg1 && pg1.startsWith('2/') && psrc1 !== psrc0, `${pg0} -> ${pg1}`)
+
+  // 收回短文：发布仍应只生成 1 张卡（后面的 length===1 断言依赖它）
+  await s.evaluate(`
+    (() => {
+      const el = document.querySelector('[data-test=note-content]')
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(el, '不选图片也能发布，前端自动生成一张 3:4 文字卡片。')
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+    })()
+  `)
+  await sleep(450)
+  s.check(
+    '正文缩回单页后分页器收起',
+    (await s.evaluate("!!document.querySelector('[data-test=text-card-pager]')")) === false,
+  )
+
   await s.evaluate("document.querySelector('.submit').click()")
   await s.waitFor("location.hash.startsWith('#/note/')", '纯文字发布后跳详情', 25000)
   s.check('纯文字笔记发布成功', true, await s.evaluate('location.hash'))

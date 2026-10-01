@@ -158,31 +158,31 @@ onMounted(load)
 }
 
 .back {
-  width: 30px;
-  height: 30px;
+  width: 40px;
+  height: 40px;
   border: 0;
   background: none;
   color: var(--xk-text-2);
-  font-size: 20px;
+  font-size: var(--xk-fs-20);
   line-height: 1;
   cursor: pointer;
   padding: 0 0 2px;
 }
 
 .brand {
-  font-size: 15px;
+  font-size: var(--xk-fs-15);
   font-weight: 700;
 }
 
 .card {
-  padding: 18px;
+  padding: var(--xk-card-pad);
 }
 
 .hint {
   margin: 40px 0 0;
   text-align: center;
   color: var(--xk-text-3);
-  font-size: 13px;
+  font-size: var(--xk-fs-13);
 }
 
 .hint.err {
@@ -209,7 +209,7 @@ onMounted(load)
 
 .nickname {
   margin: 0;
-  font-size: 21px;
+  font-size: var(--xk-fs-20);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -218,7 +218,7 @@ onMounted(load)
 .username {
   margin: 3px 0 0;
   color: var(--xk-text-3);
-  font-size: 13px;
+  font-size: var(--xk-fs-13);
 }
 
 .follow {
@@ -228,7 +228,7 @@ onMounted(load)
   border-radius: 999px;
   background: var(--xk-surface-2);
   color: var(--xk-text-2);
-  font-size: 13px;
+  font-size: var(--xk-fs-13);
   cursor: pointer;
 }
 
@@ -247,7 +247,7 @@ onMounted(load)
 .bio {
   margin: 14px 0 0;
   color: var(--xk-text-2);
-  font-size: 14px;
+  font-size: var(--xk-fs-14);
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
@@ -271,12 +271,12 @@ onMounted(load)
 
 .stat dt {
   color: var(--xk-text-3);
-  font-size: 12px;
+  font-size: var(--xk-fs-12);
 }
 
 .stat dd {
   margin: 4px 0 0;
-  font-size: 18px;
+  font-size: var(--xk-fs-17);
   font-weight: 700;
 }
 
@@ -288,7 +288,7 @@ onMounted(load)
 
 .feed-title {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--xk-fs-15);
 }
 
 .items {
@@ -338,7 +338,7 @@ onMounted(load)
 
 .title {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--xk-fs-15);
   font-weight: 600;
   line-height: 1.4;
   display: -webkit-box;
@@ -350,7 +350,7 @@ onMounted(load)
 .meta {
   margin: 0;
   color: var(--xk-text-3);
-  font-size: 12px;
+  font-size: var(--xk-fs-12);
 }
 
 /*

@@ -5,12 +5,16 @@ import { showSuccessToast } from 'vant'
 import { getNoteDetail, updateNote, uploadImage } from '@/api/note'
 import { BizError } from '@/api/request'
 import { ErrorCode, NOTE_IMAGE_LIMIT } from '@/api/types'
-import { currentTextTheme, textCardBlobs, textCardPreview } from '@/utils/textCard'
-import { useTheme } from '@/composables/useTheme'
+import {
+  CARD_TEMPLATES,
+  defaultTemplateId,
+  textCardBlobs,
+  textCardPageCount,
+  textCardPreview,
+} from '@/utils/textCard'
 
 const route = useRoute()
 const router = useRouter()
-const { isDark } = useTheme()
 
 const title = ref('')
 const content = ref('')
@@ -21,6 +25,11 @@ const submitting = ref(false)
 const errorMsg = ref('')
 /** 图被清空时，预览一张待生成的文字卡片（和发布页同一套逻辑） */
 const previewUrl = ref('')
+/** 选中的文字卡模板（模板只决定卡片外观，不跟 app 主题翻转） */
+const tplId = ref(defaultTemplateId())
+/** 预览分页：正文超过一页时能翻，避免看起来像「正文被吞了」 */
+const previewPage = ref(0)
+const previewPages = ref(1)
 /** 编辑态只针对图文（发布只支持图文），下拉不用做 */
 const noteType = ref(1)
 
@@ -38,17 +47,37 @@ const canSubmit = computed(
 )
 
 let previewTimer: number | undefined
+function renderPreview() {
+  if (textMode.value && title.value.trim() && content.value.trim()) {
+    previewPages.value = Math.max(textCardPageCount(title.value.trim(), content.value.trim()), 1)
+    if (previewPage.value >= previewPages.value) previewPage.value = 0
+    previewUrl.value = textCardPreview(
+      title.value.trim(),
+      content.value.trim(),
+      tplId.value,
+      previewPage.value,
+    )
+  } else {
+    previewUrl.value = ''
+    previewPages.value = 1
+    previewPage.value = 0
+  }
+}
 function schedulePreview() {
   if (previewTimer !== undefined) window.clearTimeout(previewTimer)
-  previewTimer = window.setTimeout(() => {
-    if (textMode.value && title.value.trim() && content.value.trim()) {
-      previewUrl.value = textCardPreview(title.value.trim(), content.value.trim(), currentTextTheme())
-    } else {
-      previewUrl.value = ''
-    }
-  }, 200)
+  previewTimer = window.setTimeout(renderPreview, 200)
 }
-watch([title, content, () => urls.value.length, isDark], schedulePreview)
+function pickTpl(id: string) {
+  tplId.value = id
+  previewPage.value = 0
+  renderPreview()
+}
+function flipPage(d: number) {
+  if (previewPages.value <= 1) return
+  previewPage.value = (previewPage.value + d + previewPages.value) % previewPages.value
+  renderPreview()
+}
+watch([title, content, () => urls.value.length], schedulePreview)
 
 const TYPE_ACCEPT = 'image/jpeg,image/png,image/webp,image/gif'
 const MAX_SIZE = 10 * 1024 * 1024
@@ -127,7 +156,7 @@ async function submit() {
     // 这里兜底：没图就先把当前文字渲成卡片再提交，和发布页同一套逻辑。
     const finalUrls = [...urls.value]
     if (!finalUrls.length) {
-      const blobs = await textCardBlobs(title.value.trim(), content.value.trim(), currentTextTheme())
+      const blobs = await textCardBlobs(title.value.trim(), content.value.trim(), tplId.value)
       for (const b of blobs) {
         const file = new File([b], 'text-card.png', { type: 'image/png' })
         finalUrls.push((await uploadImage(file)).url)
@@ -209,6 +238,28 @@ onMounted(load)
           <span v-if="textMode">已全部移走 — 保存时自动回填一张文字卡片。</span>
         </p>
 
+        <div v-if="textMode" class="tpls" role="group" aria-label="文字卡模板" data-test="tpl-list">
+          <button
+            v-for="t in CARD_TEMPLATES"
+            :key="t.id"
+            type="button"
+            class="tpl"
+            :class="{ on: tplId === t.id }"
+            :data-test="`tpl-${t.id}`"
+            :aria-pressed="tplId === t.id"
+            @click="pickTpl(t.id)"
+          >
+            <span
+              class="swatch"
+              :style="{ background: t.palette.surface, borderColor: t.palette.stroke }"
+              aria-hidden="true"
+            >
+              <i :style="{ background: t.palette.amber }"></i>
+            </span>
+            {{ t.name }}
+          </button>
+        </div>
+
         <img
           v-if="textMode && previewUrl"
           :src="previewUrl"
@@ -216,6 +267,11 @@ onMounted(load)
           alt="文字卡片预览"
           data-test="edit-text-card-preview"
         />
+        <div v-if="textMode && previewUrl && previewPages > 1" class="pager" data-test="text-card-pager">
+          <button type="button" data-test="pager-prev" aria-label="上一页" @click="flipPage(-1)">‹</button>
+          <span data-test="pager-index">{{ previewPage + 1 }}/{{ previewPages }}</span>
+          <button type="button" data-test="pager-next" aria-label="下一页" @click="flipPage(1)">›</button>
+        </div>
 
         <ul v-if="urls.length" class="grid" data-test="note-edit-previews">
           <li v-for="(src, i) in urls" :key="src" class="cell">
@@ -299,24 +355,29 @@ onMounted(load)
 }
 
 .brand {
-  font-size: 15px;
+  font-size: var(--xk-fs-15);
   font-weight: 700;
 }
 
 .hint {
   color: var(--xk-text-3);
-  font-size: 14px;
+  font-size: var(--xk-fs-14);
   text-align: center;
 }
 
 .back {
+  min-width: 40px;
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: 0;
   background: none;
-  font-size: 26px;
+  font-size: var(--xk-fs-24);
   line-height: 1;
   color: var(--xk-text-2);
   cursor: pointer;
-  padding: 0 4px;
+  padding: 0;
 }
 
 .submit {
@@ -326,7 +387,7 @@ onMounted(load)
   /* 同 PublishView：var(--xk-accent) 从未定义，按钮原本是白字透明底 */
   background: var(--xk-amber);
   color: var(--xk-amber-ink);
-  font-size: 14px;
+  font-size: var(--xk-fs-14);
   font-weight: 600;
   cursor: pointer;
 }
@@ -341,14 +402,14 @@ onMounted(load)
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   grid-template-rows: auto auto;
-  column-gap: 8px;
-  margin-bottom: 16px;
+  column-gap: var(--xk-space-2);
+  margin-bottom: var(--xk-space-5);
 }
 
 .label {
   grid-area: 1 / 1 / 2 / 2;
-  margin-bottom: 6px;
-  font-size: 13px;
+  margin-bottom: var(--xk-space-2);
+  font-size: var(--xk-fs-13);
   color: var(--xk-text-3);
 }
 
@@ -356,12 +417,12 @@ onMounted(load)
   grid-area: 2 / 1 / 3 / 3;
   width: 100%;
   box-sizing: border-box;
-  padding: 10px 12px;
+  padding: var(--xk-space-3) var(--xk-space-4);
   border: var(--xk-stroke-w) solid var(--xk-border);
   border-radius: var(--xk-radius-blob-sm);
   background: var(--xk-surface-2);
   color: var(--xk-text);
-  font-size: 15px;
+  font-size: var(--xk-fs-16);
   font-family: inherit;
 }
 
@@ -375,7 +436,7 @@ onMounted(load)
   grid-area: 1 / 2 / 2 / 3;
   align-self: start;
   justify-self: end;
-  font-size: 12px;
+  font-size: var(--xk-fs-12);
   color: var(--xk-text-3);
 }
 
@@ -393,12 +454,12 @@ onMounted(load)
 
 .pics-head h2 {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--xk-fs-15);
 }
 
 .tip {
   margin: 0 0 12px;
-  font-size: 12px;
+  font-size: var(--xk-fs-12);
   color: var(--xk-text-3);
 }
 
@@ -407,7 +468,79 @@ onMounted(load)
   width: 100%;
   border-radius: var(--xk-radius-blob-sm);
   border: var(--xk-stroke-w) solid var(--xk-border);
-  margin-bottom: 12px;
+  margin-bottom: var(--xk-space-3);
+}
+
+/* 文字卡模板选择器 + 预览分页：与 PublishView 同一套（模板/翻页逻辑见 textCard.ts） */
+.tpls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--xk-space-2);
+  margin: 0 0 var(--xk-space-3);
+}
+
+.tpl {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 4px 10px;
+  border: var(--xk-stroke-w) solid var(--xk-border);
+  border-radius: var(--xk-radius-blob-sm);
+  background: var(--xk-surface-2);
+  color: var(--xk-text-2);
+  font-size: var(--xk-fs-12);
+  cursor: pointer;
+}
+
+.tpl.on {
+  border-color: var(--xk-stroke);
+  background: var(--xk-surface);
+  color: var(--xk-text);
+  font-weight: 700;
+  box-shadow: var(--xk-shadow-hard-sm);
+}
+
+.tpl .swatch {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 2px solid;
+  border-radius: 7px;
+}
+
+.tpl .swatch i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--xk-space-4);
+  margin: calc(-1 * var(--xk-space-2)) 0 var(--xk-space-3);
+}
+
+.pager button {
+  min-width: 40px;
+  min-height: 40px;
+  border: var(--xk-stroke-w) solid var(--xk-border);
+  border-radius: 50%;
+  background: var(--xk-surface-2);
+  color: var(--xk-text);
+  font-size: var(--xk-fs-20);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pager span {
+  font-size: var(--xk-fs-13);
+  color: var(--xk-text-2);
+  font-variant-numeric: tabular-nums;
 }
 
 .grid {
@@ -444,7 +577,7 @@ onMounted(load)
   border-radius: 50%;
   background: rgba(0, 0, 0, 0.6);
   color: #fff;
-  font-size: 14px;
+  font-size: var(--xk-fs-14);
   line-height: 1;
   cursor: pointer;
 }
@@ -456,7 +589,7 @@ onMounted(load)
   border-radius: var(--xk-radius-blob-sm);
   text-align: center;
   color: var(--xk-text-3);
-  font-size: 14px;
+  font-size: var(--xk-fs-14);
   cursor: pointer;
 }
 
@@ -467,7 +600,7 @@ onMounted(load)
 .err {
   margin: 12px 0 0;
   color: #e5484d;
-  font-size: 13px;
+  font-size: var(--xk-fs-13);
   line-height: 1.5;
 }
 </style>

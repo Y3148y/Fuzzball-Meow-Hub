@@ -99,7 +99,11 @@ export const AUDIT_EXPR = `(() => {
       const im = g.querySelector('img')
       spec.detailImgFit = im ? getComputedStyle(im).objectFit : ''
     }
+    const dc = document.querySelector('[data-test=note-detail]')
+    spec.cardPad = dc ? parseFloat(getComputedStyle(dc).padding) : -1
   } else if (h.startsWith('#/publish')) {
+    const ti = document.querySelector('[data-test=note-title]')
+    spec.titleFont = ti ? parseFloat(getComputedStyle(ti).fontSize) : 0
     const cp = document.querySelector('.card-preview')
     if (cp) {
       const cs = getComputedStyle(cp)
@@ -294,6 +298,10 @@ function specChecks(s, label, w, r) {
       s.check('详情图列宽 440±8px', sp.detailCol1 >= 432 && sp.detailCol1 <= 448, `col1=${sp.detailCol1}`)
     }
     s.check('详情图 object-fit=contain（不裁 3:4）', sp.detailImgFit === 'contain', `fit=${sp.detailImgFit}`)
+    s.check('详情卡内边距 >0（P13：文字不贴描边）', sp.cardPad > 0, `pad=${sp.cardPad}px`)
+  }
+  if (label === '发布页') {
+    s.check('发布页标题输入 ≥16px（防 iOS 聚焦缩放）', sp.titleFont >= 16, `font=${sp.titleFont}px`)
   }
 }
 

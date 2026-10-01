@@ -350,6 +350,34 @@ function scrollToComments() {
   document.querySelector('[data-test="comment-section"]')?.scrollIntoView({ behavior: 'smooth' })
 }
 
+/* ---------------- 图片轮播 ---------------- */
+
+/**
+ * 详情图改轮播（v1.2 截图反馈：「多图遮挡且不能切换查看」）。
+ * 计数、当前图的真实宽高比、轨道控制都挂在这几个状态上。
+ *
+ * <p>图框比例（--img-ratio）跟着当前图片走而不是钉死 3:4：横版截图、
+ * 方图都能按自己的形状占满宽度，不留上下两条 letterbox 灰带。
+ * 高度变化不影响横向滑动 —— van-swipe 的位移只依赖容器宽度。
+ */
+const swipeRef = ref<{ prev: () => void; next: () => void } | null>(null)
+const imgIdx = ref(0)
+const imgRatios = ref<number[]>([])
+
+function onSlideChange(i: number) {
+  imgIdx.value = i
+}
+
+function onImgLoad(i: number, e: Event) {
+  const el = e.target as HTMLImageElement
+  if (el.naturalWidth > 0 && el.naturalHeight > 0) {
+    imgRatios.value[i] = el.naturalWidth / el.naturalHeight
+  }
+}
+
+/** 图还没解码出来之前按 3:4 兜底，免得图框首帧闪一下塌掉 */
+const activeRatio = computed(() => imgRatios.value[imgIdx.value] ?? 0.75)
+
 async function load() {
   loading.value = true
   errorMsg.value = ''
@@ -357,6 +385,8 @@ async function load() {
   try {
     // route.params 已是 string，不要 Number()：雪花 ID 会丢精度
     note.value = await getNoteDetail(String(route.params.id))
+    imgIdx.value = 0
+    imgRatios.value = []
     await loadComments()
   } catch (e) {
     if (e instanceof BizError) {
@@ -397,11 +427,14 @@ onMounted(async () => {
 
     <article v-else-if="note" class="card xk-card" data-test="note-detail">
       <!--
-        桌面端（≥1024px）两栏靠 CSS grid 显式摆位：图片占左栏，
-        标题/作者/正文/计数占右栏（小红书桌面笔记页的排法）。
-        移动端这里 display:contents，结构等价于原来的平铺流，顺序不变。
+        桌面端（≥1024px）两栏：图片轮播绝对定位挂左栏（--media-h 撑高），
+        标题/作者/正文/计数是右栏的普通网格单元 —— 图片列再高也不会把
+        右栏行高撑开、在标题和作者之间顶出一大片空白（截图反馈过的 bug：
+        旧 grid-row:1/-1 在隐式网格退化成单行，整摞图片高度灌进第一行）。
+        移动端这里 display:contents，顺序（标题→作者→正文→图片→计数）与
+        改造前完全一致；--img-ratio 是当前图的真实宽高比。
       -->
-      <div class="detail-grid">
+      <div class="detail-grid" :style="{ '--img-ratio': String(activeRatio) }">
         <h1 class="title" data-test="note-detail-title">{{ note.title }}</h1>
 
         <div class="who">
@@ -443,11 +476,30 @@ onMounted(async () => {
 
         <p class="content" data-test="note-detail-content">{{ note.content }}</p>
 
-        <ul v-if="note.images.length" class="grid" data-test="note-detail-images">
-          <li v-for="src in note.images" :key="src">
-            <img :src="src" :alt="note.title" loading="lazy" />
-          </li>
-        </ul>
+        <div v-if="note.images.length" class="grid" data-test="note-detail-images">
+          <van-swipe
+            ref="swipeRef"
+            :loop="note.images.length > 1"
+            :show-indicators="note.images.length > 1"
+            :lazy-render="false"
+            indicator-color="#f5a623"
+            @change="onSlideChange"
+          >
+            <van-swipe-item v-for="(src, i) in note.images" :key="src">
+              <!--
+                不能加 loading="lazy"：非当前张被平移出可视框后，浏览器判定
+                不相交就不去加载，「两张图都解码成功」的断言会永远等不到
+              -->
+              <img :src="src" :alt="note.title" @load="onImgLoad(i, $event)" />
+            </van-swipe-item>
+          </van-swipe>
+
+          <template v-if="note.images.length > 1">
+            <button class="nav prev" type="button" aria-label="上一张" data-test="img-prev" @click="swipeRef?.prev()">‹</button>
+            <button class="nav next" type="button" aria-label="下一张" data-test="img-next" @click="swipeRef?.next()">›</button>
+            <span class="counter" data-test="img-counter">{{ imgIdx + 1 }}/{{ note.images.length }}</span>
+          </template>
+        </div>
 
         <!--
           点赞 / 收藏是真按钮，评论那一格只是个跳转到评论区的锚点。
@@ -779,13 +831,80 @@ onMounted(async () => {
   display: contents;
 }
 
+/*
+ * 图片轮播（截图反馈）：容器按当前图的真实宽高比定高（--img-ratio 从
+ * .detail-grid 继承），圆角裁住内层滑轨。桌面端这块改绝对定位，规则在
+ * 下面的 @media 里。
+ */
 .grid {
-  list-style: none;
+  position: relative;
   margin: 16px 0 0;
+  border-radius: var(--xk-radius-blob);
+  overflow: hidden;
+  background: var(--xk-surface-2);
+  aspect-ratio: var(--img-ratio, 0.75);
+  transition: aspect-ratio 0.25s ease;
+}
+
+.grid .van-swipe {
+  width: 100%;
+  height: 100%;
+  /* Vant 自带 grab 光标，但桌面鼠标根本拖不动轮播，别骗人 */
+  cursor: default;
+}
+
+/*
+ * 切换控件：手机靠手指滑；桌面没有滑手势，箭头是主要入口（≥768px 才显示）。
+ * 计数器任何宽度都在 —— 它同时是测试锚点。
+ */
+.nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
+  width: 34px;
+  height: 34px;
   padding: 0;
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 8px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  border: var(--xk-stroke-w) solid rgba(255, 255, 255, 0.35);
+  border-radius: 50%;
+  background: rgba(20, 22, 30, 0.5);
+  color: #fff;
+  font-size: var(--xk-fs-20);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.nav.prev {
+  left: 8px;
+}
+
+.nav.next {
+  right: 8px;
+}
+
+.nav:hover {
+  background: rgba(20, 22, 30, 0.75);
+}
+
+.counter {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 2;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: rgba(20, 22, 30, 0.55);
+  color: #fff;
+  font-size: var(--xk-fs-12);
+}
+
+@media (min-width: 768px) {
+  .nav {
+    display: inline-flex;
+  }
 }
 
 /* 桌面端：左图右信息的两栏笔记页（小红书桌面版排法） */
@@ -811,13 +930,37 @@ onMounted(async () => {
     max-width: 40em;
   }
 
-  /* 图片整块占左栏，纵向排一张大图，跟桌面端的阅读重心一致 */
+  /*
+   * 图片轮播绝对定位挂左栏：容器 min-height 与图框同源（--media-h），
+   * 卡片高度仍由图片决定；右栏四块的行高只由它们自己决定 —— 图片列
+   * 再高也不会把标题和作者之间顶出一大片空白。
+   * 高度上限取 660 / 72vh / 原比例高度三者最小：竖长图封顶留 letterbox，
+   * 横图方图按自己比例占满，不白撑。
+   */
+  .detail-grid:has(.grid) {
+    --media-h: min(660px, 72vh, calc(440px / var(--img-ratio, 0.75)));
+    position: relative;
+    min-height: var(--media-h);
+    /*
+     * min-height 高出右栏内容总和时，默认 align-content:stretch 会把
+     * 剩余高度平均摊进每个自动行 —— 标题↔作者、作者↔正文之间各顶出
+     * 上百 px 空隙（实测 106px，正是用户截图说的「一大片空白」）。
+     * start 让右栏从顶部贴紧堆叠，多余空间留在 stats 下方，与左图底部
+     * 之间的落差是正常的两栏高度差。
+     */
+    align-content: start;
+    transition: min-height 0.25s ease;
+  }
+
   .grid {
-    grid-column: 1;
-    grid-row: 1 / -1;
-    grid-template-columns: minmax(0, 1fr);
-    gap: 12px;
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 440px;
+    height: var(--media-h);
+    aspect-ratio: auto;
     margin: 0;
+    transition: height 0.25s ease;
   }
 
   /* 没有图片的笔记（改图后清空等）退回单栏居中，不留一整片空白左栏 */
@@ -833,11 +976,6 @@ onMounted(async () => {
   .detail-grid:not(:has(.grid)) .stats,
   .detail-grid:not(:has(.grid)) .gone {
     grid-column: 1;
-  }
-
-  .grid img {
-    /* 不设 aspect-ratio：基础规则（原比例 + align-self:start）才是权威 */
-    border-radius: var(--xk-radius-blob);
   }
 
   .title,
@@ -859,25 +997,16 @@ onMounted(async () => {
 }
 
 /*
- * 详情页图片一律按原始比例渲染。
- *
- * 原来是 aspect-ratio:1 + object-fit:cover —— 3:4 的文字卡和竖图会被切掉
- * 上下各 12.5%（实测 imgAR = "1 / 1"）。更糟的是下面两条 source-order 的坑：
- * 1. 桌面媒体查询里写过 aspect-ratio:3/4，但基础规则在它后面，
- *    同特异性下基础规则赢 → 桌面实际算出来还是 1/1；
- * 2. grid 默认 align-items:stretch，多图时矮图会被拉到行高（= 用户说的「拉伸」）。
- *
- * 所以这里不给任何 aspect-ratio，交给图片自己的尺寸；align-self:start
- * 关掉 stretch，object-fit:contain 作为第二道保险。
+ * 轮播里的图片完整可见：图框比例已经跟着图走，contain 只是比例过渡
+ * 瞬间的第二道保险。旧版「原比例 + align-self + 无 aspect-ratio」那
+ * 三条注释讲的都是 grid 摆位时代的坑，轮播化之后一并作废。
  */
 .grid img {
   width: 100%;
-  height: auto;
-  align-self: start;
+  height: 100%;
   object-fit: contain;
-  border-radius: var(--xk-radius-blob-sm);
+  object-position: center;
   display: block;
-  background: var(--xk-surface-2);
 }
 
 .stats {

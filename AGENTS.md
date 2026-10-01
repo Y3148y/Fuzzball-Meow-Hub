@@ -136,7 +136,7 @@ cd backend && node scripts/contract-test.mjs
 # 换地址：XK_API_BASE=http://ip:8088 node scripts/contract-test.mjs
 
 # 前端（需前端 5180 + 后端 8088 同时在跑）
-# → 24 + 8 + 46 + 26 + 52 + 25 + 19 + 9 + 31 = 240 条
+# → 24 + 8 + 50 + 26 + 52 + 25 + 19 + 9 + 31 = 244 条
 cd frontend && npm run test:ui
 
 # 单跑某一组：:smoke / :refresh / :note / :profile / :interaction / :follow / :search / :idempotent / :layout
@@ -600,6 +600,29 @@ get('/comment/list', { params: { noteId, page } })    // ❌ 发出 ?params[note
     最深 1070 仍 < 落款 1112。附带收益：横线纸模板的纸纹正好落到基线下
     6px，「字坐线上」不再穿字。**这台机器现在能直接读图**（Read 工具读
     `img/*.png`），修复前后用渲染截图逐张人工验收过，读不了图是旧结论。
+  - **v1.2 之后的截图反馈修复（二）—— 详情页「多图遮挡不能切 + 标题正文
+    一大片空白」**，CDP 240 → **244**（ui-note +4），契约仍 355：
+    - **图改轮播**：`ul.grid` 摆全部图片 → `van-swipe`（VantResolver 自动
+      注入，`van-swipe-item` 单张 CSS 齐全）。图框比例 `--img-ratio` 跟当前
+      图真实宽高比走（竖图占满、横图 440×293 缩帧不留灰带）；桌面箭头
+      ≥768 显示 + 计数器 `1/2`，手机靠手势。**不能加 `loading="lazy"`**：
+      非当前张平移出可视框后浏览器判不相交就不加载，解码断言永远等不到。
+      `van-swipe` 横向位移只依赖宽度，高度变化无需 `resize()`（源码已核）。
+    - **两栏空白的真根因有两层**：① 旧 `grid-row: 1/-1` 在隐式网格里退化成
+      单行，整摞图片高度灌进第一行 → 标题右下方空到作者行；修法是图框
+      **绝对定位挂左栏** + 容器 `min-height` 与图框同源（`--media-h =
+      min(660px, 72vh, calc(440px / var(--img-ratio)))`），右栏四块回归
+      纯自动行。② 修完量出**每行之间仍空 106px** —— `min-height` 高出右栏
+      内容总和时，默认 `align-content: stretch` 把剩余高度**摊进每个自动行**。
+      补 `align-content: start` 后 title→作者实测 20px（=16 margin+4 gap），
+      ui-note 断言 `< 40px` 钉死两层回归（旧值 70/106 都会挂）。
+    - **layout-audit 终态等待**：`auditPage` 固定 700ms 在全量连跑时不够
+      （idempotent 压完后端、首页关注流没回来就量 → `.items` 不存在报
+      `cols=undefined`，单跑复现不了）。改成等 `feed-loading` /
+      `follow-loading` 标记消失（超时按老节奏继续）。
+    - 验收：1280/430 三张截图（竖图帧 440×587、横图缩帧、手机单列顺序
+      不变）读图核对；临时诊断脚本 `_diag-detail.mjs` 用完即删，
+      它发的临时笔记已走 DELETE API 清掉。
 
 ### P3 已知缺口（不是遗漏，是当前阶段做不到）
 

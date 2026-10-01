@@ -248,7 +248,16 @@ export async function auditPage(s, w, hash, height = 900) {
     width: w, height, deviceScaleFactor: 1, mobile: w < 700,
   })
   if (hash) await s.goto(BASE + '/' + hash)
-  await new Promise(r => setTimeout(r, 700))
+  await new Promise(r => setTimeout(r, 300))
+  // 固定 700ms 在全量连跑时不够（实测撞过：idempotent 刚压完后端，
+  // 首页关注流还没回来就在量，把「还没渲染」误报成「瀑布塌了」）。
+  // 等到加载中标记消失（终态 = 列表/空态/错误态任一）再进体检；
+  // 超时就按老节奏继续，宁可量早一点也不让体检自己挂死。
+  await s.waitFor(`(() => {
+    if (!document.querySelector('.page')) return false
+    return !document.querySelector('[data-test=feed-loading]')
+        && !document.querySelector('[data-test=follow-loading]')
+  })()`, '页面进入终态', 10000).catch(() => {})
   return JSON.parse(await s.evaluate(AUDIT_EXPR))
 }
 

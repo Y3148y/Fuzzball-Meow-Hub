@@ -17,5 +17,7 @@ declare module 'vue' {
     ThemeToggle: typeof import('./components/ThemeToggle.vue')['default']
     VanIcon: typeof import('vant/es')['Icon']
     VanLoading: typeof import('vant/es')['Loading']
+    VanSwipe: typeof import('vant/es')['Swipe']
+    VanSwipeItem: typeof import('vant/es')['SwipeItem']
   }
 }

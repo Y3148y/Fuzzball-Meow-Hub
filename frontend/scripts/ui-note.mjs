@@ -7,6 +7,8 @@
  * 以及 P11 后「纯文字→自动生成文字卡片」的无图发布链路。
  * P13 追加：6 套模板切换、正文 \n 按行切分、长文预览分页器翻页/收起、
  * 文本输入 ≥16px、详情卡 padding>0 与 white-space: pre-wrap。
+ * v1.2 截图反馈追加：详情图轮播（计数 1/2 → 点下一张 → 2/2、轨道真位移）、
+ * 桌面右栏标题→作者紧邻（图片列不再在两者之间撑出大空白）。
  *
  * 跑法：npm run test:ui
  */
@@ -207,6 +209,31 @@ try {
     return { imgLeft: Math.round(img.left), titleLeft: Math.round(title.left) }
   })()`)
   s.check('桌面视口下图片在左栏、标题在右栏', twoCol.imgLeft < twoCol.titleLeft, JSON.stringify(twoCol))
+  // ---- 8.6 v1.2 截图反馈：右栏连续堆叠 + 多图轮播真的能切
+  const stackGap = await s.evaluate(`(() => {
+    const t = document.querySelector('[data-test=note-detail-title]').getBoundingClientRect()
+    const w = document.querySelector('.who').getBoundingClientRect()
+    return Math.round(w.top - t.bottom)
+  })()`)
+  s.check('桌面右栏标题与作者紧邻（图片列不再撑出大空白）',
+    stackGap >= -8 && stackGap < 40, `gap=${stackGap}px`)
+  const counter0 = await s.evaluate(
+    "document.querySelector('[data-test=img-counter]')?.textContent?.trim()",
+  )
+  s.check('多图详情显示轮播计数 1/2', counter0 === '1/2', `counter=${counter0}`)
+  const track0 = await s.evaluate(
+    "getComputedStyle(document.querySelector('.van-swipe__track')).transform",
+  )
+  await s.evaluate("document.querySelector('[data-test=img-next]').click()")
+  await s.waitFor(
+    "document.querySelector('[data-test=img-counter]')?.textContent?.trim() === '2/2'",
+    '轮播切到第 2 张', 5000,
+  )
+  s.check('点「下一张」切到第 2 张', true)
+  const track1 = await s.evaluate(
+    "getComputedStyle(document.querySelector('.van-swipe__track')).transform",
+  )
+  s.check('轮播轨道确实位移（换图真实发生）', track0 !== track1, `${track0} → ${track1}`)
   await s.send('Emulation.clearDeviceMetricsOverride')
   await sleep(300)
   const singleCol = await s.evaluate(`(() => {

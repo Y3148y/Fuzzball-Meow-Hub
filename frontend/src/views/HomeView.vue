@@ -222,16 +222,8 @@ onMounted(loadFeed)
 </template>
 
 <style scoped>
-.page {
-  min-height: 100%;
-  padding: calc(16px + env(safe-area-inset-top)) 20px calc(24px + env(safe-area-inset-bottom));
-  max-width: 480px;
-  margin: 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
+/* .page 的骨架（padding / gap / max-width / 桌面断点）统一在 main.css，
+ * 这里不再重复一份 —— scoped 的 0,2,0 特异性会压过全局 0,1,0 的媒体查询。 */
 .top {
   display: flex;
   align-items: center;
@@ -361,7 +353,7 @@ onMounted(loadFeed)
   border: var(--xk-stroke-w) solid var(--xk-border);
   border-radius: var(--xk-radius-blob-sm);
   background: var(--xk-surface-2);
-  color: var(--xk-text-1);
+  color: var(--xk-text);
   font-size: 14px;
 }
 
@@ -370,10 +362,12 @@ onMounted(loadFeed)
   border-color: var(--xk-amber);
 }
 
+/* width:auto 见 SiteNav .go 的说明：.xk-btn 的 width:100% 会撑满整行并溢出 */
 .go-search {
+  width: auto;
+  flex-shrink: 0;
   height: 42px;
   padding: 0 20px;
-  flex-shrink: 0;
 }
 
 /* ---------------- 关注流 ---------------- */
@@ -499,5 +493,105 @@ onMounted(loadFeed)
 .follow:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+/* ---------------- 桌面端（≥1024px，抄小红书：顶栏在 SiteNav，主体左栏 + 右瀑布） ---------------- */
+
+@media (min-width: 1024px) {
+  /*
+   * 两栏布局。之前这里是「把手机横排卡片拉到 1160px」，stats 止于 625、
+   * acts 起于 853，中间空 228px —— 这就是「只是把尺寸拉大」的实证。
+   * 现在改 grid：左 240 资料栏吸顶，右 1fr 瀑布。
+   *
+   * 没有加任何包裹元素，所以移动端的 DOM 顺序（顶栏→卡片→搜索→瀑布）
+   * 一个字节都没动；这里只是换掉 .page 在桌面的布局方式。
+   */
+  .page {
+    display: grid;
+    grid-template-columns: 240px minmax(0, 1fr);
+    grid-template-areas:
+      'top   top'
+      'who   feed';
+    align-items: start;
+    column-gap: 24px;
+    row-gap: 20px;
+  }
+
+  /* 品牌、主题切换与搜索都上移到 SiteNav，首页不再重复一条 */
+  .top,
+  .search-row {
+    display: none;
+  }
+
+  .who-card {
+    grid-area: who;
+    position: sticky;
+    top: 68px;
+    display: flex;
+    flex-direction: column;
+    padding: 20px;
+  }
+
+  .feed {
+    grid-area: feed;
+  }
+
+  /* 侧栏 200px 内容宽放不下并排的两个按钮，改成上下堆叠 */
+  .acts {
+    flex-direction: column;
+    width: auto;
+  }
+
+  /* 关注流改 CSS columns 瀑布（正是小红书的墙感），类名与 data-test 全部不动 */
+  .items {
+    display: block;
+    columns: 4;
+    column-gap: 20px;
+  }
+
+  .item,
+  .item:first-child {
+    break-inside: avoid;
+    margin: 0 0 20px;
+    padding: 0;
+    border: var(--xk-stroke-w) solid var(--xk-stroke);
+    border-radius: var(--xk-radius-blob);
+    background: var(--xk-surface);
+    box-shadow: var(--xk-shadow-hard-sm);
+    overflow: hidden;
+    transition: transform 0.12s ease;
+  }
+
+  .item:hover {
+    transform: translate(-2px, -2px);
+  }
+
+  .main {
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .cover {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 3 / 4;
+    border-radius: 0;
+  }
+
+  .body {
+    padding: 12px 12px 0;
+  }
+
+  .who-line {
+    padding: 0 12px 12px;
+  }
+}
+
+.author:hover {
+  color: var(--xk-amber);
+}
+
+.follow:hover:not(:disabled) {
+  border-color: var(--xk-amber);
 }
 </style>

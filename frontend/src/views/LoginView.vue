@@ -198,11 +198,51 @@ async function submit() {
 .login {
   min-height: 100%;
   padding: calc(16px + env(safe-area-inset-top)) 20px calc(24px + env(safe-area-inset-bottom));
-  max-width: 480px;
-  margin: 0 auto;
   display: flex;
   flex-direction: column;
   gap: 18px;
+}
+
+/*
+ * 桌面端：左品牌区（吉祥物 + 标语）+ 右 420 表单。
+ * 之前是「420px 居中窄条」，上面压着吉祥物，下面挤着表单 —— 桌面首屏
+ * 一半是空的，看着像没做完。两栏后左右各自填满，这才是登录页该有的样子。
+ */
+@media (min-width: 1024px) {
+  .login {
+    max-width: 1000px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 420px;
+    grid-template-areas:
+      'top   top'
+      'intro form';
+    column-gap: 56px;
+    row-gap: 28px;
+    align-items: start;
+    padding-top: 64px;
+  }
+
+  .top {
+    grid-area: top;
+  }
+
+  /* 左栏：正文左对齐 + 吉祥物放大，跟右边表单平起平坐 */
+  .intro {
+    grid-area: intro;
+    text-align: left;
+    align-self: center;
+    padding-left: 8px;
+  }
+
+  .intro .mascot {
+    width: 240px;
+    max-width: 46%;
+  }
+
+  .card {
+    grid-area: form;
+    align-self: center;
+  }
 }
 
 .top {

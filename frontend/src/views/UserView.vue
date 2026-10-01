@@ -149,15 +149,7 @@ onMounted(load)
 </template>
 
 <style scoped>
-.page {
-  min-height: 100%;
-  padding: calc(16px + env(safe-area-inset-top)) 20px calc(24px + env(safe-area-inset-bottom));
-  max-width: 480px;
-  margin: 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
+/* .page 骨架统一在 main.css，这里重复写会用 0,2,0 特异性压掉全局断点 */
 
 .top {
   display: flex;
@@ -359,5 +351,83 @@ onMounted(load)
   margin: 0;
   color: var(--xk-text-3);
   font-size: 12px;
+}
+
+/*
+ * 桌面端：左 240 作者卡（吸顶）+ 右三列笔记瀑布，跟首页同一套骨架。
+ * 之前这里只改了 .items 的列数 —— 页面本身还是 1200px 单栏，
+ * 作者卡横在最上面占满整行，瀑布再压在底下，跟「只是把尺寸拉大」没区别。
+ */
+@media (min-width: 1024px) {
+  .page {
+    display: grid;
+    grid-template-columns: 240px minmax(0, 1fr);
+    grid-template-areas:
+      'top   top'
+      'who   feed';
+    column-gap: 24px;
+    row-gap: 20px;
+    align-items: start;
+  }
+
+  .top {
+    grid-area: top;
+  }
+
+  /* 加载中 / 出错提示是 .page 的直接子节点，跨满两列，别去抢侧栏格子 */
+  .hint {
+    grid-column: 1 / -1;
+  }
+
+  /* 作者卡（section:not(.feed) —— 本页只有这两块 section） */
+  .page > section:not(.feed) {
+    grid-area: who;
+    position: sticky;
+    top: 68px;
+  }
+
+  .feed {
+    grid-area: feed;
+  }
+
+  /* 笔记墙走三列瀑布，与首页保持同一套卡片语言 */
+  .items {
+    display: block;
+    columns: 3;
+    column-gap: 16px;
+  }
+
+  .item,
+  .item:first-child {
+    break-inside: avoid;
+    margin: 0 0 16px;
+    padding: 0;
+    border: var(--xk-stroke-w) solid var(--xk-stroke);
+    border-radius: var(--xk-radius-blob);
+    background: var(--xk-surface);
+    box-shadow: var(--xk-shadow-hard-sm);
+    overflow: hidden;
+    transition: transform 0.12s ease;
+  }
+
+  .item:hover {
+    transform: translate(-2px, -2px);
+  }
+
+  .main {
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .cover {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 3 / 4;
+    border-radius: 0;
+  }
+
+  .body {
+    padding: 12px;
+  }
 }
 </style>

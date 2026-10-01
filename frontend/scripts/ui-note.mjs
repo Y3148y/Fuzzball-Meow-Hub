@@ -3,7 +3,8 @@
  *
  * 覆盖：守卫拦住未登录访问发布页、按钮在表单不完整时禁用、输入后解禁、
  * 上传图片拿到预览、发布后跳详情且图片真的解码成功（不是碎图）、
- * 超过 9 张被前端拦下、详情页对不存在的 ID 给出可读提示。
+ * 超过 9 张被前端拦下、详情页对不存在的 ID 给出可读提示、作者管理操作，
+ * 以及 P11 后「纯文字→自动生成文字卡片」的无图发布链路。
  *
  * 跑法：npm run test:ui
  */
@@ -173,6 +174,29 @@ try {
       === '这是由 ui-note.mjs 发布的正文内容。',
   )
 
+  // ---- 8.5 桌面端两栏：1280 宽下图片独占左栏、标题在右栏；切回手机恢复单列
+  await s.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
+  await sleep(500)
+  s.check(
+    '桌面视口下详情主体切成两栏 grid',
+    (await s.evaluate("getComputedStyle(document.querySelector('.detail-grid')).display")) === 'grid',
+  )
+  const twoCol = await s.evaluate(`(() => {
+    const img = document.querySelector('[data-test=note-detail-images]').getBoundingClientRect()
+    const title = document.querySelector('[data-test=note-detail-title]').getBoundingClientRect()
+    return { imgLeft: Math.round(img.left), titleLeft: Math.round(title.left) }
+  })()`)
+  s.check('桌面视口下图片在左栏、标题在右栏', twoCol.imgLeft < twoCol.titleLeft, JSON.stringify(twoCol))
+  await s.send('Emulation.clearDeviceMetricsOverride')
+  await sleep(300)
+  const singleCol = await s.evaluate(`(() => {
+    const img = document.querySelector('[data-test=note-detail-images]').getBoundingClientRect()
+    const title = document.querySelector('[data-test=note-detail-title]').getBoundingClientRect()
+    return { imgLeft: Math.round(img.left), titleLeft: Math.round(title.left) }
+  })()`)
+  s.check('切回手机视口后恢复单列（图片与标题左边缘对齐）', singleCol.imgLeft === singleCol.titleLeft,
+    JSON.stringify(singleCol))
+
   // ---- 9. 详情接口对不存在的 ID 返回可读提示
   const missing = await (await fetch(`${API}/api/note/123456789012345`, {
     headers: { Authorization: `Bearer ${await s.evaluate("localStorage.getItem('xk_token')")}` },
@@ -244,6 +268,55 @@ try {
     headers: { Authorization: `Bearer ${await s.evaluate("localStorage.getItem('xk_token')")}` },
   })).json()
   s.check('删除后详情接口返回 20001', deleted.code === 20001, `code=${deleted.code}`)
+
+  // ---- 14. 纯文字发布：无图合法，自动生成 3:4 文字卡片（小红书同款做法）
+  await s.waitFor("document.querySelector('[data-test=go-publish]')", '回首页准备纯文字发布', 10000)
+  await s.evaluate("document.querySelector('[data-test=go-publish]').click()")
+  await s.waitFor("location.hash === '#/publish'", '跳发布页', 20000)
+  await s.waitFor("document.querySelector('[data-test=note-title]')", '标题输入框')
+  await s.evaluate(`
+    (() => {
+      const set = (el, v) => {
+        const proto = el instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+        Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, v)
+        el.dispatchEvent(new Event('input', { bubbles: true }))
+      }
+      set(document.querySelector('[data-test=note-title]'), '纯文字也能发')
+      set(document.querySelector('[data-test=note-content]'), '不选图片也能发布，前端自动生成一张 3:4 文字卡片。')
+    })()
+  `)
+  await sleep(400)
+  s.check(
+    '未选图出现纯文字模式提示',
+    (await s.evaluate("document.querySelector('[data-test=text-mode-tip]')?.textContent?.trim() ?? ''")).includes('文字卡片'),
+  )
+  await s.waitFor("document.querySelector('[data-test=text-card-preview]')", '文字卡片预览渲染', 10000)
+  s.check('未选图时出现文字卡片实时预览', true)
+  s.check(
+    '预览是真实 PNG dataURL',
+    (await s.evaluate("document.querySelector('[data-test=text-card-preview]').src")).startsWith('data:image/png;base64,'),
+  )
+  await s.evaluate("document.querySelector('.submit').click()")
+  await s.waitFor("location.hash.startsWith('#/note/')", '纯文字发布后跳详情', 25000)
+  s.check('纯文字笔记发布成功', true, await s.evaluate('location.hash'))
+  await s.waitFor(
+    "[...document.querySelectorAll('[data-test=note-detail-images] img')].length === 1 && [...document.querySelectorAll('[data-test=note-detail-images] img')].every(i => i.complete && i.naturalWidth > 0)",
+    '文字卡片图真实解码',
+    25000,
+  )
+  s.check('详情页正好一张自动生成的文字卡片且解码成功', true)
+
+  // ---- 15. 清理：删掉这条纯文字笔记，保持本组自清（demo 账号不留新常驻数据）
+  const textNoteId = (await s.evaluate('location.hash')).split('/').pop()
+  await s.evaluate("document.querySelector('[data-test=note-delete-btn]').click()")
+  await s.waitFor("document.querySelector('.van-dialog')", '删除确认弹窗', 10000)
+  await s.evaluate("document.querySelector('.van-dialog__confirm').click()")
+  await s.waitFor("location.hash === '#/'", '删除后回首页', 20000)
+  const cleaned = await (await fetch(`${API}/api/note/${textNoteId}`, {
+    headers: { Authorization: `Bearer ${await s.evaluate("localStorage.getItem('xk_token')")}` },
+  })).json()
+  s.check('纯文字笔记删除后详情返回 20001', cleaned.code === 20001, `code=${cleaned.code}`)
 } catch (e) {
   s.check('用例执行到底', false, String(e.message))
 } finally {

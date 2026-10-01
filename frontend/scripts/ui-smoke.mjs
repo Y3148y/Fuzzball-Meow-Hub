@@ -2,7 +2,8 @@
  * 登录/注册全链路冒烟。
  *
  * 覆盖：未登录被守卫拦、吉祥物与 CSS 真的加载、演示账号登录、双 token 落库、
- * 首页展示昵称、刷新保持登录、深浅双模式与持久化、退出登录、注册、前端校验。
+ * 首页展示昵称、刷新保持登录、深浅双模式与持久化、桌面/手机两套响应式构图、
+ * 退出登录、注册、前端校验。
  *
  * 跑法（要先起 dev server）：npm run test:ui
  */
@@ -80,6 +81,45 @@ try {
     .catch(() => false)
   s.check('刷新页面后仍是登录态（store.restore 拉 /me）',
     await s.evaluate("document.querySelector('.nickname')?.textContent?.trim() === '小哭猫'"))
+
+  // 6.5 桌面端响应式：1280 宽下切桌面构图，430 宽下切回手机构图
+  await s.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
+  await sleep(500)
+  s.check('桌面视口下出现顶部通栏 SiteNav',
+    (await s.evaluate("getComputedStyle(document.querySelector('[data-test=site-nav]')).display")) === 'block')
+  s.check('桌面视口下首页自己的顶栏收起（不重复两条顶栏）',
+    (await s.evaluate("getComputedStyle(document.querySelector('.top')).display")) === 'none')
+  s.check('桌面视口下内容区从 480px 加宽到 1200px',
+    (await s.evaluate("getComputedStyle(document.querySelector('.page')).maxWidth")) === '1200px')
+  // 关注流在演示账号下可能为空，DOM 上没有 .items 可量，
+  // 所以这里直接查样式表里确实存在 ≥1024px 的多列瀑布规则。
+  //
+  // 判据是 >= 3 而不是 === 3：首页右栏是 4 列（P12-C 拍板的
+  // 「左 240 资料栏 + 右 4 列瀑布」），搜索/作者页仍是 3 列。
+  // 这里只是要钉死「桌面确实切成了多列瀑布」，具体几列由各自页面的断言管。
+  s.check('样式表里存在 ≥1024px 的多列瀑布规则', await s.evaluate(`(() => {
+    for (const sheet of document.styleSheets) {
+      let rules
+      try { rules = sheet.cssRules } catch { continue }
+      for (const r of rules) {
+        if (r.type === 4 && r.conditionText.includes('1024px')) {
+          for (const inner of r.cssRules) {
+            // 读计算后的 column-count，别去正则 cssText：
+            // 写的是 columns 简写，浏览器序列化时可能仍留简写形态
+            if (inner.style && inner.style.columnCount !== 'auto' && Number(inner.style.columnCount) >= 3) return true
+          }
+        }
+      }
+    }
+    return false
+  })()`))
+  await s.send('Emulation.clearDeviceMetricsOverride')
+  await sleep(300)
+  s.check('切回手机视口后 SiteNav 收起、页面顶栏回来',
+    (await s.evaluate("getComputedStyle(document.querySelector('[data-test=site-nav]')).display")) === 'none'
+      && (await s.evaluate("getComputedStyle(document.querySelector('.top')).display")) !== 'none')
+  s.check('手机视口下内容区仍是 480px 贴边',
+    (await s.evaluate("getComputedStyle(document.querySelector('.page')).maxWidth")) === '480px')
 
   // 7. 深浅双模式
   const before = await s.evaluate("document.documentElement.dataset.theme")

@@ -241,6 +241,14 @@ try {
   await s.waitFor("document.querySelectorAll('[data-test=comment-item]').length === 1", '评论出现在列表', 20000)
   s.check('发表后评论立刻出现在列表里', true)
   s.check('评论内容回显正确', (await text('comment-content')) === '写得很棒，学到了。')
+  // 计数来自详情重拉，比列表慢一拍：列表已经渲染不代表 header 上的数字也跟上了，
+  // 不等就断言会偶发读到 0。和 P11 改掉的「删除后计数归零」是同一个同拍短读问题，
+  // 按项目惯例先 waitFor 落定再断言。
+  await s.waitFor(
+    "document.querySelector('[data-test=note-comment-count]').textContent.trim() === '1'",
+    '评论计数同步为 1',
+    20000,
+  )
   s.check('详情页评论计数同步为 1', (await num('note-comment-count')) === 1)
   s.check('一级评论总数显示为 1', (await text('comment-total')) === '1')
   s.check('自己发的评论带删除按钮', (await exists('comment-delete-btn')) === true)

@@ -133,15 +133,7 @@ function goAuthor(id: string) {
 </template>
 
 <style scoped>
-.page {
-  min-height: 100%;
-  padding: calc(16px + env(safe-area-inset-top)) 20px calc(24px + env(safe-area-inset-bottom));
-  max-width: 480px;
-  margin: 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
+/* .page 骨架统一在 main.css，这里重复写会用 0,2,0 特异性压掉全局断点 */
 
 .top {
   display: flex;
@@ -178,7 +170,7 @@ function goAuthor(id: string) {
   border: var(--xk-stroke-w) solid var(--xk-border);
   border-radius: var(--xk-radius-blob-sm);
   background: var(--xk-surface-2);
-  color: var(--xk-text-1);
+  color: var(--xk-text);
   font-size: 14px;
 }
 
@@ -187,10 +179,12 @@ function goAuthor(id: string) {
   border-color: var(--xk-amber);
 }
 
+/* width:auto 见 SiteNav .go 的说明：.xk-btn 的 width:100% 会撑满整行并溢出 */
 .go {
+  width: auto;
+  flex-shrink: 0;
   height: 42px;
   padding: 0 20px;
-  flex-shrink: 0;
 }
 
 .results {
@@ -293,5 +287,59 @@ function goAuthor(id: string) {
   align-self: center;
   padding: 8px 18px;
   font-size: 13px;
+}
+
+/* 桌面端：搜索结果改三列瀑布（小红书搜索页的做法） */
+@media (min-width: 1024px) {
+  .search-row {
+    max-width: 640px;
+  }
+
+  .items {
+    display: block;
+    columns: 3;
+    column-gap: 16px;
+  }
+
+  .item,
+  .item:first-child {
+    break-inside: avoid;
+    margin: 0 0 16px;
+    padding: 0;
+    border: var(--xk-stroke-w) solid var(--xk-stroke);
+    border-radius: var(--xk-radius-blob);
+    background: var(--xk-surface);
+    box-shadow: var(--xk-shadow-hard-sm);
+    overflow: hidden;
+    transition: transform 0.12s ease;
+  }
+
+  .item:hover {
+    transform: translate(-2px, -2px);
+  }
+
+  .main {
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .cover {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 3 / 4;
+    border-radius: 0;
+  }
+
+  .body {
+    padding: 12px 12px 0;
+  }
+
+  .who-line {
+    padding: 0 12px 12px;
+  }
+}
+
+.author:hover {
+  color: var(--xk-amber);
 }
 </style>

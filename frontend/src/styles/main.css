@@ -157,6 +157,39 @@ body {
     color 0.2s ease;
 }
 
+/**
+ * 全站页面容器（抄小红书思路：移动端贴边，桌面端居中加宽）。
+ * 把各页重复的 `.page { max-width:480px … }` 收敛到这里。
+ */
+.page {
+  min-height: 100%;
+  padding: calc(16px + env(safe-area-inset-top)) 20px calc(24px + env(safe-area-inset-bottom));
+  max-width: 480px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* ≥768px：过渡态，稍微拉宽 */
+@media (min-width: 768px) {
+  .page {
+    max-width: 640px;
+    padding-left: 24px;
+    padding-right: 24px;
+  }
+}
+
+/* ≥1024px：桌面主力（小红书桌面版的内容带宽） */
+@media (min-width: 1024px) {
+  .page {
+    max-width: 1200px;
+    padding-left: 32px;
+    padding-right: 32px;
+    gap: 20px;
+  }
+}
+
 /* 贴纸卡：手绘描边 + 硬阴影（没有模糊，模仿马克笔压印） */
 .xk-card {
   background: var(--xk-surface);
@@ -210,6 +243,30 @@ body {
   color: var(--xk-text);
 }
 
+/*
+ * 桌面端悬停反馈。以前只有 :active，鼠标放上去完全没有反应，
+ * 在没有触屏的桌面浏览器里像「坏了」——这才是「按键不好」的真实来源。
+ */
+@media (hover: hover) {
+  .xk-btn:hover:not(:disabled) {
+    transform: translate(-1px, -1px);
+    box-shadow: 5px 5px 0 var(--xk-stroke);
+  }
+
+  .xk-card:hover {
+    box-shadow: 5px 5px 0 var(--xk-stroke);
+  }
+}
+
+/* 键盘可达：统一焦点环，别让 Tab 走过界面时「消失」 */
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--xk-amber);
+  outline-offset: 2px;
+}
+
 .xk-input {
   width: 100%;
   min-height: 48px;
@@ -241,5 +298,58 @@ body {
   *::after {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
+  }
+}
+
+/**
+ * ================= 桌面端视觉（≥1024px）：手绘贴纸 → 现代简洁 =================
+ *
+ * 移动端保留描边 + 硬阴影的手绘感（这是产品调性，不改）；
+ * 桌面要「现代化」，而全站的描边 / 圆角 / 阴影**全都走 var()**
+ * （硬编码只剩按钮的 999px 胶囊），所以这里覆盖 token 就够了 ——
+ * 一处改，9 个页面的卡片和按钮一起换脸。
+ *
+ * 两个 selector 都要写：`[data-theme=dark]` 特异性 0,2,0 高于裸 `:root`
+ * 的 0,1,0，只写 `:root` 的话暗色主题在桌面还是旧的硬阴影。
+ * 整块放在文件末尾，同特异性时靠源码顺序压过上面的定义。
+ */
+@media (min-width: 1024px) {
+  :root,
+  :root[data-theme='dark'] {
+    /* 2px 黑描边在 1440 屏上像贴纸；桌面换 1px 中性描边 */
+    --xk-stroke-w: 1px;
+    --xk-stroke: var(--xk-border);
+
+    /* 硬阴影（无模糊的压印）→ 柔和投影。两套主题都用同一个中性偏蓝的黑 */
+    --xk-shadow-hard: 0 10px 30px rgba(12, 14, 28, 0.35);
+    --xk-shadow-hard-sm: 0 4px 14px rgba(12, 14, 28, 0.22);
+
+    /* 不对称 blob 圆角（手绘轮廓）→ 常规圆角 */
+    --xk-radius-blob: 16px;
+    --xk-radius-blob-sm: 10px;
+
+    /* Vant 不吃 --xk-*：它自家的圆角阶（默认 2/4/8px）在桌面上太碎，
+     * 一并推到与 blob 同节奏。对话框默认 16px 已经对齐，不用动。 */
+    --van-radius-sm: 6px;
+    --van-radius-md: 10px;
+    --van-radius-lg: 16px;
+  }
+
+  /* 悬停也要换成柔和投影，否则会露出 5px 5px 0 的硬偏移 */
+  @media (hover: hover) {
+    .xk-btn:hover:not(:disabled) {
+      transform: translateY(-1px);
+      box-shadow: var(--xk-shadow-hard-sm);
+    }
+
+    .xk-card:hover {
+      box-shadow: var(--xk-shadow-hard);
+    }
+  }
+
+  /* 桌面按下去不再是「压印位移」，改成最常见的下沉 */
+  .xk-btn:active:not(:disabled) {
+    transform: translateY(0);
+    box-shadow: var(--xk-shadow-hard-sm);
   }
 }

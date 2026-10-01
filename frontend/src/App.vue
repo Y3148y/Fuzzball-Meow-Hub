@@ -1,9 +1,15 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { computed, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { useUserStore } from '@/stores/user'
+import SiteNav from '@/components/SiteNav.vue'
 
 // 根组件：负责布局与「冷启动恢复登录态」，具体页面由 router-view 承载
 const userStore = useUserStore()
+const route = useRoute()
+
+// 登录页不挂顶栏，登录卡片自己就是全部
+const showNav = computed(() => route.name !== 'login')
 
 // 刷新页面 / 重新打开标签页时内存里没有用户信息，靠这里补一次 /me
 onMounted(() => {
@@ -12,6 +18,7 @@ onMounted(() => {
 </script>
 
 <template>
+  <SiteNav v-if="showNav" />
   <router-view v-slot="{ Component }">
     <transition name="fade" mode="out-in">
       <component :is="Component" />

@@ -396,95 +396,102 @@ onMounted(async () => {
     <p v-else-if="errorMsg" class="hint err" data-test="note-detail-error">{{ errorMsg }}</p>
 
     <article v-else-if="note" class="card xk-card" data-test="note-detail">
-      <h1 class="title" data-test="note-detail-title">{{ note.title }}</h1>
-
-      <div class="who">
-        <img class="avatar" src="/mascot/m02.webp" alt="" />
-        <div class="names">
-          <p class="nickname" data-test="note-detail-author">{{ note.authorNickname }}</p>
-          <p class="time">{{ note.createTime.replace('T', ' ').slice(0, 16) }}</p>
-        </div>
-        <button
-          v-if="!isMyNote"
-          class="follow"
-          :class="{ on: isFollowingAuthor }"
-          type="button"
-          :disabled="followingAuthor"
-          data-test="note-follow"
-          @click="toggleFollowAuthor"
-        >
-          {{ isFollowingAuthor ? '已关注' : '关注' }}
-        </button>
-
-        <div v-else class="mine-ops" data-test="note-author-ops">
-          <button type="button" class="op" @click="router.push(`/edit/${note!.id}`)" data-test="note-edit-btn">
-            编辑
-          </button>
-          <button
-            type="button"
-            class="op"
-            :disabled="mutating"
-            @click="toggleStatus"
-            data-test="note-status-btn"
-          >
-            {{ note!.status === 2 ? '上架' : '下架' }}
-          </button>
-          <button type="button" class="op danger" :disabled="mutating" @click="removeNote" data-test="note-delete-btn">
-            删除
-          </button>
-        </div>
-      </div>
-
-      <p class="content" data-test="note-detail-content">{{ note.content }}</p>
-
-      <ul v-if="note.images.length" class="grid" data-test="note-detail-images">
-        <li v-for="src in note.images" :key="src">
-          <img :src="src" :alt="note.title" loading="lazy" />
-        </li>
-      </ul>
-
       <!--
-        点赞 / 收藏是真按钮，评论那一格只是个跳转到评论区的锚点。
-        aria-pressed 把「当前是否已点赞」暴露给读屏软件，
-        纯样式的高亮对无障碍是不存在的
+        桌面端（≥1024px）两栏靠 CSS grid 显式摆位：图片占左栏，
+        标题/作者/正文/计数占右栏（小红书桌面笔记页的排法）。
+        移动端这里 display:contents，结构等价于原来的平铺流，顺序不变。
       -->
-      <div class="stats">
-        <button
-          class="stat"
-          :class="{ on: isLiked }"
-          type="button"
-          :aria-pressed="isLiked"
-          :disabled="liking"
-          data-test="note-like-btn"
-          @click="toggleLike"
-        >
-          <span class="ico">{{ isLiked ? '♥' : '♡' }}</span>
-          <span class="cap">点赞</span>
-          <span class="num" data-test="note-like-count">{{ note.likeCount }}</span>
-        </button>
+      <div class="detail-grid">
+        <h1 class="title" data-test="note-detail-title">{{ note.title }}</h1>
 
-        <button
-          class="stat"
-          :class="{ on: isCollected }"
-          type="button"
-          :aria-pressed="isCollected"
-          :disabled="collecting"
-          data-test="note-collect-btn"
-          @click="toggleCollect"
-        >
-          <span class="ico">{{ isCollected ? '★' : '☆' }}</span>
-          <span class="cap">收藏</span>
-          <span class="num" data-test="note-collect-count">{{ note.collectCount }}</span>
-        </button>
+        <div class="who">
+          <img class="avatar" src="/mascot/m02.webp" alt="" />
+          <div class="names">
+            <p class="nickname" data-test="note-detail-author">{{ note.authorNickname }}</p>
+            <p class="time">{{ note.createTime.replace('T', ' ').slice(0, 16) }}</p>
+          </div>
+          <button
+            v-if="!isMyNote"
+            class="follow"
+            :class="{ on: isFollowingAuthor }"
+            type="button"
+            :disabled="followingAuthor"
+            data-test="note-follow"
+            @click="toggleFollowAuthor"
+          >
+            {{ isFollowingAuthor ? '已关注' : '关注' }}
+          </button>
 
-        <button class="stat" type="button" data-test="note-comment-btn" @click="scrollToComments">
-          <span class="ico">💬</span>
-          <span class="cap">评论</span>
-          <span class="num" data-test="note-comment-count">{{ note.commentCount }}</span>
-        </button>
+          <div v-else class="mine-ops" data-test="note-author-ops">
+            <button type="button" class="op" @click="router.push(`/edit/${note!.id}`)" data-test="note-edit-btn">
+              编辑
+            </button>
+            <button
+              type="button"
+              class="op"
+              :disabled="mutating"
+              @click="toggleStatus"
+              data-test="note-status-btn"
+            >
+              {{ note!.status === 2 ? '上架' : '下架' }}
+            </button>
+            <button type="button" class="op danger" :disabled="mutating" @click="removeNote" data-test="note-delete-btn">
+              删除
+            </button>
+          </div>
+        </div>
+
+        <p class="content" data-test="note-detail-content">{{ note.content }}</p>
+
+        <ul v-if="note.images.length" class="grid" data-test="note-detail-images">
+          <li v-for="src in note.images" :key="src">
+            <img :src="src" :alt="note.title" loading="lazy" />
+          </li>
+        </ul>
+
+        <!--
+          点赞 / 收藏是真按钮，评论那一格只是个跳转到评论区的锚点。
+          aria-pressed 把「当前是否已点赞」暴露给读屏软件，
+          纯样式的高亮对无障碍是不存在的
+        -->
+        <div class="stats">
+          <button
+            class="stat"
+            :class="{ on: isLiked }"
+            type="button"
+            :aria-pressed="isLiked"
+            :disabled="liking"
+            data-test="note-like-btn"
+            @click="toggleLike"
+          >
+            <span class="ico">{{ isLiked ? '♥' : '♡' }}</span>
+            <span class="cap">点赞</span>
+            <span class="num" data-test="note-like-count">{{ note.likeCount }}</span>
+          </button>
+
+          <button
+            class="stat"
+            :class="{ on: isCollected }"
+            type="button"
+            :aria-pressed="isCollected"
+            :disabled="collecting"
+            data-test="note-collect-btn"
+            @click="toggleCollect"
+          >
+            <span class="ico">{{ isCollected ? '★' : '☆' }}</span>
+            <span class="cap">收藏</span>
+            <span class="num" data-test="note-collect-count">{{ note.collectCount }}</span>
+          </button>
+
+          <button class="stat" type="button" data-test="note-comment-btn" @click="scrollToComments">
+            <span class="ico">💬</span>
+            <span class="cap">评论</span>
+            <span class="num" data-test="note-comment-count">{{ note.commentCount }}</span>
+          </button>
+        </div>
+
+        <p v-if="notFound" class="gone">内容已不可见</p>
       </div>
-
-      <p v-if="notFound" class="gone">内容已不可见</p>
 
       <!-- ================= 评论 ================= -->
       <section class="comments" data-test="comment-section">
@@ -629,15 +636,7 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.page {
-  min-height: 100%;
-  padding: calc(16px + env(safe-area-inset-top)) 20px calc(24px + env(safe-area-inset-bottom));
-  max-width: 480px;
-  margin: 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
+/* .page 骨架统一在 main.css，这里重复写会用 0,2,0 特异性压掉全局断点 */
 
 .top {
   display: flex;
@@ -767,6 +766,14 @@ onMounted(async () => {
   word-break: break-word;
 }
 
+/**
+ * 移动端相当于透明：display:contents 让子元素照旧参与父级 .card 的平铺流，
+ * 顺序（标题→作者→正文→图片→计数）与改造前完全一致。
+ */
+.detail-grid {
+  display: contents;
+}
+
 .grid {
   list-style: none;
   margin: 16px 0 0;
@@ -776,10 +783,93 @@ onMounted(async () => {
   gap: 8px;
 }
 
+/* 桌面端：左图右信息的两栏笔记页（小红书桌面版排法） */
+@media (min-width: 1024px) {
+  /*
+   * 图列固定 440、右栏吃掉剩余。之前是 1fr + 420 —— 图列被撑到 704px，
+   * 高 1420px，而右栏正文只有几十 px，右侧空一大片。
+   * 440 配合图片原比例，一条正文笔记的高度才对得上。
+   */
+  .detail-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 440px) minmax(0, 1fr);
+    column-gap: 32px;
+    row-gap: 4px;
+    align-items: start;
+  }
+
+  /*
+   * 右栏 684px 放 15px 字符就是 45 个汉字/行，读长文太累。
+   * 限到 40em（600px ≈ 40 字），剩下的留白在左边反而舒服。
+   */
+  .content {
+    max-width: 40em;
+  }
+
+  /* 图片整块占左栏，纵向排一张大图，跟桌面端的阅读重心一致 */
+  .grid {
+    grid-column: 1;
+    grid-row: 1 / -1;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+    margin: 0;
+  }
+
+  /* 没有图片的笔记（改图后清空等）退回单栏居中，不留一整片空白左栏 */
+  .detail-grid:not(:has(.grid)) {
+    grid-template-columns: minmax(0, 1fr);
+    max-width: 620px;
+    margin: 0 auto;
+  }
+
+  .detail-grid:not(:has(.grid)) .title,
+  .detail-grid:not(:has(.grid)) .who,
+  .detail-grid:not(:has(.grid)) .content,
+  .detail-grid:not(:has(.grid)) .stats,
+  .detail-grid:not(:has(.grid)) .gone {
+    grid-column: 1;
+  }
+
+  .grid img {
+    /* 不设 aspect-ratio：基础规则（原比例 + align-self:start）才是权威 */
+    border-radius: var(--xk-radius-blob);
+  }
+
+  .title,
+  .who,
+  .content,
+  .stats,
+  .gone {
+    grid-column: 2;
+  }
+
+  .title {
+    font-size: 22px;
+    margin-top: 0;
+  }
+
+  .stats {
+    margin-top: 18px;
+  }
+}
+
+/*
+ * 详情页图片一律按原始比例渲染。
+ *
+ * 原来是 aspect-ratio:1 + object-fit:cover —— 3:4 的文字卡和竖图会被切掉
+ * 上下各 12.5%（实测 imgAR = "1 / 1"）。更糟的是下面两条 source-order 的坑：
+ * 1. 桌面媒体查询里写过 aspect-ratio:3/4，但基础规则在它后面，
+ *    同特异性下基础规则赢 → 桌面实际算出来还是 1/1；
+ * 2. grid 默认 align-items:stretch，多图时矮图会被拉到行高（= 用户说的「拉伸」）。
+ *
+ * 所以这里不给任何 aspect-ratio，交给图片自己的尺寸；align-self:start
+ * 关掉 stretch，object-fit:contain 作为第二道保险。
+ */
 .grid img {
   width: 100%;
-  aspect-ratio: 1;
-  object-fit: cover;
+  height: auto;
+  align-self: start;
+  object-fit: contain;
   border-radius: var(--xk-radius-blob-sm);
   display: block;
   background: var(--xk-surface-2);
@@ -891,8 +981,9 @@ onMounted(async () => {
   box-sizing: border-box;
   border: var(--xk-stroke-w) solid var(--xk-border);
   border-radius: var(--xk-radius-blob-sm);
-  background: var(--xk-surface-1);
-  color: var(--xk-text-1);
+  /* 其它输入框统一用 surface-2，跟卡片（surface）区分开，不然只剩一条边框 */
+  background: var(--xk-surface-2);
+  color: var(--xk-text);
   font: inherit;
   font-size: 14px;
   padding: 9px 10px;

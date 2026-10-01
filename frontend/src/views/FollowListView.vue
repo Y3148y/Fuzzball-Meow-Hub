@@ -118,14 +118,26 @@ onMounted(load)
 </template>
 
 <style scoped>
-.page {
-  min-height: 100%;
-  padding: calc(16px + env(safe-area-inset-top)) 20px calc(24px + env(safe-area-inset-bottom));
-  max-width: 480px;
-  margin: 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
+/* 骨架默认在 main.css；这里是有意覆盖：桌面加宽 + 关注/粉丝摊成两列用户卡 */
+@media (min-width: 1024px) {
+  .page {
+    max-width: 900px;
+  }
+
+  /* 单行 760px 的名单在桌面上既空又长，改成两列卡片网格 */
+  .list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+  }
+
+  .row {
+    padding: 14px;
+    border: var(--xk-stroke-w) solid var(--xk-stroke);
+    border-radius: var(--xk-radius-blob);
+    background: var(--xk-surface);
+    box-shadow: var(--xk-shadow-hard-sm);
+  }
 }
 
 .top {

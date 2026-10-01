@@ -207,7 +207,15 @@ try {
 
   /* ============ 详情页：已关注 → 取关 ============ */
 
-  await s.evaluate("document.querySelector('[data-test=feed-item] .main').click()")
+  // 点进「测试笔记」那张卡，而不是第一张。素材笔记只发一次、createTime 是旧的，
+  // 而种子数据的笔记比它新、排在关注流更前面 —— 按位置点会点到别人的笔记，
+  // 下面取关就取错人，最后那条「取关后素材笔记从关注流消失」永远等不到。
+  await s.evaluate(`(() => {
+    const item = [...document.querySelectorAll('[data-test=feed-item]')]
+      .find((el) => el.querySelector('.title')?.textContent.includes(${JSON.stringify(NOTE_TITLE)}))
+    if (!item) throw new Error('关注流里找不到测试笔记卡片')
+    item.querySelector('.main').click()
+  })()`)
   await s.waitFor("document.querySelector('[data-test=note-detail]')", '进入详情页', 20000)
   await s.waitFor("document.querySelector('[data-test=note-follow]')", '详情页关注按钮', 10000)
   s.check('详情页作者区显示已关注', (await text('note-follow')) === '已关注')

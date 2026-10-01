@@ -40,8 +40,13 @@ $env:Path = "$env:JAVA_HOME\bin;$env:Path"
 ```
 
 ```powershell
-# 系统代理在 127.0.0.1:7897（PowerShell 的 Invoke-WebRequest 会自动用，
-# git 不会）。直连 github.com:443 会失败，push 要显式带代理：
+# GitHub 推拉：**先试直连，不通再带代理**。git 不会自动用系统代理
+# （PowerShell 的 Invoke-WebRequest 会）。
+# 2026-10-01 实测：代理 127.0.0.1:7897 端口在监听，但经它的 schannel TLS
+# 握手直接失败（SSL/TLS connection failed），不带代理反而推成功了 ——
+# 旧记录「直连必失败、push 要带代理」已过时。判断顺序：
+git ls-remote --heads origin           # 通 → 直接 git push origin main
+# 不通才带代理：
 git -c http.proxy=http://127.0.0.1:7897 -c https.proxy=http://127.0.0.1:7897 push origin main
 ```
 

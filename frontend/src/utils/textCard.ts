@@ -158,11 +158,29 @@ const TITLE_FONT = 'bold 46px ' + FONT_STACK
 /**
  * 正文 32px / 行高 56（1.75）：卡片展示宽只有 ~340px（900 缩到 0.38 倍），
  * 原 30px 折算过去才 11.3px，读起来发虚 —— 这是「卡片排版不对」的主因之一。
- * 预算复核：两行标题最深 170+124+48=342 起排，13 行 56 → 末行基线 342+12*56=1014
- *          仍在落款(1136)之上；续页 140+16*56=1036 同样安全。
+ * 预算复核（三段留白重排后）：
+ *   单行标题 232+18 → 线 250-260 → 首基线 310，13 行末基线 310+12*56=982；
+ *   两行标题 294+18 → 线 312-322 → 首基线 372，13 行末基线 1044；
+ *   两者 ink 底均 < 落款 ink 顶 ≈1112；续页 174+16*56=1070 同样安全。
  */
 const CONTENT_FONT = '32px ' + FONT_STACK
 const CONTENT_LH = 56
+
+/**
+ * 标题 / 分隔线 / 正文的三段留白。
+ *
+ * 修「分隔线压正文」（2026-10-01 用户截图）：旧布局线底与首行 ink 顶
+ * 只差 0~1px（单行标题线 244-256、基线 280 的 32px 字 ink 顶 ≈256），
+ * 渲染出来线直接叠在第一行字上。现在三段各自留白、语义化命名：
+ *   标题底 --18--> 线顶 --线高 10--> 线底 --26--> 首行 ink 顶 --24(上伸量)--> 基线
+ */
+const SEP_W = 132
+const SEP_H = 10
+const SEP_GAP_TITLE = 18
+const SEP_GAP_CONTENT = 26
+/** 32px 字 ink 相对基线的上伸量：drawContent 用基线定位，换算成 ink 顶用 */
+const CONTENT_ASCENT = 24
+
 const BRAND_FONT = '22px ' + FONT_STACK
 const FOOT_FONT = '24px ' + FONT_STACK
 
@@ -358,20 +376,23 @@ export function drawPage(canvas: HTMLCanvasElement, page: TextPage, tpl: CardTem
     }
     ctx.textBaseline = 'alphabetic'
 
-    // 琥珀色分隔线
+    // 分隔线：标题底 +18 起，正文首行基线 = 线底 + 26 + 24（三段留白见常量注释）
+    const sepY = ty + SEP_GAP_TITLE
     ctx.fillStyle = p.amber
-    roundRect(ctx, SIDE, ty + 12, 132, 12, 6)
+    roundRect(ctx, SIDE, sepY, SEP_W, SEP_H, SEP_H / 2)
     ctx.fill()
 
-    ty += 48
-    drawContent(ctx, page.contentLines, p, ty, FIRST_PAGE_LINES)
+    const firstBaseline = sepY + SEP_H + SEP_GAP_CONTENT + CONTENT_ASCENT
+    drawContent(ctx, page.contentLines, p, firstBaseline, FIRST_PAGE_LINES)
     drawFooter(ctx, page, p)
   } else {
-    // 续页：顶部分隔线 + 正文
+    // 续页：品牌行(基线 96)下方的分隔线 + 正文，同一套三段留白
+    const sepY = 96 + SEP_GAP_TITLE
     ctx.fillStyle = p.amber
-    roundRect(ctx, SIDE, 96, 132, 12, 6)
+    roundRect(ctx, SIDE, sepY, SEP_W, SEP_H, SEP_H / 2)
     ctx.fill()
-    drawContent(ctx, page.contentLines, p, 140, FOLLOW_PAGE_LINES)
+    const firstBaseline = sepY + SEP_H + SEP_GAP_CONTENT + CONTENT_ASCENT
+    drawContent(ctx, page.contentLines, p, firstBaseline, FOLLOW_PAGE_LINES)
     drawFooter(ctx, page, p)
   }
 }

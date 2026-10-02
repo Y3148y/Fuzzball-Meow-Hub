@@ -63,20 +63,13 @@ onMounted(() => {
 })
 
 // 回车再点提交；点击卡片看详情，作者名进作者主页
-function goNote(id: string) {
-  void router.push(`/note/${id}`)
-}
-
-function goAuthor(id: string) {
-  if (id) void router.push(`/user/${id}`)
-}
 </script>
 
 <template>
   <main class="page">
     <header class="top">
       <span class="brand">搜索</span>
-      <button class="back" type="button" data-test="search-back" @click="router.push('/')">← 返回首页</button>
+      <RouterLink class="back" to="/" data-test="search-back">← 返回首页</RouterLink>
     </header>
 
     <form class="search-row" role="search" data-test="search-form" @submit.prevent="submit">
@@ -85,6 +78,7 @@ function goAuthor(id: string) {
         class="input"
         type="search"
         placeholder="搜笔记标题 / 正文…"
+        aria-label="搜索笔记"
         data-test="search-input"
       />
       <button class="xk-btn go" type="submit" data-test="search-submit">搜索</button>
@@ -99,7 +93,7 @@ function goAuthor(id: string) {
 
       <ul v-else class="items">
         <li v-for="item in results" :key="item.id" class="item" data-test="search-item">
-          <button class="main" type="button" @click="goNote(item.id)">
+          <RouterLink class="main" :to="`/note/${item.id}`">
             <img class="cover" :src="item.cover ?? '/mascot/m02.webp'" alt="" loading="lazy" />
             <div class="body">
               <p class="title" data-test="search-title">{{ item.title }}</p>
@@ -108,12 +102,12 @@ function goAuthor(id: string) {
                 {{ item.commentCount }}
               </p>
             </div>
-          </button>
+          </RouterLink>
 
           <div class="who-line">
-            <button class="author" type="button" data-test="search-author" @click="goAuthor(item.authorId)">
+            <RouterLink class="author" :to="`/user/${item.authorId}`" data-test="search-author">
               {{ item.authorNickname }}
-            </button>
+            </RouterLink>
           </div>
         </li>
       </ul>

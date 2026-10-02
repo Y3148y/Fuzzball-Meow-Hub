@@ -12,7 +12,7 @@
  *
  * 跑法：npm run test:ui（或 npm run test:ui:search）
  */
-import { createSession, preflight } from './ui-cdp.mjs'
+import { createSession, loginDemo, preflight } from './ui-cdp.mjs'
 
 const BASE = 'http://localhost:5180'
 const API = 'http://localhost:8088'
@@ -22,7 +22,16 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const PEER = { username: 'xk_ui_follow', password: 'Xk@2026peer', nickname: '关注搭子' }
 const FIX_TITLE = 'P6 关注流测试笔记'
 const HIT_KEY = FIX_TITLE
-const MISS_KEY = '绝无此词zzz999'
+/**
+ * 「搜不到」的关键词必须**每轮随机**，而且只能用纯拉丁字母。
+ *
+ * 原因（AGENTS.md 17.4 记过同类坑，这里又踩一次）：ik_smart 会把中文拆成
+ * 单字，multiMatch 默认 **OR**，所以「绝无此词zzz999」会被拆成 绝/无/此/词/zzz/999，
+ * 库里**任何一条**含「无」「词」「在」的笔记都会命中 —— 之前固定写死这个词，
+ * 碰上 `xiaoku_demo` 那篇标题「空格」的笔记就再也搜不到 0 条，
+ * 「空结果兜底」用例直接超时。随机拉丁串撞车概率约等于 0。
+ */
+const MISS_KEY = `qknoexist${Math.random().toString(36).slice(2, 10)}`
 
 try {
   await preflight()
@@ -124,12 +133,8 @@ try {
 
   /* ============ 演示账号登录 ============ */
 
-  await s.goto(`${BASE}/#/login`)
-  await s.waitFor("document.querySelector('.demo')", '演示账号按钮')
-  await s.evaluate("document.querySelector('.demo').click()")
-  await sleep(250)
-  await s.evaluate("document.querySelector('.xk-btn').click()")
-  await s.waitFor("location.hash === '#/'", '演示账号登录', 20000)
+
+  await loginDemo(s, BASE)
   await s.waitFor("document.querySelector('[data-test=home-search-input]')", '首页搜索框', 20000)
   s.check('演示账号登录后，首页出现搜索框', await exists('home-search-input'))
 

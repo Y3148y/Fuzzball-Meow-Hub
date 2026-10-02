@@ -82,14 +82,6 @@ async function toggleFollowAuthor(item: NoteListItemVO) {
   }
 }
 
-function goAuthor(userId: string) {
-  if (userId) void router.push(`/user/${userId}`)
-}
-
-function goNote(id: string) {
-  void router.push(`/note/${id}`)
-}
-
 async function logout() {
   userStore.logout()
   await router.replace('/login')
@@ -112,7 +104,7 @@ onMounted(loadFeed)
 
     <section class="card xk-card who-card">
       <div class="who">
-        <img class="avatar" src="/mascot/m02.webp" alt="" />
+        <img class="avatar" src="/mascot/m02.webp" alt="" width="62" height="62" />
         <div class="names">
           <h1 class="nickname">{{ userStore.displayName || '加载中…' }}</h1>
           <p class="username">@{{ userStore.userInfo?.username }}</p>
@@ -122,26 +114,24 @@ onMounted(loadFeed)
       <p v-if="userStore.userInfo?.bio" class="bio">{{ userStore.userInfo.bio }}</p>
 
       <dl class="stats">
-        <button
+        <RouterLink
           v-if="userStore.userInfo"
           class="stat"
-          type="button"
+          :to="`/follow/${userStore.userInfo.id}`"
           data-test="home-follow"
-          @click="router.push(`/follow/${userStore.userInfo!.id}`)"
         >
           <dt>关注</dt>
           <dd>{{ userStore.userInfo.followCount ?? 0 }}</dd>
-        </button>
-        <button
+        </RouterLink>
+        <RouterLink
           v-if="userStore.userInfo"
           class="stat"
-          type="button"
+          :to="`/fans/${userStore.userInfo.id}`"
           data-test="home-fans"
-          @click="router.push(`/fans/${userStore.userInfo!.id}`)"
         >
           <dt>粉丝</dt>
           <dd>{{ userStore.userInfo.fansCount ?? 0 }}</dd>
-        </button>
+        </RouterLink>
         <div v-if="userStore.userInfo" class="stat plain">
           <dt>获赞</dt>
           <dd>{{ userStore.userInfo.likeReceivedCount ?? 0 }}</dd>
@@ -149,17 +139,12 @@ onMounted(loadFeed)
       </dl>
 
       <div class="acts">
-        <button class="xk-btn" type="button" data-test="go-publish" @click="router.push('/publish')">
+        <RouterLink class="xk-btn" to="/publish" data-test="go-publish">
           发布笔记
-        </button>
-        <button
-          class="xk-btn xk-btn--ghost"
-          type="button"
-          data-test="go-profile"
-          @click="router.push('/profile')"
-        >
+        </RouterLink>
+        <RouterLink class="xk-btn xk-btn--ghost" to="/profile" data-test="go-profile">
           我的
-        </button>
+        </RouterLink>
       </div>
 
       <button class="logout" type="button" data-test="home-logout" @click="logout">
@@ -171,8 +156,9 @@ onMounted(loadFeed)
       <input
         v-model="keyword"
         class="search-input"
-        type="search"
-        placeholder="搜索笔记…"
+type="search"
+        placeholder="搜个关键词…"
+        aria-label="搜索笔记"
         data-test="home-search-input"
       />
       <button class="xk-btn go-search" type="submit" data-test="home-search-btn">搜索</button>
@@ -189,7 +175,14 @@ onMounted(loadFeed)
 
       <ul v-else class="items">
         <li v-for="item in feed" :key="item.id" class="item" data-test="feed-item">
-          <button class="main" type="button" @click="goNote(item.id)">
+          <!--
+            卡片主体是「去详情页」= 导航，用 RouterLink 而不是 button：
+            能 cmd/中键点击、能右键在新标签打开、浏览器状态栏能看到目标 URL，
+            读屏也会把它念成链接而不是按钮。
+            下面的「关注」是真动作（要打接口），仍必须是 button。
+            两者是**兄弟节点**而不是嵌套 —— `<a><button>` 是非法嵌套。
+          -->
+          <RouterLink class="main" :to="`/note/${item.id}`">
             <img class="cover" :src="item.cover ?? '/mascot/m02.webp'" alt="" loading="lazy" />
             <div class="body">
               <p class="title">{{ item.title }}</p>
@@ -198,12 +191,12 @@ onMounted(loadFeed)
                 {{ item.commentCount }}
               </p>
             </div>
-          </button>
+          </RouterLink>
 
           <div class="who-line">
-            <button class="author" type="button" data-test="feed-author" @click="goAuthor(item.authorId)">
+            <RouterLink class="author" :to="`/user/${item.authorId}`" data-test="feed-author">
               {{ item.authorNickname }}
-            </button>
+            </RouterLink>
             <button
               class="follow"
               :class="{ on: item.authorFollowed }"
@@ -287,13 +280,21 @@ onMounted(loadFeed)
   padding: 0;
 }
 
+/*
+ * 这几格现在是 RouterLink（<a>）而不是 <button>：
+ * 「关注/粉丝」是导航，链接语义能带出目标 URL，浏览器状态栏可见、
+ * 也能在新标签打开。数字颜色由 .stat dt/dd 自己给，这里只兜底前景色
+ * （<button> 默认 buttontext，<a> 由全局 a{color:inherit} 兜住）。
+ */
 .stat {
   padding: 10px 6px;
   border: var(--xk-stroke-w) solid var(--xk-border);
   border-radius: var(--xk-radius-blob-sm);
   background: var(--xk-surface-2);
+  color: var(--xk-text);
   text-align: center;
   cursor: pointer;
+  transition: border-color 0.12s ease;
 }
 
 .stat:hover {

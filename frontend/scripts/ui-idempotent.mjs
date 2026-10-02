@@ -14,7 +14,7 @@
  *
  * 跑法：npm run test:ui:idem
  */
-import { createSession, preflight } from './ui-cdp.mjs'
+import { createSession, loginDemo, preflight } from './ui-cdp.mjs'
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -104,12 +104,8 @@ const idemOf = (path) => seen.filter((r) => r.path === path && r.idem)
 
 try {
   // ---- 1. 登录
-  await s.goto(`${BASE}/#/login`)
-  await s.waitFor("document.querySelector('.demo')", '演示账号按钮')
-  await s.evaluate("document.querySelector('.demo').click()")
-  await sleep(250)
-  await s.evaluate("document.querySelector('.xk-btn').click()")
-  await s.waitFor("location.hash === '#/'", '登录成功', 20000)
+
+  await loginDemo(s, BASE)
   s.check('演示账号登录成功', true)
 
   // ---- 2. 发布页走一遭：上传 + 发布
@@ -219,10 +215,24 @@ try {
   seen.length = 0
   await setFiles('[data-test=note-file]', [pngA])
   await sleep(500)
-  await s.evaluate("document.querySelector('.submit').click()")
-  await s.waitFor("location.hash.startsWith('#/note/')", '刷新后重放成功', 25000)
+await s.evaluate("document.querySelector('.submit').click()")
+  /*
+   * 超时是"看不到原因"的典型：发布失败时页面会停在原地（业务错误/限流/校验
+   * 都一样），只报「超时：刷新后重放成功」根本看不出是哪一种。所以超时时
+   * 顺手把页面上可见的错误文案带出来。
+   */
+  const navOk = await s
+    .waitFor("location.hash.startsWith('#/note/')", '刷新后重放成功', 25000)
+    .then(() => true)
+    .catch(() => false)
   await s.send('Fetch.disable')
   offFetch()
+  if (!navOk) {
+    const why = await s.evaluate(
+      `(document.querySelector('.err')?.textContent || document.querySelector('.hint')?.textContent || '(页面无错误提示)').trim()`,
+    )
+    s.check('刷新后重放成功', false, `未跳转详情页，页面提示：${why}`)
+  }
 
   const replays = idemOf('/api/note/publish')
   s.check('access token 失效时确实重放了一次', replays.length === 2, `实际发了几次=${replays.length}`)

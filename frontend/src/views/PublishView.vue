@@ -5,6 +5,7 @@ import { showSuccessToast } from 'vant'
 import { publishNote, uploadImage } from '@/api/note'
 import { BizError } from '@/api/request'
 import { ErrorCode, NOTE_IMAGE_LIMIT } from '@/api/types'
+import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
 import {
   CARD_TEMPLATES,
   defaultTemplateId,
@@ -147,6 +148,8 @@ async function submit() {
       imageUrls: urls,
     })
     showSuccessToast('发布成功')
+    // 已经存进库了，跳转前先清 dirty —— 否则这次跳转自己会把自己拦下
+    markClean()
     // 详情页要用笔记 ID 跳转，id 是 string（雪花 ID 不能转 Number）
     await router.push(`/note/${note.id}`)
   } catch (e) {
@@ -164,6 +167,14 @@ async function submit() {
     submitting.value = false
   }
 }
+
+/*
+ * 未保存提醒：标题/正文/图片任一非空就算「有改动」。
+ * 提交成功那次跳转已在 submit() 里 markClean()，不会自己拦自己。
+ */
+const { markClean } = useUnsavedChanges(
+  () => title.value.trim() !== '' || content.value.trim() !== '' || files.value.length > 0,
+)
 </script>
 
 <template>
@@ -262,13 +273,14 @@ async function submit() {
           type="file"
           accept="image/jpeg,image/png,image/webp,image/gif"
           multiple
+          aria-label="选择图片"
           data-test="note-file"
           @change="onFileChange"
         />
         <span>+ 添加图片</span>
       </label>
 
-      <p v-if="errorMsg" class="err" data-test="note-error">{{ errorMsg }}</p>
+      <p v-if="errorMsg" class="err" role="alert" data-test="note-error">{{ errorMsg }}</p>
     </section>
   </main>
 </template>

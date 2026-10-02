@@ -23,10 +23,10 @@ async function logout() {
 <template>
   <header class="site-nav" data-test="site-nav">
     <div class="inner">
-      <button class="brand" type="button" @click="router.push('/')">
-        <img class="logo" src="/mascot/m02.webp" alt="毛球喵社" />
+      <RouterLink class="brand" to="/">
+        <img class="logo" src="/mascot/m02.webp" alt="毛球喵社" width="36" height="36" />
         <span>毛球喵社</span>
-      </button>
+      </RouterLink>
 
       <form class="search" role="search" @submit.prevent="goSearch">
         <input
@@ -34,16 +34,22 @@ async function logout() {
           class="input"
           type="search"
           placeholder="搜笔记标题 / 正文…"
+          aria-label="搜索笔记"
           data-test="nav-search-input"
         />
         <button class="xk-btn go" type="submit" data-test="nav-search-btn">搜索</button>
       </form>
 
       <nav class="links">
-        <button class="link" type="button" @click="router.push('/')">首页</button>
-        <button class="link" type="button" @click="router.push('/publish')">发布</button>
-        <button class="link" type="button" @click="router.push('/profile')">我的</button>
-        <button v-if="userStore.userInfo?.id" class="link" type="button" @click="router.push(`/follow/${userStore.userInfo!.id}`)">关注</button>
+        <RouterLink class="link" to="/">首页</RouterLink>
+        <RouterLink class="link" to="/publish">发布</RouterLink>
+        <RouterLink class="link" to="/profile">我的</RouterLink>
+        <RouterLink
+          v-if="userStore.userInfo?.id"
+          class="link"
+          :to="`/follow/${userStore.userInfo.id}`"
+          >关注</RouterLink
+        >
         <ThemeToggle />
         <button class="link logout" type="button" @click="logout">退出</button>
       </nav>
@@ -78,10 +84,18 @@ async function logout() {
   gap: 20px;
 }
 
+/*
+ * 品牌区、搜索框、搜索按钮、导航链接统一 40px 高。
+ * 原来品牌 38（padding 撑的）、搜索框/按钮 38、logo 36 —— 体检表的热区
+ * 扫描把它们全报了出来（brand 125×38 / nav-search-input 441×38），
+ * 低于 P13 的 40px 下限，桌面鼠标还能忍，拇指不行。一次性对齐到 40。
+ */
 .brand {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-height: 40px;
+  padding: 0 var(--xk-space-1);
   border: 0;
   background: none;
   color: var(--xk-text);
@@ -108,7 +122,7 @@ async function logout() {
   flex: 1 1 auto;
   /* flex 子项默认 min-width:auto，会被输入框的固有宽度顶住、反向挤压容器 */
   min-width: 0;
-  height: 38px;
+  height: 40px;
   padding: 0 14px;
   border: var(--xk-stroke-w) solid var(--xk-border);
   border-radius: var(--xk-radius-blob-sm);
@@ -131,7 +145,7 @@ async function logout() {
 .go {
   width: auto;
   flex-shrink: 0;
-  height: 38px;
+  height: 40px;
   padding: 0 18px;
 }
 
@@ -155,9 +169,12 @@ async function logout() {
   border-radius: 999px;
 }
 
-.link:hover,
-.link:focus-visible {
-  outline: none;
+/*
+ * 只给 hover 换色。**不要**在这里写 `outline: none` —— 全局 main.css 已经
+ * 给 `:focus-visible` 配了焦点环（keyboard 可见），在这里清掉等于让
+ * 键盘用户在这几个链接上看不到焦点位置。
+ */
+.link:hover {
   color: var(--xk-text);
   background: color-mix(in srgb, var(--xk-surface) 70%, transparent);
 }

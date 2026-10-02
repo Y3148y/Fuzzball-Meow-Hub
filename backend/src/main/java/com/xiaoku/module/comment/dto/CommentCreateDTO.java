@@ -23,9 +23,18 @@ public class CommentCreateDTO {
     @NotBlank(message = "笔记ID不能为空")
     private String noteId;
 
+    /**
+     * 上限 1000，对齐小红书真机。
+     *
+     * <p>原来是 500（用户反馈"评论区设置字数上限"体验差）。这个数字有个硬约束：
+     * {@code sql/schema.sql} 里 {@code comment.content} 是 VARCHAR，不是 TEXT ——
+     * 上限超过列宽会在写库那一刻才炸（而且是截断或报错，取决于 sql_mode）。
+     * 改上限必须同时改 schema，四个地方一起动：schema.sql / 本 DTO /
+     * 前端 {@code NoteDetailView.vue} 的 COMMENT_MAX / contract-test.mjs 的断言。
+     */
     @Schema(description = "评论内容", requiredMode = Schema.RequiredMode.REQUIRED)
     @NotBlank(message = "评论内容不能为空")
-    @Size(max = 500, message = "评论不能超过 500 个字")
+    @Size(max = 1000, message = "评论不能超过 1000 个字")
     private String content;
 
     /** 父评论ID，不传或传 0 表示发一级评论。同样是字符串理由 */

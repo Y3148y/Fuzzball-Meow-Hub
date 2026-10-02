@@ -46,8 +46,20 @@ export const AUDIT_EXPR = `(() => {
     return t
   }
 
+  /*
+   * 操作栏（点赞/收藏/评论 + 评论输入）与底部 tab 栏整体从重叠候选里剔除，
+   * 这是判定语义修正不是绕过：两者都是 position:fixed 盖在页面内容上方
+   * （移动端），按矩形相交会永远报假红。
+   * 该区域的几何改由 ui-note 与下面的 spec 断言专项检查。
+   */
+  const actionBar = document.querySelector('[data-test=action-bar]')
+  const tabBar = document.querySelector('[data-test=tab-bar]')
+  const inFixed = (el) =>
+    (!!actionBar && (el === actionBar || actionBar.contains(el))) ||
+    (!!tabBar && (el === tabBar || tabBar.contains(el)))
   const nodes = [...document.querySelectorAll('body *')].filter(el => {
     if (!vis(el)) return false
+    if (inFixed(el)) return false
     const hasText = [...el.childNodes].some(n => n.nodeType === 3 && n.textContent.trim())
     const isCtl = ['IMG', 'INPUT', 'TEXTAREA', 'BUTTON'].includes(el.tagName)
     return hasText || isCtl
@@ -58,6 +70,7 @@ export const AUDIT_EXPR = `(() => {
     for (let j = i + 1; j < nodes.length; j++) {
       const a = nodes[i], b = nodes[j]
       if (a.contains(b) || b.contains(a)) continue
+      if (inFixed(a) || inFixed(b)) continue
       const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect()
       const ox = Math.min(ra.right, rb.right) - Math.max(ra.left, rb.left)
       const oy = Math.min(ra.bottom, rb.bottom) - Math.max(ra.top, rb.top)
@@ -79,6 +92,46 @@ export const AUDIT_EXPR = `(() => {
   /* ---- 分路由关键尺寸（给外层 .mjs 的 specChecks 用）---- */
   const spec = {}
   const h = location.hash
+
+  /* van-icon 名字写错 → 找不到 .van-icon-xxx 规则 → ::before content 是 none
+     → 图标位置留一个空盒子（主题切换按钮曾因此变成空心圆，截图才看出来）。
+     这个断言全站通用：任何 i.van-icon 的 ::before 都不是 none 才算过。 */
+  spec.blankIcons = [...document.querySelectorAll('i.van-icon')]
+    .filter((el) => getComputedStyle(el, '::before').content === 'none')
+    .map((el) => (el.className || '') + '@' + (el.closest('[data-test]')?.dataset.test || '?'))
+
+  /* 触摸交互：可交互元素的 touch-action 必须是 manipulation。
+     规则来源 web-design-guidelines「Touch & Interaction」——
+     缺它移动浏览器会有 ~300ms 双击缩放等待，按钮"点了没反应"。 */
+  spec.touchAction = (() => {
+    const el = document.querySelector('.xk-btn, .tab, .link, .main, button')
+    return el ? getComputedStyle(el).touchAction : ''
+  })()
+
+  /* 底部 tab 栏：只在移动端出现，桌面由 SiteNav 接管 */
+  spec.tabBar = (() => {
+    const bar = document.querySelector('[data-test=tab-bar]')
+    if (!bar) return { present: false }
+    const r = bar.getBoundingClientRect()
+    const cs = getComputedStyle(bar)
+    const items = [...bar.querySelectorAll('.tab, .tab-plus')]
+    return {
+      present: true,
+      display: cs.display,
+      pos: cs.position,
+      bottom: Math.round(r.bottom),
+      vh: innerHeight,
+      width: Math.round(r.width),
+      n: items.length,
+      // 每项热区；发布钮在 .tab-plus 上，同样要 ≥40
+      items: items.map((it) => {
+        const b = it.getBoundingClientRect()
+        return { w: Math.round(b.width), h: Math.round(b.height), tag: it.tagName }
+      }),
+      active: items.filter((it) => it.classList.contains('on')).length,
+    }
+  })()
+
   const rectHit = (a, b) => {
     const ox = Math.min(a.right, b.right) - Math.max(a.left, b.left)
     const oy = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top)
@@ -101,6 +154,77 @@ export const AUDIT_EXPR = `(() => {
     }
     const dc = document.querySelector('[data-test=note-detail]')
     spec.cardPad = dc ? parseFloat(getComputedStyle(dc).padding) : -1
+    /* 吸底操作栏的几何：双视口各断言各的样子（见 specChecks） */
+    const bar = document.querySelector('[data-test=action-bar]')
+    if (bar) {
+      const bs = getComputedStyle(bar)
+      const bb = bar.getBoundingClientRect()
+      spec.barPos = bs.position
+      spec.barDir = bs.flexDirection
+      spec.barLeft = Math.round(bb.left)
+      spec.barWidth = Math.round(bb.width)
+      spec.barTop = Math.round(bb.top)
+      spec.barBottom = Math.round(bb.bottom)
+      spec.barHeight = Math.round(bb.height)
+      spec.barBorder = parseFloat(bs.borderTopWidth) || 0
+      spec.vh = innerHeight
+      // 两行结构：行1 输入通栏，行2 发表 + 三键
+      const inp = bar.querySelector('[data-test=comment-input]')
+      const snd = bar.querySelector('[data-test=comment-submit]')
+      const kb = bar.querySelector('.bar-keys')
+      if (inp) {
+        const r = inp.getBoundingClientRect()
+        spec.inputW = Math.round(r.width)
+        spec.inputTop = Math.round(r.top)
+        spec.inputBottom = Math.round(r.bottom)
+      }
+      if (snd) {
+        const r = snd.getBoundingClientRect()
+        spec.sendW = Math.round(r.width)
+        spec.sendH = Math.round(r.height)
+        spec.sendLeft = Math.round(r.left)
+      }
+      if (kb) {
+        const r = kb.getBoundingClientRect()
+        spec.keysTop = Math.round(r.top)
+        spec.keysRight = Math.round(r.right)
+      }
+      spec.keys = [...bar.querySelectorAll('.kbtn')].map(k => {
+        const ks = getComputedStyle(k)
+        const bw = parseFloat(ks.borderTopWidth) + parseFloat(ks.borderBottomWidth)
+          + parseFloat(ks.borderLeftWidth) + parseFloat(ks.borderRightWidth)
+        const b = k.getBoundingClientRect()
+        return { bw, bg: ks.backgroundColor, txt: k.textContent.trim(), w: Math.round(b.width), h: Math.round(b.height) }
+      })
+    }
+    /* 吸底栏以外的可点元素热区扫描（P13 下限 40px）。
+     * 报告里长期挂着 brand 125×38 / submit 60×31 / me-edit 56×31 这几条，
+     * 这次开始**断言**：谁不达标就报谁，不再靠人看体检表。 */
+    spec.smallTargets = [...document.querySelectorAll('button, a, input[type=submit]')]
+      .filter(el => {
+        if (!el.offsetParent && el.offsetWidth === 0) return false
+        const st = getComputedStyle(el)
+        if (st.display === 'none' || st.visibility === 'hidden') return false
+        if (actionBar && (el === actionBar || actionBar.contains(el))) return false
+        return true
+      })
+      .map(el => {
+        const r = el.getBoundingClientRect()
+        return {
+          t: el.dataset.test || el.className || el.tagName,
+          w: Math.round(r.width), h: Math.round(r.height),
+        }
+      })
+      .filter(x => (x.w > 0 && x.w < 40) || (x.h > 0 && x.h < 40))
+    const ti = document.querySelector('.detail-grid .title')
+    const ct = document.querySelector('.detail-grid .content')
+    const cs2 = document.querySelector('[data-test=comment-section]')
+    spec.commentsBottom = cs2 ? Math.round(cs2.getBoundingClientRect().bottom) : -9999
+    spec.commentsLeft = cs2 ? Math.round(cs2.getBoundingClientRect().left) : -9999
+    spec.commentsWidth = cs2 ? Math.round(cs2.getBoundingClientRect().width) : -9999
+    spec.titleLeft = ti ? Math.round(ti.getBoundingClientRect().left) : -9999
+    spec.titleFontD = ti ? parseFloat(getComputedStyle(ti).fontSize) : 0
+    spec.contentFontD = ct ? parseFloat(getComputedStyle(ct).fontSize) : 0
   } else if (h.startsWith('#/publish')) {
     const ti = document.querySelector('[data-test=note-title]')
     spec.titleFont = ti ? parseFloat(getComputedStyle(ti).fontSize) : 0
@@ -249,16 +373,26 @@ export async function auditPage(s, w, hash, height = 900) {
   })
   if (hash) await s.goto(BASE + '/' + hash)
   await new Promise(r => setTimeout(r, 300))
-  // 固定 700ms 在全量连跑时不够（实测撞过：idempotent 刚压完后端，
-  // 首页关注流还没回来就在量，把「还没渲染」误报成「瀑布塌了」）。
-  // 等到加载中标记消失（终态 = 列表/空态/错误态任一）再进体检；
-  // 超时就按老节奏继续，宁可量早一点也不让体检自己挂死。
-  await s.waitFor(`(() => {
-    if (!document.querySelector('.page')) return false
+  // 等到加载中标记消失（终态 = 列表/空态/错误态任一）再进体检。
+  //
+  // 超时**不再静默吞掉**：以前是 `.catch(() => {})`，于是「关注流还没回来」
+  // 会被当成「关注流是空的」继续量下去，最后报出 `cols=undefined`、
+  // `covers=[]` 这种看不出根因的假红（本轮真踩了一次）。现在把结果带回
+  // 去，由 auditOne 显式断言「进了终态」——超时是���问题，别混进几何断言里。
+  const ready = await s.waitFor(`(() => {
+    // 页面骨架：多数页是 .page，登录页是 .login（它没有 .page 外壳）
+    if (!document.querySelector('.page, .login')) return false
+    if (location.hash.startsWith('#/note/')) {
+      // 详情页的操作栏与卡片同生命周期（v-else-if=note）：等它出现再量，
+      // 否则 spec.keys 是 undefined，双视口的三键断言会假红
+      return !!document.querySelector('[data-test=action-bar]')
+    }
     return !document.querySelector('[data-test=feed-loading]')
         && !document.querySelector('[data-test=follow-loading]')
-  })()`, '页面进入终态', 10000).catch(() => {})
-  return JSON.parse(await s.evaluate(AUDIT_EXPR))
+  })()`, '页面加载终态', 20000)
+    .then(() => true)
+    .catch(() => false)
+  return { ...JSON.parse(await s.evaluate(AUDIT_EXPR)), ready }
 }
 
 function fmt(r) {
@@ -269,14 +403,40 @@ function fmt(r) {
   return [head, ...detail].join('\n')
 }
 
-/** 登录演示账号（CDP 测试的既有做法） */
+/**
+ * 登录演示账号（CDP 测试的既有做法）。
+ *
+ * 登录按 IP 限流 60 次/分钟（契约 16.1 节），全量连跑时前面 8 组刚把桶用掉，
+ * 这里就可能吃到 429 —— 表现是「超时：登录成功」，因为登录请求返回了错误、
+ * 页面根本没跳走。撞上就等 20s 重试，别把这个当布局回归。
+ */
 async function loginDemo(s) {
-  await s.goto(`${BASE}/#/login`)
-  await s.waitFor('document.querySelector(\'.demo\')', '演示账号按钮', 20000)
-  await s.evaluate(`document.querySelector('.demo').click()`)
-  await new Promise(r => setTimeout(r, 250))
-  await s.evaluate(`document.querySelector('.xk-btn').click()`)
-  await s.waitFor('location.hash === \'#/\'', '登录成功', 20000)
+  for (let attempt = 1; ; attempt++) {
+    await s.goto(`${BASE}/#/login`)
+    // 关键：先判断"是不是已经在首页了"。首次尝试可能**服务端已登录成功**，
+    // 只是 SPA 跳转比 8s 慢；此时再 goto('#/login') 会被 guestOnly 守卫弹回
+    // '#/'，`.demo` 按钮永远不出现 —— 重试反而制造新的失败（踩过）。
+    await s.waitFor(
+      "!!document.querySelector('.demo') || location.hash === '#/'",
+      '登录页或已登录落地',
+      20000,
+    )
+    if ((await s.evaluate('location.hash')) === '#/') return
+
+    await s.evaluate(`document.querySelector('.demo').click()`)
+    await new Promise(r => setTimeout(r, 250))
+    await s.evaluate(`document.querySelector('.xk-btn').click()`)
+    const ok = await s
+      .waitFor('location.hash === \'#/\'', '登录成功', 15000)
+      .then(() => true)
+      .catch(() => false)
+    if (ok) return
+    if (attempt >= 3) {
+      throw new Error('登录演示账号连续 3 次失败（多半是撞 login 60/min 限流，脚本节奏太密）')
+    }
+    console.log(`    登录未成功（可能撞 login 60/min 限流），20s 后重试 第${attempt + 1}次`)
+    await new Promise(r => setTimeout(r, 20000))
+  }
 }
 
 /** 取一条**有图**的笔记 id，供详情页体检用。
@@ -298,16 +458,96 @@ async function someNoteId(s) {
 /** spec 断言（Track 4 计划 #3b/#4）：路由相关的关键尺寸 */
 function specChecks(s, label, w, r) {
   const sp = r.spec || {}
+  // 全站通用：van-icon 名字必须真实存在（写错就是一个空盒子）
+  s.check(`${label}@${w}w 的 van-icon 全部有字形（名字写错会渲染成空心圆）`,
+    (sp.blankIcons || []).length === 0, JSON.stringify(sp.blankIcons || []))
+  // 全站通用：触摸目标禁掉双击缩放等待
+  s.check(`${label}@${w}w 触摸目标 touch-action=manipulation（去掉 300ms 双击缩放延迟）`,
+    sp.touchAction === 'manipulation', `touch-action=${sp.touchAction}`)
+
+  /* 底部 tab 栏：移动端必现、桌面必隐；出现时贴视口底、5 项、热区 ≥44。
+     这条以前完全没有断言 —— 移动端曾经**整层导航都没有**（SiteNav 只在
+     ≥1024 显示），就是这么漏过去的。 */
+  const tb = sp.tabBar || { present: false }
+  /* 发布页/详情页/编辑页刻意不挂（沉浸阅读与任务页，见 TabBar.vue 的
+     HIDDEN_ROUTES），这几页只断言"确实没有"，不查项数与热区。 */
+  const NO_TAB = label === '登录页' || label === '发布页' || label === '详情页'
+  if (w < 1024) {
+    if (NO_TAB) {
+      s.check(`${label}不挂底部导航（任务页/沉浸页，见 TabBar HIDDEN_ROUTES）`,
+        tb.present === false, JSON.stringify(tb))
+    } else {
+      s.check('移动端底部 tab 栏存在且吸底贴视口底',
+        tb.present === true && tb.display !== 'none' && tb.pos === 'fixed'
+          && tb.bottom >= tb.vh - 2 && tb.bottom <= tb.vh + 1,
+        JSON.stringify(tb))
+      s.check('底部 tab 栏 5 项（首页/关注/发布/搜索/我的）',
+        tb.n === 5, `n=${tb.n}`)
+      s.check('底部 tab 栏每项热区 ≥40×40（P13 下限）',
+        (tb.items || []).length === 5 && tb.items.every((x) => x.w >= 40 && x.h >= 40),
+        JSON.stringify((tb.items || []).map((x) => `${x.w}x${x.h}`)))
+      s.check(`底部 tab 栏不横向溢出（${label} @${w}w）`,
+        tb.width <= w, `width=${tb.width} vw=${w}`)
+    }
+  } else {
+    // 桌面：元素仍在 DOM 里，只是被媒体查询 display:none。判"不存在"会假红。
+    s.check('桌面不显示底部 tab 栏（改用 SiteNav 顶栏）',
+      tb.present !== true || tb.display === 'none',
+      JSON.stringify({ present: tb.present, display: tb.display }))
+  }
+
   if (label === '首页' && w >= 1024) {
     s.check('首页瀑布 columns=4 且相邻列距>100px',
       sp.homeCols === '4' && sp.homeColGap > 100, `cols=${sp.homeCols} gap=${sp.homeColGap}`)
   }
   if (label === '详情页') {
+    // 热区扫描放在最前：不达标先报，且报告里点名是谁
+    s.check('详情页可点元素热区 ≥40px（吸底栏子树除外，那部分有专项断言）',
+      (sp.smallTargets || []).length === 0,
+      JSON.stringify((sp.smallTargets || []).map(x => `${x.t} ${x.w}x${x.h}`)))
     if (w >= 1024) {
       s.check('详情图列宽 440±8px', sp.detailCol1 >= 432 && sp.detailCol1 <= 448, `col1=${sp.detailCol1}`)
+      s.check('详情图 object-fit=contain（不裁 3:4）', sp.detailImgFit === 'contain', `fit=${sp.detailImgFit}`)
+      s.check('详情卡内边距 >0（P13：文字不贴描边）', sp.cardPad > 0, `pad=${sp.cardPad}px`)
+      s.check('桌面操作栏回到流内（不再吸底）', sp.barPos === 'static', `pos=${sp.barPos}`)
+      s.check('桌面评论区与操作栏都在右栏（不再是整卡通栏）',
+        sp.commentsWidth > 400 && sp.commentsWidth < 700
+          && Math.abs(sp.commentsLeft - sp.titleLeft) <= 2 && sp.barWidth < 700,
+        `commentsW=${sp.commentsWidth} commentsLeft=${sp.commentsLeft} titleLeft=${sp.titleLeft} barW=${sp.barWidth}`)
+      s.check('桌面操作栏在评论区之下、与评论区同宽同左缘（评论区的页脚）',
+        sp.barTop >= sp.commentsBottom - 4 && Math.abs(sp.barLeft - sp.commentsLeft) <= 2
+          && Math.abs(sp.barWidth - sp.commentsWidth) <= 2,
+        `barTop=${sp.barTop} commentsBottom=${sp.commentsBottom} barLeft=${sp.barLeft} commentsLeft=${sp.commentsLeft} barW=${sp.barWidth} commentsW=${sp.commentsWidth}`)
+      s.check('桌面操作栏也是两行：行1 输入通栏，行2 发表 + 三键',
+        sp.barDir === 'column' && Math.abs(sp.inputW - sp.barWidth) <= 2
+          && sp.keysTop >= sp.inputBottom - 2 && sp.keysTop < sp.inputBottom + 24
+          && sp.sendW >= 44 && sp.sendH >= 44 && sp.keysRight > sp.sendLeft,
+        `dir=${sp.barDir} inputW=${sp.inputW} barW=${sp.barWidth} keysTop=${sp.keysTop} inputBottom=${sp.inputBottom} send=${sp.sendW}x${sp.sendH}`)
+      s.check('桌面正文 17px（注意力回到正文）', sp.contentFontD >= 17, `fs=${sp.contentFontD}px`)
+      s.check('桌面标题 24px', sp.titleFontD >= 24, `fs=${sp.titleFontD}px`)
+    } else {
+      s.check('移动端操作栏吸底 fixed 且贴住视口底',
+        sp.barPos === 'fixed' && sp.barBottom >= sp.vh - 2 && sp.barBottom <= sp.vh + 1,
+        `pos=${sp.barPos} bottom=${sp.barBottom} vh=${sp.vh}`)
+      s.check('移动端操作栏顶部有发丝线（与内容分层）', sp.barBorder > 0, `border=${sp.barBorder}px`)
+      s.check('移动端吸底栏两行、输入框通栏（≥380px，旧版只有 ~170px）',
+        sp.barDir === 'column' && sp.inputW >= 380
+          && sp.keysTop >= sp.inputBottom - 2 && sp.keysTop < sp.inputBottom + 24,
+        `dir=${sp.barDir} inputW=${sp.inputW} keysTop=${sp.keysTop} inputBottom=${sp.inputBottom}`)
+      s.check('移动端发表钮 44×44 贴栏左缘', sp.sendW >= 44 && sp.sendH >= 44
+        && Math.abs(sp.sendLeft - (sp.barLeft + 12)) <= 2,
+        `send=${sp.sendW}x${sp.sendH} sendLeft=${sp.sendLeft} barLeft=${sp.barLeft}`)
     }
-    s.check('详情图 object-fit=contain（不裁 3:4）', sp.detailImgFit === 'contain', `fit=${sp.detailImgFit}`)
-    s.check('详情卡内边距 >0（P13：文字不贴描边）', sp.cardPad > 0, `pad=${sp.cardPad}px`)
+    // 三键降权（截图反馈）：无边框、无底色、可见文字只剩数字、热区 ≥40 —— 双视口同一把尺
+    const keys = sp.keys || []
+    s.check('操作栏正好 3 个键', keys.length === 3, `n=${keys.length}`)
+    s.check('三键无边框', keys.every(k => k.bw === 0), JSON.stringify(keys.map(k => k.bw)))
+    s.check('三键无底色', keys.every(k => k.bg === 'rgba(0, 0, 0, 0)' || k.bg === 'transparent'),
+      JSON.stringify(keys.map(k => k.bg)))
+    s.check('三键可见文字仅数字（标签已降权）',
+      keys.length === 3 && keys.every(k => /^\d+$/.test(k.txt)), JSON.stringify(keys.map(k => k.txt)))
+    s.check('三键热区 ≥40×40（P13）',
+      keys.length === 3 && keys.every(k => k.w >= 40 && k.h >= 40), JSON.stringify(keys.map(k => `${k.w}x${k.h}`)))
   }
   if (label === '发布页') {
     s.check('发布页标题输入 ≥16px（防 iOS 聚焦缩放）', sp.titleFont >= 16, `font=${sp.titleFont}px`)
@@ -371,6 +611,13 @@ async function auditOne(s, label, w, hash) {
   const head = `${label} @${w}w overlaps=${r.overlaps.length} overflow=${r.overflow.length} doc=${r.doc.scrollW}/${r.doc.innerW}`
   if (bad) fmt(r).split('\n').forEach((l) => console.log('    ' + l))
   s.check(head, bad === 0, bad ? `${bad} 处几何问题` : '')
+  /*
+   * 终态等待必须先过。量到半渲染的页面时，overlaps/overflow 往往恰好是 0
+   * （元素还没来），几何断言会**假绿**；真正的问题出现在下游（cols=undefined）。
+   * 所以这里显式判一次，超时就是超时，别指望下游能解释清楚。
+   */
+  s.check(`${label} @${w}w 在等待内进入加载终态（否则量的是半渲染页面）`,
+    r.ready !== false, r.ready === false ? '20s 内没等到加载终态' : '')
   specChecks(s, label, w, r)
   return r
 }
@@ -429,6 +676,7 @@ async function main() {
   await preflight()
   const report = process.argv.includes('--report')
   const s = await createSession({ name: 'layout-audit' })
+  let crashed = null
   try {
     /* 未登录态先体检登录页：登进去之后 #/login 会被守卫重定向回首页，
      * 那时候再访「登录页」实际量的是首页，白跑一遍。 */
@@ -448,9 +696,14 @@ async function main() {
     }
 
     if (report) await runReport(s)
+  } catch (e) {
+    // 不 catch 的话异常会穿出 finally 里的 process.exit(0)：已过的断言都算
+    // 「22/22 通过」，跑了一半却报全绿（真踩过一次），这里必须留下痕跡
+    crashed = e
   } finally {
     const allOk = await s.close()
-    process.exit(allOk ? 0 : 1)
+    if (crashed) console.error('体检中断：', crashed)
+    process.exit(allOk && !crashed ? 0 : 1)
   }
 }
 

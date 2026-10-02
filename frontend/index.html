@@ -5,11 +5,21 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <!--
       viewport-fit=cover 让内容延伸到 iPhone 刘海区域，配合 Vant 的 safe-area-inset-bottom。
-      刻意不锁 user-scalable / maximum-scale：桌面端要能缩放，a11y 也需要
+      刻意不锁 user-scalable / maximum-scale：桌面端要能缩放，a11y 也需要。
+
+      interactive-widget=resizes-content：Android Chrome 弹软键盘时把 layout
+      viewport 一起收缩，position:fixed 的吸底评论栏因此自动落到键盘上方 ——
+      不加这条，键盘会盖住吸底栏，输入框在屏幕外（用户反馈的"输入遮挡"）。
+      iOS Safari 不认这个键，由 src/composables/useKeyboardInset.ts 读
+      visualViewport 补 --kb-inset 兜底。
     -->
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
+    />
     <meta name="theme-color" content="#f4f6fb" />
-    <meta name="description" content="毛球喵社 Fuzzball-Meow-Hub —— 笔记社区，个人学习项目" />
+    <!-- translate=no：品牌名/代码标识不参与浏览器自动翻译，否则会被拆成怪词 -->
+    <meta name="description" translate="no" content="毛球喵社 Fuzzball-Meow-Hub —— 笔记社区，个人学习项目" />
     <title>毛球喵社 Fuzzball-Meow-Hub</title>
     <script>
       // 首屏防闪烁：必须在 Vue 挂载前把主题打上，否则暗色用户会先闪一帧白底。

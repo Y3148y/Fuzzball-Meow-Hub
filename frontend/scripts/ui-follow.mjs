@@ -14,7 +14,7 @@
  *
  * 跑法：npm run test:ui（或 npm run test:ui:follow）
  */
-import { createSession, preflight } from './ui-cdp.mjs'
+import { createSession, loginDemo, preflight } from './ui-cdp.mjs'
 
 const BASE = 'http://localhost:5180'
 const API = 'http://localhost:8088'
@@ -125,12 +125,8 @@ try {
 
   /* ============ 演示账号登录 ============ */
 
-  await s.goto(`${BASE}/#/login`)
-  await s.waitFor("document.querySelector('.demo')", '演示账号按钮')
-  await s.evaluate("document.querySelector('.demo').click()")
-  await sleep(250)
-  await s.evaluate("document.querySelector('.xk-btn').click()")
-  await s.waitFor("location.hash === '#/'", '演示账号登录', 20000)
+
+  await loginDemo(s, BASE)
   s.check('演示账号登录成功', true)
 
   // 用户资料（关注数/粉丝数）由 loadProfile 拉，等它渲染出「关注」入口再往下走

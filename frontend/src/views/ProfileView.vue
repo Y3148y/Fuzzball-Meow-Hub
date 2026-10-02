@@ -146,7 +146,7 @@ async function logout() {
     <div class="side">
       <section class="card xk-card">
       <div class="who">
-        <img class="avatar" src="/mascot/m02.webp" alt="" />
+        <img class="avatar" src="/mascot/m02.webp" alt="" width="62" height="62" />
         <div class="names">
           <h1 class="nickname" data-test="me-nickname">
             {{ userStore.userInfo?.nickname || '加载中…' }}
@@ -192,6 +192,7 @@ async function logout() {
           class="xk-input"
           type="text"
           maxlength="40"
+          aria-label="昵称"
           data-test="me-nickname-input"
         />
         <span class="count" :class="{ over: nicknameOver }">{{ nicknameLen }}/{{ NICKNAME_MAX }}</span>
@@ -201,9 +202,10 @@ async function logout() {
         <span class="label">简介</span>
         <textarea
           v-model="bio"
-          class="xk-input area"
+class="xk-input area"
           maxlength="300"
-          placeholder="介绍一下自己"
+          placeholder="介绍一下自己…"
+          aria-label="个人简介"
           data-test="me-bio-input"
         />
         <span class="count" :class="{ over: bioOver }">{{ bioLen }}/{{ BIO_MAX }}</span>
@@ -230,7 +232,7 @@ async function logout() {
         </div>
       </div>
 
-      <p v-if="errorMsg" class="err" data-test="me-error">{{ errorMsg }}</p>
+      <p v-if="errorMsg" class="err" role="alert" data-test="me-error">{{ errorMsg }}</p>
 
       <div class="row">
         <button class="xk-btn xk-btn--ghost" type="button" data-test="me-cancel" @click="cancelEdit">
@@ -249,9 +251,7 @@ async function logout() {
     </section>
 
     <section v-else class="card xk-card xk-card--flat">
-      <button class="link" type="button" data-test="go-publish" @click="router.push('/publish')">
-        发布新笔记
-      </button>
+      <RouterLink class="link" to="/publish" data-test="go-publish">发布新笔记</RouterLink>
       <button class="link" type="button" data-test="me-logout" @click="logout">退出登录</button>
     </section>
     </div><!-- /.side -->
@@ -267,13 +267,13 @@ async function logout() {
 
       <ul v-else class="items" data-test="me-notes-list">
         <li v-for="item in notes" :key="item.id" class="item" data-test="profile-note">
-          <button class="main" type="button" @click="router.push(`/note/${item.id}`)">
+          <RouterLink class="main" :to="`/note/${item.id}`">
             <img class="cover" :src="item.cover ?? '/mascot/m02.webp'" alt="" loading="lazy" />
             <div class="body">
               <p class="title">{{ item.title }}</p>
               <p class="meta">♥ {{ item.likeCount }} · ★ {{ item.collectCount }}</p>
             </div>
-          </button>
+          </RouterLink>
         </li>
       </ul>
     </section>

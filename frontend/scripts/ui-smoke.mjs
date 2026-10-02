@@ -7,7 +7,7 @@
  *
  * 跑法（要先起 dev server）：npm run test:ui
  */
-import { createSession, preflight } from './ui-cdp.mjs'
+import { createSession, loginDemo, preflight } from './ui-cdp.mjs'
 
 const BASE = 'http://localhost:5180'
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -47,23 +47,20 @@ try {
     `body bg=${await waitBodyBg()}`)
 
   // 3. 演示账号填充 → 提交
-  await s.waitFor("document.querySelector('.demo')", '演示账号按钮')
-  await s.evaluate("document.querySelector('.demo').click()")
-  await sleep(250)
-  const filled = await s.evaluate(
-    "[...document.querySelectorAll('.xk-input')].map((i) => i.value).join('|')",
-  )
-  s.check('点击「用演示账号填充」后表单被填入', filled === 'xiaoku_demo|Xk@123456', filled)
-
-  await s.evaluate("document.querySelector('.xk-btn').click()")
-  try {
-    await s.waitFor("location.hash === '#/'", '登录成功跳转', 20000)
-    s.check('登录成功并跳转到 #/', true)
-  } catch {
-    const err = await s.evaluate("document.querySelector('.error')?.textContent?.trim() || '(无提示)'")
-    s.check('登录成功并跳转到 #/', false, `hash=${await s.evaluate('location.hash')} 提示=${err}`)
-    throw new Error('登录失败，后续用例无意义')
-  }
+  // 走公共 loginDemo（带限流重试）：实测**冷启动后的第一个请求**能到 9s
+  // （Vite 现转译模块 + 后端 JIT），偶尔超过 axios 的 15s 超时表现为
+  // 「网络异常，稍后再试」—— 那是环境抖动，不是登录逻辑坏了。
+  // 「表单被填入」必须在提交前断言（提交后就跳走了），所以用 onFilled 钩子。
+  await loginDemo(s, BASE, {
+    onFilled: async () => {
+      const filled = await s.evaluate(
+        "[...document.querySelectorAll('.xk-input')].map((i) => i.value).join('|')",
+      )
+      s.check('点击「用演示账号填充」后表单被填入', filled === 'xiaoku_demo|Xk@123456', filled)
+    },
+  })
+  s.check('登录成功并跳转到 #/', (await s.evaluate('location.hash')) === '#/',
+    await s.evaluate('location.hash'))
 
   // 4. 双 token 落库
   const tokens = await s.evaluate(
@@ -161,7 +158,13 @@ try {
   s.check('注册表单三个字段都能按 label 定位', missing.length === 0, JSON.stringify(missing))
   await sleep(250)
   await s.evaluate("document.querySelector('.xk-btn').click()")
-  await sleep(2000)
+  // 等提示落定，而不是死等 2s：Vite 冷启动后第一次请求要现转译模块，
+  // 实测能到 3s+，固定 sleep 会偶发读到空提示（按钮还停在 disabled）。
+  await s.waitFor(
+    "!!document.querySelector('.error')?.textContent?.trim()",
+    '注册结果提示',
+    20000,
+  )
   const regMsg = await s.evaluate("document.querySelector('.error')?.textContent?.trim() || ''")
   // 首次跑会真的注册成功；之后再跑会拿到 10003「用户名已被占用」，
   // 这同样说明请求打到了后端并走完了校验 + 唯一索引，两个分支都算通过
@@ -182,7 +185,12 @@ try {
   await fill(s, [['用户名', 'bad name!'], ['密码', 'short']])
   await sleep(200)
   await s.evaluate("document.querySelector('.xk-btn').click()")
-  await sleep(500)
+  // 前端校验是纯本地逻辑，但错误提示要等 Vue patch 落地，同样用 waitFor
+  await s.waitFor(
+    "!!document.querySelector('.error')?.textContent?.trim()",
+    '前端校验提示',
+    10000,
+  )
   const vmsg = await s.evaluate("document.querySelector('.error')?.textContent?.trim() || ''")
   s.check('前端校验拦下非法用户名/过短密码', vmsg.includes('用户名'), vmsg)
 } catch (e) {

@@ -144,7 +144,7 @@ CREATE TABLE `comment`
     `root_comment_id`   BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '根评论ID，0表示根评论',
     `parent_id`         BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '被回复的评论ID',
     `reply_user_id`     BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '被回复人ID，0表示无',
-    `content`           VARCHAR(500)    NOT NULL COMMENT '评论内容',
+    `content`           VARCHAR(1000)   NOT NULL COMMENT '评论内容',
     `like_count`        INT             NOT NULL DEFAULT 0 COMMENT '点赞数',
     `create_time`       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
     `update_time`       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

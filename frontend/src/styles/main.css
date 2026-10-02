@@ -47,6 +47,14 @@
   --xk-amber: #f0c060;
   --xk-amber-press: #dda23c;
   --xk-amber-ink: #1a1e35;
+  /*
+   * 「琥珀当文字色」专用 —— 激活态的图标/数字用。
+   * 不能直接拿 --xk-amber 当字色：#f0c060 压白底只有 2.26:1，压深色底 4.34:1，
+   * 两套主题都不过 AA。单一颜色在「白底要够深、暗底要够浅」之间无解
+   * （白底要求 L≤0.161、暗底要求 L≥0.594），所以按主题给两个值：
+   * 浅色 #8a5a00 压 #ffffff = 5.93:1；深色 #f5cd7a 压 #4e5478 = 4.86:1。
+   */
+  --xk-amber-text: #8a5a00;
   --xk-cat: #d7e5fe;
   --xk-sand: #d8c090;
   --xk-steel: #a8b2ce;
@@ -143,6 +151,8 @@
 
   --xk-amber-press: #e6ae4a;
   --xk-amber-ink: #1a1e35;
+  /* 压 #4e5478 = 4.86:1（浅色主题那份 #8a5a00 在这个底上只有 2.9:1） */
+  --xk-amber-text: #f5cd7a;
   --xk-sand: #d8c090;
   --xk-steel: #a8b2ce;
   --xk-danger: #ff6b6f;
@@ -184,7 +194,7 @@ body {
   background: var(--xk-bg);
   color: var(--xk-text);
   font-family:
-    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hirino Sans GB',
     'Microsoft YaHei', sans-serif;
   -webkit-font-smoothing: antialiased;
   /* 主题切换时让背景色跟着渐变，而不是硬切 */
@@ -193,19 +203,75 @@ body {
     color 0.2s ease;
 }
 
+/*
+ * 触摸交互（web-design-guidelines「Touch & Interaction」两条，全站各一处）：
+ *
+ * 1. `touch-action: manipulation` —— 去掉移动浏览器 ~300ms 的双击缩放
+ *    等待。**不能**顺手写 `user-scalable=no`（Vercel 明列它是反模式，
+ *    桌面要能缩放，a11y 也需要），这一条只是声明"我不靠双击放大"。
+ * 2. `-webkit-tap-highlight-color` —— 设成透明会让点按毫无反馈，比默认
+ *    闪白更难点准。这里给一个低透明度品牌色代替：仍有反馈、不刺眼。
+ *    键盘用户不受影响（:focus-visible 焦点环另有一套）。
+ */
+button,
+a,
+[role='button'],
+input,
+textarea,
+select,
+label {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: color-mix(in srgb, var(--xk-stroke) 14%, transparent);
+}
+
+/* 弹层里的滚动不要把底下页面一起带着滚（Vant 弹窗/底部弹层/遮罩） */
+.van-dialog,
+.van-popup,
+.van-action-sheet,
+.van-overlay,
+.van-toast {
+  overscroll-behavior: contain;
+}
+
+/* 链接统一样式：各视图都给显式 color，这里只保证不出现 UA 下划线 */
+a {
+  text-decoration: none;
+  color: inherit;
+}
+
 /**
  * 全站页面容器（抄小红书思路：移动端贴边，桌面端居中加宽）。
  * 把各页重复的 `.page { max-width:480px … }` 收敛到这里。
  */
 .page {
   min-height: 100%;
+  /*
+   * 底部留白里的 --xk-tabbar-h 是「底部导航的高度」，默认 0 —— 因为
+   * 详情/编辑/发布/登录页**不挂**底部导航（见 TabBar.vue 的 HIDDEN_ROUTES），
+   * 写死 56px 会让这四页凭空多出一段空白。
+   * 导航可见时由下面 `html[data-tabbar='on']` 打开，单一数据源在 TabBar 组件：
+   * 它 show 状态一变就改 <html> 的标记，这里只管消费。
+   * tab 栏是 fixed 的，不占流内空间，不留白就会永久压住最后一屏内容。
+   */
+  --xk-tabbar-h: 0px;
   padding: calc(var(--xk-space-4) + env(safe-area-inset-top)) var(--xk-space-5)
-    calc(var(--xk-space-6) + env(safe-area-inset-bottom));
+    calc(var(--xk-space-6) + var(--xk-tabbar-h) + env(safe-area-inset-bottom, 0px));
   max-width: 480px;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
   gap: var(--xk-space-4);
+}
+
+/*
+ * 移动端底部导航可见时的尾部留白。
+ * 断点写 max-width 而不是 ≥1024 的反向：那条更长的分支要处理"桌面没有
+ * 底部导航"这个事实，写在正向媒体查询里更容易漏。特异性 0,2,0 > .page 的 0,1,0。
+ */
+@media (max-width: 1023px) {
+  html[data-tabbar='on'] .page {
+    --xk-tabbar-h: 56px;
+  }
 }
 
 /* ≥768px：过渡态，稍微拉宽 */
@@ -217,7 +283,7 @@ body {
   }
 }
 
-/* ≥1024px：桌面主力（小红书桌面版的内容带宽） */
+/* ≥1024px：桌面主力（小红书桌面版的内容带宽）；此时底部导航换成 SiteNav 顶栏 */
 @media (min-width: 1024px) {
   .page {
     max-width: 1200px;
@@ -307,6 +373,28 @@ textarea:focus-visible,
 a:focus-visible {
   outline: 2px solid var(--xk-amber);
   outline-offset: 2px;
+}
+
+/*
+ * 标题防孤字：一行收进规则里，而不是在 11 个视图各写一遍
+ * （与字阶/间距阶的处理方式一致）。
+ * `balance` 让浏览器把各行长度拉平，标题末尾不会出现只剩一两个字的孤行。
+ * 注意：不要用 `pretty`，它会连带压缩字间距，标题字距会被改掉。
+ */
+h1,
+h2 {
+  text-wrap: balance;
+}
+
+/*
+ * 数字列用等宽数字：计数（点赞数/评论数/字数）变化时不会左右抖动。
+ * 这些类名是各视图已在用的语义类，集中在这里比逐个视图声明可靠。
+ */
+.num,
+.count,
+.meta,
+.c-total {
+  font-variant-numeric: tabular-nums;
 }
 
 .xk-input {

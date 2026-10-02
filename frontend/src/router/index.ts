@@ -116,6 +116,8 @@ router.beforeEach((to) => {
 router.afterEach((to) => {
   const title = to.meta.title as string | undefined
   document.title = title ? `${title} · 毛球喵社` : '毛球喵社'
+  // translate=no：标题与品牌名不该被浏览器自动翻译拆成怪词
+  document.documentElement.setAttribute('translate', 'no')
 })
 
 export default router

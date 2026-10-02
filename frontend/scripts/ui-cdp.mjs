@@ -139,6 +139,25 @@ export async function createSession({ name = 'ui', port } = {}) {
     if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'error') {
       consoleErrors.push(m.params.args.map((a) => a.value ?? a.description).join(' '))
     }
+    /*
+     * 自动接受原生对话框（beforeunload / alert / confirm）。
+     *
+     * 为什么必须有：发布/编辑页注册了「未保存提醒」，CDP 的 Page.navigate
+     * 遇到未处理的原生对话框会**一直等**（headless 里没人去点它），
+     * 表现就是测试卡在 goto 上直到超时。
+     * 这段只处理 beforeunload/alert/confirm —— Vant 的确认框是 DOM 元素，
+     * 走正常路径点击即可，不会误伤 ui-note 里「点弹窗确认删除」那些用例。
+     */
+    if (m.method === 'Page.javascriptDialogOpening') {
+      console.log(`    [cdp] 自动接受原生对话框：${m.params.message || m.params.type}`)
+      ws.send(
+        JSON.stringify({
+          id: ++msgId,
+          method: 'Page.handleJavaScriptDialog',
+          params: { accept: true },
+        }),
+      )
+    }
   }
 
   function send(method, params = {}) {
@@ -245,4 +264,49 @@ export async function createSession({ name = 'ui', port } = {}) {
   }
 
   return { evaluate, waitFor, goto, send, check, log, on, results, consoleErrors, close }
+}
+
+/**
+ * 走 UI 真实点击登录演示账号，**带限流重试**。
+ *
+ * 为什么要抽成公共函数：这段「goto #/login → 点 .demo → 点 .xk-btn → 等 hash」
+ * 原本在 8 个测试文件里各抄了一份，于是同一个坑要踩 8 次：
+ * 登录按 IP 限流 60 次/分钟（契约 16.1 节），全量连跑时前面几组刚把桶用掉，
+ * 后面那组就吃到 429 —— 表现是「超时：登录成功」，因为登录请求返回了错误、
+ * 页面根本没跳走。
+ *
+ * 重试里有个关键判断：**先看是不是已经在首页**。首次尝试可能服务端已登录成功、
+ * 只是 SPA 跳转慢；此时再 goto('#/login') 会被 guestOnly 守卫弹回 '#/'，
+ * `.demo` 按钮永远不出现 —— 重试反而制造新失败（踩过）。
+ *
+ * @param base 前端 origin（各组的 BASE 常量）
+ * @param attempts 最多尝试次数
+ */
+/**
+ * @param onFilled 点「用演示账号填充」之后、点提交之前的钩子。
+ *   ui-smoke 要在这里断言「表单确实被填了」——那个时刻在提交之后就看不到表单了，
+ *   所以只能由 helper 暴露一个插入点，而不是让 smoke 自己重写一遍登录流程。
+ */
+export async function loginDemo(s, base, { attempts = 3, onFilled } = {}) {
+  for (let attempt = 1; ; attempt++) {
+    if ((await s.evaluate('location.hash')) === '#/') return true
+    await s.goto(`${base}/#/login`)
+    await s.waitFor("document.querySelector('.demo')", '演示账号按钮', 20000)
+    await s.evaluate("document.querySelector('.demo').click()")
+    await new Promise((r) => setTimeout(r, 250))
+    if (onFilled) await onFilled()
+    await s.evaluate("document.querySelector('.xk-btn').click()")
+    const ok = await s
+      .waitFor("location.hash === '#/'", '演示账号登录', 15000)
+      .then(() => true)
+      .catch(() => false)
+    if (ok) return true
+    if (attempt >= attempts) {
+      throw new Error(
+        `演示账号登录连续 ${attempts} 次失败（多半是撞 login 60/min 限流，脚本节奏太密）`,
+      )
+    }
+    console.log(`    登录未成功（可能撞 login 60/min 限流），20s 后重试 第${attempt + 1}次`)
+    await new Promise((r) => setTimeout(r, 20000))
+  }
 }

@@ -136,7 +136,7 @@ cd backend && node scripts/contract-test.mjs
 # 换地址：XK_API_BASE=http://ip:8088 node scripts/contract-test.mjs
 
 # 前端（需前端 5180 + 后端 8088 同时在跑）
-# → 24 + 8 + 50 + 26 + 52 + 25 + 19 + 9 + 31 = 244 条
+# → 26 + 8 + 77 + 26 + 51 + 25 + 19 + 9 + 108 = 349 条
 cd frontend && npm run test:ui
 
 # 单跑某一组：:smoke / :refresh / :note / :profile / :interaction / :follow / :search / :idempotent / :layout
@@ -623,6 +623,205 @@ get('/comment/list', { params: { noteId, page } })    // ❌ 发出 ?params[note
     - 验收：1280/430 三张截图（竖图帧 440×587、横图缩帧、手机单列顺序
       不变）读图核对；临时诊断脚本 `_diag-detail.mjs` 用完即删，
       它发的临时笔记已走 DELETE API 清掉。
+  - **v1.2 之后的截图反馈修复（三）—— 点赞/收藏/评论吸底操作栏 + 三键降权**，
+    CDP 244 → **269**（ui-note 50→60 +10、layout 31→46 +15），契约仍 355
+    （纯前端，后端零改动）：
+    - **结构**：`.stats` 三键块与 `.editor` 评论输入合并成一个
+      `[data-test=action-bar]`，**放在卡片最底部（`.comments` 之后）**。
+      一个 DOM 两种落位：移动端基础样式 `position:fixed` 吸底（fixed 脱离
+      流，DOM 在哪儿都不影响它贴视口底；被遮的评论尾部靠 `main.page` 移动端
+      `padding-bottom: calc(76px + safe-area)` 让位）；桌面 ≥1024 撤壳
+      `position:static`，靠 `margin-left: calc(var(--xk-col1) + var(--xk-colgap))`
+      与右侧文字左缘对齐 —— **左图下方留空**，两栏构图完全不变。
+      桌面媒体块必须写在基础规则**之后**（同特异性 source-order 决胜负，
+      ProfileView/NoteDetailView 的 `aspect-ratio` 已踩过两次）。
+    - **列宽单一来源**：`--xk-col1`（440）/ `--xk-colgap`（32）/
+      `--xk-col1-narrow`（620 无图单栏）定义在桌面 `.card` 上，网格列模板、
+      图框宽度、`--media-h`、操作栏缩进全部取它 —— 写死两处就会出现
+      「网格改了、缩进没改」且只在桌面显形的错位。
+    - **三键降权**：删可见文字标签（`.cap`），只留图标+数字；`border:0`、
+      `background:none`，激活只变琥珀；读屏/悬停用 `aria-label`/`title`，
+      `data-test` 与 `aria-pressed` 原样保留（ui-interaction 全靠它们）。
+      图标换 `<van-icon name="like|like-o|star|star-o|chat-o">`
+      （VantResolver 自动引入）。`.kbtn` min 40×40（P13 热区）、
+      `.num` 14px + `tabular-nums`。输入框改 pill：`rows=1` +
+      `field-sizing:content`（40→140px 封顶）+ 发表按钮绝对定位在 pill 内
+      右下；**flex 内 textarea 必须 `min-width:0`**（SiteNav 搜索框前科）。
+    - **桌面正文/标题加码**（注意力回到正文）：`.content` 16→17px /
+      line-height 1.75、`.title` 22→24px，都在字阶 token 内。
+    - **重叠判定语义修正（不是绕过）**：吸底栏盖评论文字、发表按钮压
+      输入框都是设计，`AUDIT_EXPR` 的 `nodes` 过滤 + 两两循环都跳过
+      `[data-test=action-bar]` 子树；该区域几何改由 spec 断言专项管
+      （双视口三键无边框/无底色/仅数字/热区≥40、移动端 fixed+贴底+
+      发丝线、桌面 static+与标题左缘对齐+在评论区之下+正文17/标题24）。
+      `auditPage` 终态等待对 `#/note/` 追加等 `action-bar` 出现
+      （v-else-if=note，量早了 `spec.keys` 是 undefined 会假红）。
+    - **ui-layout-audit 的 finally 吞错隐患（本轮真踩）**：`main()` 原来
+      没有 catch，中途异常会穿过 `finally` 里的 `process.exit(0)` ——
+      跑到 22 条就停却报「22/22 通过」。已加 `crashed` 标志：异常打印
+      且以非 0 退出。看到断言数明显少于预期先怀疑这个，别信全绿。
+    - 验收：1280 两张截图（顶部两栏、滚到底的操作栏落位）读图核对，
+      诊断脚本用完即删。
+- **v1.2 之后的第四轮 —— 详情页按「规格」重做**（用户连否三轮后的**流程
+  修正**，不是又一轮微调）：CDP 269 → **300**（ui-note 60→74 +14、layout
+  46→63 +17），契约仍 355（断言内容改了一处）。前几轮的教训：都在**猜**位置
+  （吸底 → 右栏缩进 → 整卡通栏，被连否三次），根因是**没写规格**。这轮先量、
+  再定规格、最后把规格变成断言：
+  - **量出来的真问题**（`ui-layout-audit.mjs --report`，不是观感）：
+    手机输入框 pill 只剩 242px、扣掉给发表按钮让位的 56px ≈ **170px ≈ 10 个
+    汉字**；发表钮 **54×30**（热区不足 40）；桌面吸底区 **1120px** 通栏而正文栏
+    只有 **648px**；主题切换钮是**空心圆**（`van-icon` 的 `::before` content 为
+    `none`）。
+  - **空心圆根因**：`ThemeToggle` 用的 `sun-o` / `moon-o` **在 Vant 4.10.2 的
+    259 个图标里不存在**。`van-icon` 找不到对应 class 就只渲染一个空 `<i>`，
+    外面 40px 的圆还在 —— 看截图才发现。已换成真实存在的 `bulb-o` / `circle`，
+    并给 layout 加了**全站扫描断言**：`i.van-icon` 的 `::before` 必须非空
+    （6 页 × 2 视口 = 12 条）。**写图标名前先查 `vant/lib/index.css` 里有没有
+    `.van-icon-<name>` 规则**，别凭印象。
+  - **两行吸底区**：`.actionbar` 基础样式 `flex-direction: column`。行1 输入
+    胶囊**通栏**（430 下 406px，`padding: 11px 16px`），行2 左「发表」44×44
+    圆形图标钮（`van-icon name="arrow"`）、右三键 44×44 键距 12。
+    **DOM 要动**：`.c-send` 从 `.input-row` 搬进新的 `.bar-actions` 行 ——
+    原来它绝对定位压在胶囊右下角，只靠 `padding-right: 56px` 让位，而 56px
+    恰好等于按钮宽度，textarea 超过 `max-height` 内部滚动后滚出来的行直接
+    走到按钮底下（用户说的"输入时遮挡"）。搬出来让位就不需要了。
+  - **栏高不写死**：`ResizeObserver` 监听 `.actionbar` 高度写进 `--bar-h`，
+    `.page` 的 `padding-bottom: calc(var(--bar-h, 112px) + var(--kb-inset, 0px))`。
+    输入框是 `field-sizing: content` 多行自增的，栏会从 112px 长到 188px，
+    写死 76px 必然在打字时盖住最后一条评论。
+  - **软键盘遮挡（headless 验不了，只能真机）**：`index.html` 的 viewport 加
+    `interactive-widget=resizes-content`（Android Chrome 键盘弹起时收缩
+    layout viewport，fixed 栏自动落到键盘上方）；iOS Safari 不认这个键，由新增的
+    `src/composables/useKeyboardInset.ts` 读 `visualViewport` 的
+    `resize/scroll` 写 `--kb-inset` 兜底。**headless Chrome 没有软键盘，这条
+    只能让用户在真机验**。
+  - **网格容器升格 `.card`**：要让评论区进右栏，它必须是同一个网格的直接子元素。
+    所以桌面 `@media (min-width:1024px)` 里把两栏规则从 `.detail-grid` 挪到
+    `.card`，`.detail-grid` 全程 `display: contents`（移动端本来就是），
+    `:style="{'--img-ratio': ...}"` 也从内层 div **挪到 `<article>`**（卡片要靠
+    它算 `--media-h`）。`.comments` / `.actionbar` / `.expand` 一起 `grid-column: 2`，
+    无图单栏分支也要一起改。卡片的内容盒与原来的 `.detail-grid` 盒子同宽同
+    padding，所以列宽与图框绝对定位不受影响。
+  - **长正文折叠**（不做内嵌滚动框：滚动链、Ctrl+F 搜不到、手机像 App 套 App）：
+    `.content.clamped` 用 `-webkit-line-clamp`，移动 8 行 / 桌面 12 行，
+    配「展开全文」按钮（`aria-expanded`）。**溢出检测必须在折叠态量**
+    （`scrollHeight - clientHeight > 4`）：展开后量会得到「没溢出」、
+    按钮自己消失 —— 用 `measuring` 标志临时强制折叠一次，量完恢复。
+    断 `display` 值是错的：Chrome 把 `display: -webkit-box` 归一成 `flow-root`，
+    断言要断 `webkitLineClamp`。
+  - **评论字数 500 → 1000**（对齐小红书真机，用户嫌 500 太短）：
+    `comment.content` 是 **VARCHAR 不是 TEXT**，改上限必须四处同步 ——
+    `sql/schema.sql` 列宽、`CommentCreateDTO` 的 `@Size`、前端 `COMMENT_MAX`、
+    `contract-test.mjs` 的 `'字'.repeat(1001)` 断言。现有库要手动
+    `ALTER TABLE xiaoku_db.comment MODIFY COLUMN content VARCHAR(1000) NOT NULL`
+    （`sql/schema.sql` 挂在 `/docker-entrypoint-initdb.d/`，只在新库初始化时跑）。
+    计数器改成**过 80% 才出现**（常驻 `12/500` 纯噪音）。
+  - **配色**（新增 token `--xk-amber-text`，按主题给值）：单一颜色在
+    「白底要够深、暗底要够浅」之间**无解** —— 白底要求相对亮度 ≤0.161
+    （4.5:1），`--xk-surface` #4e5478 要求 ≥0.594。所以浅色给 `#8a5a00`
+    （压白底 5.93:1）、深色给 `#f5cd7a`（压 #4e5478 4.86:1）。
+    发表钮从硬编码 `#f5a623` + 白字（**2.03:1**）改成 `--xk-amber` +
+    `--xk-amber-ink`（9.69:1，与 `.xk-btn` 同一套）。
+  - **热区**：三键与发表 44×44；关注/编辑/下架/删除 28→40；SiteNav 品牌/搜索框/
+    搜索按钮 38→40。layout 的**热区扫描断言**第一次跑就抓出 `brand 125x38`。
+  - **layout-audit 的登录加重试**：login 按 IP 限流 60/min，全量连跑时前面 8 组
+    刚把桶用掉，layout 登录会吃 429，表现为「超时：登录成功」（登录请求返回错误、
+    页面根本没跳走）。已改成撞了就等 20s 重试，最多 3 次 —— **看到这个超时先
+    怀疑限流，别当布局回归**。
+  - **验收**：430 / 1280 各两张截图读图核对（移动吸底两行、桌面右栏评论区+
+    两行操作栏、主题钮有字形）；4 个临时诊断脚本（`_shot` / `_diag-theme` /
+    `_diag-icon` / `_check-icons`）用完即删。
+- **v1.2 之后的第五轮 —— 移动端导航缺失 + a11y/交互审计整改**，CDP 300 → **349**
+  （smoke 26 / refresh 8 / note 77 / profile 26 / interaction 51 / follow 25 /
+  search 19 / idempotent 9 / layout 108），契约仍 **355**（本轮后端只改了评论
+  字数上限那一处，已单独验过）：
+  - **根问题：移动端整层导航不存在**。`SiteNav` 是 `≥1024px` 才
+    `display:block`，`<1024` 时移动端每页只有自己的 `.top`（品牌+返回），
+    想去「关注/搜索/我的」必须退回首页再点进去。新增
+    `src/components/TabBar.vue`：底部固定 5 项（首页 / 关注 / **＋发布** /
+    搜索 / 我的），发布凸起居中（44×44 琥珀圆钮），激活态 `--xk-amber-text`
+    + `aria-current="page"`，点当前 tab 回顶部。
+    - **图标名必须先查 `vant/lib/index.css` 有没有 `.van-icon-<name>` 规则**：
+      `home` 不存在、`home-o` 才是（同 `sun-o`/`moon-o` 那次）。
+    - **详情/编辑/发布/登录页刻意不挂**（`HIDDEN_ROUTES`）：详情页已有自己的
+      吸底操作栏（z 60），两层 fixed 元素叠一起既挤又抢焦点。
+      ⚠️ 这里的路由名必须与 `router/index.ts` 的 `name` 逐字一致：详情页是
+      **`note-detail` 不是 `note`**（写错过一次，症状是详情页底部同时出现
+      操作栏 + tab 栏）。
+    - **留白跟着实际可见性走**，不写死 56px：`TabBar` 用 `watchEffect` 给
+      `<html>` 打 `data-tabbar="on"`，`main.css` 里
+      `@media (max-width:1023px) html[data-tabbar='on'] .page { --xk-tabbar-h: 56px }`
+      消费。写死的话登录/发布/编辑/详情四页会凭空多出一段空白。
+    - 断点由 CSS 媒体查询管，组件**不监听 resize**（监听会让「改窗口大小时
+      标记过期」这种 bug 回来）。
+  - **装了 Vercel 的 `web-design-guidelines` skill**（全局
+    `~\.agents\skills\web-design-guidelines`）。⚠️ 装完要改 SKILL.md 里的
+    guidelines URL：原地址是 `raw.githubusercontent.com`，**这台机直连与
+    127.0.0.1:7897 代理都超时**，WebFetch 每次拉取都会失败；换成
+    `cdn.jsdelivr.net/gh/vercel-labs/web-interface-guidelines@main/command.md`
+    实测可取。**但要说清：它是 a11y/工程卫生清单，不含任何尺寸与位置规则** ——
+    「大小不对、位置不对」它治不了，那部分靠规格 + 断言。
+  - **审计整改（已修）**：
+    - 触摸交互：`touch-action: manipulation` + 低透明度品牌色 tap 高亮
+      （**不用 transparent**，直接透明会让点按毫无反馈，比闪白更难点准；
+      更不能顺手写 `user-scalable=no`），弹层加 `overscroll-behavior: contain`。
+    - 11 处表单控件补 `aria-label`（`ProfileView` 昵称框此前**连 placeholder
+      都没有**；三个搜索框只有 placeholder）。
+    - 时间改 `Intl.DateTimeFormat`（新 `src/utils/datetime.ts`），替换两处
+      `createTime.replace('T',' ').slice(0,16)`。⚠️ 后端是**无时区的
+      `LocalDateTime`**，`new Date('2026-10-01T16:40:00')` 按 ES2015 规范按
+      **本地时间**解析，不会发生时区偏移；**不要**加 `'Z'`。
+    - 未保存提醒（新 `useUnsavedChanges.ts`）：`onBeforeRouteLeave` 弹 Vant
+      确认框 + `beforeunload` 拦刷新/关页；发布/编辑提交成功后 `markClean()`。
+      ⚠️ `beforeunload` 会让 CDP 的 `Page.navigate` **卡住等原生对话框**，所以
+      `ui-cdp.mjs` 里注册了 `Page.javascriptDialogOpening` → 自动
+      `Page.handleJavaScriptDialog({accept:true})`。
+    - **18 处导航改 `RouterLink`**（卡片 `.main`、作者 `.author`、SiteNav
+      品牌 + 4 个导航、关注/粉丝/去发布/我的、编辑、返回首页）。**3 处
+      `router.back()` 保持 `<button>`** —— 它是历史动作不是 URL 导航，规则本身
+      就要求动作归 button；**12 处脚本内 `router.push/replace`**（表单提交后跳转、
+      守卫重定向、列表分支）也不动。`<a><button>` 是非法嵌套，所以卡片主体与
+      作者/关注按钮必须保持**兄弟节点**。
+    - 6 处静态图补 `width/height`（头像 62/40、logo 36、吉祥物 168）；
+      **封面图与文字卡预览刻意不补** —— 它们有 `aspect-ratio` 盒子占位，
+      CLS 已被挡住，机械写属性反而会写进错误的值。
+    - 打磨：`SiteNav` 去掉 `:focus-visible { outline: none }`（全局焦点环本来
+      就在，之前被自己打掉了）；`h1,h2 { text-wrap: balance }` 防孤字；
+      计数类加 `tabular-nums`；3 个 placeholder 补 `…`；用户名/昵称加
+      `spellcheck="false"`、昵称 `autocomplete="off"`；6 个视图的错误段落加
+      `role="alert"`；品牌名加 `translate="no"`。
+    - **有意保留**：轮播的 `transition: aspect-ratio/height/min-height` 违反
+      「只过渡 transform/opacity」，但那张静止图换 0.25s 平滑是 P12 起
+      「图列不再撑出大空白」那套机制的手感来源，改成瞬变会明显跳变。代码里
+      写了注释说明取舍。
+  - **测试基建的三处整改**（都是被这轮的真实故障逼出来的）：
+    - **登录抽成公共 `loginDemo(s, base, {attempts, onFilled})`**（在
+      `ui-cdp.mjs`）：这段「goto → 点 .demo → 点 .xk-btn → 等 hash」原本在
+      **8 个文件里各抄一份**，同一个坑要踩 8 次。带 20s × 3 次重试；重试里
+      **先判断是不是已经在首页**（首次可能服务端已登录成功、只是 SPA 跳转慢，
+      此时再 goto `#/login` 会被 `guestOnly` 守卫弹回，`.demo` 永远不出现）。
+    - **布局审计的「加载终态」超时不再静默吞掉**：以前是 `.catch(() => {})`，
+      于是「关注流还没回来」会被当成「关注流是空的」继续量，最后报出
+      `cols=undefined` 这种看不出根因的假红。现在把结果带回 `auditOne`，
+      显式断言「进了终态」（超时就是超时）。顺带把等待从 10s 放宽到 20s，
+      骨架选择器从 `.page` 改成 `.page, .login`（登录页根元素是 `.login`）。
+    - `ui-search` 的「搜不到」关键词从写死的 `绝无此词zzz999` 改成**每轮随机
+      拉丁串**：`ik_smart` 把中文拆成单字 + `multiMatch` 默认 **OR**，所以
+      「绝无此词zzz999」会被拆成 绝/无/此/词/zzz/999，库里**任何一条**含
+      「无」「词」「在」的笔记都会命中（实测撞上 `xiaoku_demo` 那篇标题「空格」
+      的笔记，`total=1`）。这与 AGENTS.md 17.4 记的是同一个坑。
+  - **环境导致的 flake（本机实测，别当代码回归）**：内存只剩 1.1GB（用户
+    Chrome 16 进程 + dev 栈 6 容器 + **prod 栈 7 容器**同时在跑）时，冷启动后
+    **第一个请求能到 9s**，随后 366ms。撞上过：关注流「请求超时」、注册按钮
+    挂起 >5s、登录「网络异常」、轮播轨道偶发未位移。对应处理：注册与幂等
+    改成 `waitFor` 而不是固定 sleep；轮播轨道位移改轮询等它真的动；
+    登录走公共重试。**全量连跑之间建议隔 45~90s**，否则 demo 的
+    login 60/min 与 publish 20/min 会被前几组用光。
+- **仍未修的已知缺陷**：`--xk-text-3` 系 meta/label/计数对比度 ≈2.5 低于 WCAG AA。
+  牵连全站每一页的视觉，本轮刻意没动 —— 要动得单独一版给你看。
+  **搜索仍是 OR 语义**：`ik_smart` 单字 + `multiMatch` 默认 OR，导致搜
+  「绝不存在」会命中任何含「存」「在」的笔记。改 `operator: AND` 能收紧召回，
+  属于产品口径变更，没擅自改。
 
 ### P3 已知缺口（不是遗漏，是当前阶段做不到）
 

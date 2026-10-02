@@ -7,7 +7,7 @@
  *
  * 跑法（要先起 dev server）：npm run test:ui:refresh
  */
-import { createSession, preflight } from './ui-cdp.mjs'
+import { createSession, loginDemo, preflight } from './ui-cdp.mjs'
 
 const BASE = 'http://localhost:5180'
 
@@ -31,12 +31,8 @@ const setLs = async (k, v) =>
 
 try {
   // 1. 正常登录，拿到基线 token
-  await s.goto(`${BASE}/#/login`)
-  await s.waitFor("document.querySelector('.demo')", '登录页')
-  await s.evaluate("document.querySelector('.demo').click()")
-  await sleep(300)
-  await s.evaluate("document.querySelector('.xk-btn').click()")
-  await s.waitFor("location.hash === '#/'", '登录成功', 20000)
+
+  await loginDemo(s, BASE)
   const at1 = await getLs('xk_token')
   const rt1 = await getLs('xk_refresh_token')
   s.check('基线：登录拿到 access + refresh', !!at1 && !!rt1, `at=${at1?.length}字 rt=${rt1?.length}字`)

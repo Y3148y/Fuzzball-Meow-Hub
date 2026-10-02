@@ -3,6 +3,7 @@ import { computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import SiteNav from '@/components/SiteNav.vue'
+import TabBar from '@/components/TabBar.vue'
 
 // 根组件：负责布局与「冷启动恢复登录态」，具体页面由 router-view 承载
 const userStore = useUserStore()
@@ -24,6 +25,8 @@ onMounted(() => {
       <component :is="Component" />
     </transition>
   </router-view>
+  <!-- 移动端底部主导航；显示/隐藏哪些路由由 TabBar 自己判断（见组件内 HIDDEN_ROUTES） -->
+  <TabBar />
 </template>
 
 <style>

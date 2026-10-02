@@ -412,9 +412,27 @@ function drawContent(
   }
 }
 
+/**
+ * 落款日期：2026-10-02
+ *
+ * 走 Intl 而不是 `${y}-${pad(m)}-${pad(d)}` 手拼（web-design-guidelines 的
+ * "Dates/times: use Intl.DateTimeFormat"）：手拼在别的 locale/时区下没有
+ * 任何 locale 语义，补零和排序全靠约定。这里用 formatToParts 拿到各字段，
+ * 拼装时固定用 '-'，视觉与旧版逐像素一致。
+ */
+function formatStamp(d: Date): string {
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(d)
+  const get = (type: 'year' | 'month' | 'day') =>
+    parts.find((p) => p.type === type)?.value ?? ''
+  return `${get('year')}-${get('month')}-${get('day')}`
+}
+
 function drawFooter(ctx: CanvasRenderingContext2D, page: TextPage, p: TextCardPalette) {
-  const now = new Date()
-  const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+  const date = formatStamp(new Date())
   const pageLabel =
     page.totalPages <= 1 ? '毛球喵社 · 文字卡片' : `第 ${page.pageIndex + 1} / ${page.totalPages} 页 · 文字卡片`
 
@@ -589,8 +607,7 @@ export async function brandCoverBlob(opts: {
   ctx.textBaseline = 'alphabetic'
 
   /* ---- 7. 落款 ---- */
-  const now = new Date()
-  const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+  const date = formatStamp(new Date())
   ctx.fillStyle = variant === 2 ? p.amberInk : p.text3
   ctx.font = `26px ${COVER_FONT}`
   ctx.textAlign = 'left'

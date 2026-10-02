@@ -86,12 +86,12 @@ onMounted(load)
     </header>
 
     <p v-if="loading" class="hint" data-test="user-loading">加载中…</p>
-    <p v-else-if="errorMsg" class="hint err" data-test="user-error">{{ errorMsg }}</p>
+    <p v-else-if="errorMsg" class="hint err" role="alert" data-test="user-error">{{ errorMsg }}</p>
 
     <template v-else-if="author">
       <section class="card xk-card">
         <div class="who">
-          <img class="avatar" src="/mascot/m02.webp" alt="" />
+          <img class="avatar" src="/mascot/m02.webp" alt="" width="62" height="62" />
           <div class="names">
             <h1 class="nickname" data-test="user-nickname">{{ author.nickname }}</h1>
             <p class="username" data-test="user-username">@{{ author.username }}</p>
@@ -132,7 +132,7 @@ onMounted(load)
         <p v-if="!notes.length" class="hint" data-test="user-notes-empty">还没有发过笔记</p>
         <ul v-else class="items" data-test="user-notes">
           <li v-for="item in notes" :key="item.id" class="item" data-test="user-note">
-            <button class="main" type="button" @click="router.push(`/note/${item.id}`)">
+            <RouterLink class="main" :to="`/note/${item.id}`">
               <img class="cover" :src="item.cover ?? '/mascot/m02.webp'" alt="" loading="lazy" />
               <div class="body">
                 <p class="title">{{ item.title }}</p>
@@ -140,7 +140,7 @@ onMounted(load)
                   ♥ {{ item.likeCount }} · ★ {{ item.collectCount }} · 评论 {{ item.commentCount }}
                 </p>
               </div>
-            </button>
+            </RouterLink>
           </li>
         </ul>
       </section>

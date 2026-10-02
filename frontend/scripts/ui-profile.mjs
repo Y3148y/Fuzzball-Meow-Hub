@@ -11,7 +11,7 @@
  *
  * 跑法：npm run test:ui
  */
-import { createSession, preflight } from './ui-cdp.mjs'
+import { createSession, loginDemo, preflight } from './ui-cdp.mjs'
 
 const BASE = 'http://localhost:5180'
 const API = 'http://localhost:8088'
@@ -44,11 +44,7 @@ try {
   s.check('未登录访问 #/profile 被守卫重定向到 #/login', true, await s.evaluate('location.hash'))
 
   // ---- 2. 登录
-  await s.waitFor("document.querySelector('.demo')", '演示账号按钮')
-  await s.evaluate("document.querySelector('.demo').click()")
-  await sleep(250)
-  await s.evaluate("document.querySelector('.xk-btn').click()")
-  await s.waitFor("location.hash === '#/'", '登录成功', 20000)
+    await loginDemo(s, BASE)
 
   const token = await s.evaluate("localStorage.getItem('xk_token')")
   const orig = await fetchMe(token)

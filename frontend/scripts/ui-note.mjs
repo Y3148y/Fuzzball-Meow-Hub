@@ -16,7 +16,7 @@ import { writeFileSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import zlib from 'node:zlib'
-import { createSession, preflight } from './ui-cdp.mjs'
+import { createSession, loginDemo, preflight } from './ui-cdp.mjs'
 
 const BASE = 'http://localhost:5180'
 const API = 'http://localhost:8088'
@@ -101,11 +101,7 @@ try {
   s.check('未登录访问 #/publish 被守卫重定向到 #/login', true, await s.evaluate('location.hash'))
 
   // ---- 2. 登录
-  await s.waitFor("document.querySelector('.demo')", '演示账号按钮')
-  await s.evaluate("document.querySelector('.demo').click()")
-  await sleep(250)
-  await s.evaluate("document.querySelector('.xk-btn').click()")
-  await s.waitFor("location.hash === '#/'", '登录成功', 20000)
+    await loginDemo(s, BASE)
   s.check('演示账号登录成功', true)
 
   // ---- 3. 首页有发布入口
@@ -196,13 +192,138 @@ try {
     detailContent,
   )
 
+  // ---- 8.4b 时间走 Intl 而不是手搓字符串（web-design-guidelines 明列这条）
+  const timeText = await s.evaluate(
+    "(document.querySelector('.who .time')?.textContent || '').trim()",
+  )
+  s.check(
+    '笔记发布时间由 Intl 格式化（YYYY-MM-DD HH:mm）',
+    /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(timeText),
+    `实际="${timeText}"`,
+  )
+
+  // ---- 8.4c 评论框要有可访问名（表单控件只有 placeholder 不算，见 a11y 规则）
+  const commentAria = await s.evaluate(
+    "document.querySelector('[data-test=comment-input]').getAttribute('aria-label') || ''",
+  )
+  s.check('评论输入框有 aria-label（读屏能念出这是什么框）',
+    commentAria === '发表评论', `aria-label="${commentAria}"`)
+
+  // ---- 8.7 截图反馈：点赞/收藏/评论降权成吸底操作栏（小红书式）
+  const barMobile = await s.evaluate(`(() => {
+    const bar = document.querySelector('[data-test=action-bar]')
+    if (!bar) return JSON.stringify({ miss: true })
+    const r = bar.getBoundingClientRect()
+    const cs = getComputedStyle(bar)
+    const keys = [...bar.querySelectorAll('.kbtn')]
+    return JSON.stringify({
+      pos: cs.position, bottom: Math.round(r.bottom), vh: innerHeight,
+      border: parseFloat(cs.borderTopWidth) || 0,
+      hasInput: !!bar.querySelector('[data-test=comment-input]'),
+      n: keys.length,
+      keys: keys.map(k => {
+        const ks = getComputedStyle(k)
+        const b = k.getBoundingClientRect()
+        return {
+          bw: parseFloat(ks.borderTopWidth) + parseFloat(ks.borderBottomWidth)
+            + parseFloat(ks.borderLeftWidth) + parseFloat(ks.borderRightWidth),
+          bg: ks.backgroundColor, txt: k.textContent.trim(),
+          w: Math.round(b.width), h: Math.round(b.height),
+        }
+      }),
+      pagePad: parseFloat(getComputedStyle(document.querySelector('main.page')).paddingBottom),
+    })
+  })()`)
+  const bm = JSON.parse(barMobile)
+  s.check('移动端操作栏吸底且贴住视口底',
+    bm.pos === 'fixed' && Math.abs(bm.bottom - bm.vh) <= 2,
+    `pos=${bm.pos} bottom=${bm.bottom} vh=${bm.vh}`)
+  s.check('操作栏内含评论输入框 + 3 个键', bm.hasInput && bm.n === 3, `input=${bm.hasInput} keys=${bm.n}`)
+  s.check('三键无边框、无底色、可见文字仅数字',
+    bm.keys.every(k => k.bw === 0 && (k.bg === 'rgba(0, 0, 0, 0)' || k.bg === 'transparent')
+      && /^\d+$/.test(k.txt)), JSON.stringify(bm.keys))
+  s.check('三键热区 ≥40×40（P13）',
+    bm.keys.every(k => k.w >= 40 && k.h >= 40), JSON.stringify(bm.keys.map(k => `${k.w}x${k.h}`)))
+  s.check('吸底栏有顶部发丝线，且页面留出等高空白',
+    bm.border > 0 && bm.pagePad >= 100, `border=${bm.border} pagePad=${bm.pagePad}px`)
+  // 真实场景：滚到底，评论区尾部不能被吸底栏压住（等高留白是否真的够用）
+  const clearBottom = await s.evaluate(`(() => {
+    window.scrollTo(0, document.documentElement.scrollHeight)
+    const bar = document.querySelector('[data-test=action-bar]').getBoundingClientRect()
+    const sec = document.querySelector('[data-test=comment-section]').getBoundingClientRect()
+    return JSON.stringify({ secBottom: Math.round(sec.bottom), barTop: Math.round(bar.top) })
+  })()`)
+  const cb = JSON.parse(clearBottom)
+  s.check('滚到底时评论区尾部不被吸底栏遮住', cb.secBottom <= cb.barTop, JSON.stringify(cb))
+
+  // ---- 8.7b 两行吸底区（用户反馈"输入框只剩 170px、不好操作"的修复）
+  // 旧版一行里挤「输入 + 三键」：430 视口下 pill 只剩 242px，减去给
+  // 发表按钮让位的 56px 约等于 10 个汉字。现在行1 通栏、行2 动作行。
+  const twoRow = await s.evaluate(`(() => {
+    const bar = document.querySelector('[data-test=action-bar]')
+    const input = bar.querySelector('[data-test=comment-input]').getBoundingClientRect()
+    const send = bar.querySelector('[data-test=comment-submit]').getBoundingClientRect()
+    const keys = bar.querySelector('.bar-keys').getBoundingClientRect()
+    const br = bar.getBoundingClientRect()
+    const cs = getComputedStyle(bar)
+    const padL = parseFloat(cs.paddingLeft)
+    const padR = parseFloat(cs.paddingRight)
+    return JSON.stringify({
+      flexDir: cs.flexDirection,
+      inputW: Math.round(input.width),
+      // 行1 通栏：输入框左右都顶到栏的内容边缘
+      inputLeftGap: Math.round(input.left - (br.left + padL)),
+      inputRightGap: Math.round((br.right - padR) - input.right),
+      sendW: Math.round(send.width), sendH: Math.round(send.height),
+      sendLeftGap: Math.round(send.left - (br.left + padL)),
+      keysBelowInput: Math.round(keys.top - input.bottom),
+      keysRightGap: Math.round((br.right - padR) - keys.right),
+      // 栏高由 ResizeObserver 实测写进 --bar-h，.page 的 padding-bottom 靠它
+      barH: Math.round(br.height),
+      barVar: parseFloat(getComputedStyle(document.querySelector('main.page')).getPropertyValue('--bar-h')) || 0,
+      pagePad: Math.round(parseFloat(getComputedStyle(document.querySelector('main.page')).paddingBottom)),
+      sendText: bar.querySelector('[data-test=comment-submit]').textContent.trim(),
+    })
+  })()`)
+  const tr = JSON.parse(twoRow)
+  s.check('吸底栏是两行（行1 输入通栏 + 行2 动作行）',
+    tr.flexDir === 'column', `flex-direction=${tr.flexDir}`)
+  s.check('行1 输入框通栏（430 视口 ≥380px，旧版只有 ~170px）',
+    tr.inputW >= 380 && Math.abs(tr.inputLeftGap) <= 2 && Math.abs(tr.inputRightGap) <= 2,
+    `w=${tr.inputW}px Δleft=${tr.inputLeftGap} Δright=${tr.inputRightGap}`)
+  s.check('行2 发表钮 44×44 且贴栏左缘',
+    tr.sendW >= 44 && tr.sendH >= 44 && Math.abs(tr.sendLeftGap) <= 2,
+    `${tr.sendW}x${tr.sendH} Δleft=${tr.sendLeftGap}`)
+  s.check('行2 三键在输入框下方一行、右缘与输入框对齐',
+    tr.keysBelowInput >= 0 && tr.keysBelowInput < 24 && Math.abs(tr.keysRightGap) <= 2,
+    `below=${tr.keysBelowInput}px Δright=${tr.keysRightGap}px`)
+  s.check('发表钮是纯图标钮（有 aria-label，不靠「发表」两个字占位）',
+    tr.sendText === '' &&
+      (await s.evaluate("!!document.querySelector('[data-test=comment-submit]').getAttribute('aria-label')")),
+    `text="${tr.sendText}"`)
+  s.check('--bar-h 与吸底栏实测高度一致，.page 留白跟着它（输入框长高也不遮挡）',
+    Math.abs(tr.barH - tr.barVar) <= 2 && Math.abs(tr.pagePad - tr.barH) <= 2,
+    `barH=${tr.barH} --bar-h=${tr.barVar} pagePad=${tr.pagePad}`)
+
   // ---- 8.5 桌面端两栏：1280 宽下图片独占左栏、标题在右栏；切回手机恢复单列
   await s.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
   await sleep(500)
-  s.check(
-    '桌面视口下详情主体切成两栏 grid',
-    (await s.evaluate("getComputedStyle(document.querySelector('.detail-grid')).display")) === 'grid',
-  )
+  // 网格容器从 .detail-grid 升格成 .card 本身 —— 只有这样评论区才能作为
+  // 同一个网格的直接子元素进右栏（.detail-grid 全程 display:contents）
+  const gridHost = await s.evaluate(`(() => {
+    const card = document.querySelector('[data-test=note-detail]')
+    const sec = document.querySelector('[data-test=comment-section]')
+    return JSON.stringify({
+      cardDisplay: getComputedStyle(card).display,
+      cols: getComputedStyle(card).gridTemplateColumns,
+      dg: getComputedStyle(document.querySelector('.detail-grid')).display,
+      secCol: getComputedStyle(sec).gridColumnStart,
+    })
+  })()`)
+  const gh = JSON.parse(gridHost)
+  s.check('桌面视口下详情卡片是两栏 grid（评论区与正文同容器）',
+    gh.cardDisplay === 'grid' && gh.dg === 'contents' && gh.secCol === '2',
+    JSON.stringify(gh))
   const twoCol = await s.evaluate(`(() => {
     const img = document.querySelector('[data-test=note-detail-images]').getBoundingClientRect()
     const title = document.querySelector('[data-test=note-detail-title]').getBoundingClientRect()
@@ -217,6 +338,60 @@ try {
   })()`)
   s.check('桌面右栏标题与作者紧邻（图片列不再撑出大空白）',
     stackGap >= -8 && stackGap < 40, `gap=${stackGap}px`)
+  // ---- 8.6b 桌面：吸底壳撤掉、操作栏落在评论区下面，且两者都在**右栏**
+  // （旧版是整卡通栏 1120px，而上方正文栏只有 648px —— 用户反馈"位置不对"）
+  const deskBar = await s.evaluate(`(() => {
+    const bar = document.querySelector('[data-test=action-bar]')
+    const c = document.querySelector('[data-test=note-detail-content]')
+    const sec = document.querySelector('[data-test=comment-section]')
+    const t = document.querySelector('[data-test=note-detail-title]')
+    if (!bar || !c || !sec || !t) return JSON.stringify({ miss: true })
+    const br = bar.getBoundingClientRect(), sr = sec.getBoundingClientRect()
+    const tr = t.getBoundingClientRect(), cr = c.getBoundingClientRect()
+    const keys = bar.querySelector('.bar-keys').getBoundingClientRect()
+    const input = bar.querySelector('[data-test=comment-input]').getBoundingClientRect()
+    const send = bar.querySelector('[data-test=comment-submit]').getBoundingClientRect()
+    const cs = getComputedStyle(bar)
+    return JSON.stringify({
+      pos: cs.position,
+      shadow: cs.boxShadow,
+      bg: cs.backgroundColor,
+      leftAlign: Math.round(br.left - sr.left),
+      widthMatch: Math.abs(br.width - sr.width) <= 2,
+      belowComments: Math.round(br.top - sr.bottom),
+      isLast: bar.parentElement.lastElementChild === bar,
+      // 评论区与正文同在右栏：左缘对齐，且都不是整卡宽
+      secLeftAlign: Math.round(sr.left - cr.left),
+      secNarrow: sr.width < 700,
+      barNarrow: br.width < 700,
+      secWidth: Math.round(sr.width),
+      // 两行结构在桌面同样成立
+      flexDir: cs.flexDirection,
+      inputFull: Math.abs(input.width - br.width) <= 2,
+      keysBelowInput: Math.round(keys.top - input.bottom),
+      sendW: Math.round(send.width), sendH: Math.round(send.height),
+      keysRightOfSend: Math.round(keys.left - send.right),
+      contentFont: parseFloat(getComputedStyle(c).fontSize),
+      titleFont: parseFloat(getComputedStyle(t).fontSize),
+    })
+  })()`)
+  const db = JSON.parse(deskBar)
+  s.check('桌面操作栏静置流内（撤掉吸底壳：无底色无浮层阴影）',
+    db.pos === 'static' && db.bg === 'rgba(0, 0, 0, 0)' && db.shadow === 'none', JSON.stringify(db))
+  s.check('桌面操作栏在评论区之下、且是卡片最后一个元素',
+    db.belowComments >= -4 && db.isLast === true, `belowComments=${db.belowComments} isLast=${db.isLast}`)
+  s.check('桌面评论区与操作栏都在右栏（不再是 1120px 整卡通栏）',
+    db.secNarrow === true && db.barNarrow === true && Math.abs(db.secLeftAlign) <= 2,
+    `secW=${db.secWidth} barNarrow=${db.barNarrow} Δleft=${db.secLeftAlign}`)
+  s.check('桌面操作栏与评论区同宽、左缘对齐（评论区的页脚）',
+    Math.abs(db.leftAlign) <= 2 && db.widthMatch === true,
+    `Δleft=${db.leftAlign}px sameWidth=${db.widthMatch}`)
+  s.check('桌面操作栏也是两行：行1 输入通栏，行2 发表 + 三键',
+    db.flexDir === 'column' && db.inputFull === true && db.keysBelowInput >= 0
+      && db.keysBelowInput < 24 && db.sendW >= 44 && db.sendH >= 44 && db.keysRightOfSend > 0,
+    `dir=${db.flexDir} inputFull=${db.inputFull} below=${db.keysBelowInput} send=${db.sendW}x${db.sendH} keys-send=${db.keysRightOfSend}`)
+  s.check('桌面正文 17px / 标题 24px（注意力回到正文）',
+    db.contentFont >= 17 && db.titleFont >= 24, `content=${db.contentFont} title=${db.titleFont}`)
   const counter0 = await s.evaluate(
     "document.querySelector('[data-test=img-counter]')?.textContent?.trim()",
   )
@@ -224,15 +399,28 @@ try {
   const track0 = await s.evaluate(
     "getComputedStyle(document.querySelector('.van-swipe__track')).transform",
   )
-  await s.evaluate("document.querySelector('[data-test=img-next]').click()")
+await s.evaluate("document.querySelector('[data-test=img-next]').click()")
   await s.waitFor(
     "document.querySelector('[data-test=img-counter]')?.textContent?.trim() === '2/2'",
-    '轮播切到第 2 张', 5000,
+    '计数器变 2/2', 5000,
   )
   s.check('点「下一张」切到第 2 张', true)
-  const track1 = await s.evaluate(
-    "getComputedStyle(document.querySelector('.van-swipe__track')).transform",
-  )
+  /*
+   * 轨道位移靠 rAF 驱动的 transition 落位。刚点完就量，机器忙（内存吃紧时
+   * 帧调度会延后）可能量到还没起步的 matrix(1,0,0,1,0,0)，表现为偶发假红。
+   * 所以这里轮询等它真的动起来，而不是同拍短读。
+   */
+  const track1 = await s.evaluate(`(async () => {
+    const el = document.querySelector('.van-swipe__track')
+    const read = () => getComputedStyle(el).transform
+    const before = ${JSON.stringify('__TRACK0__')}
+    for (let i = 0; i < 40; i++) {
+      const t = read()
+      if (t && t !== before) return t
+      await new Promise(r => setTimeout(r, 100))
+    }
+    return read()
+  })()`.replace('__TRACK0__', track0))
   s.check('轮播轨道确实位移（换图真实发生）', track0 !== track1, `${track0} → ${track1}`)
   await s.send('Emulation.clearDeviceMetricsOverride')
   await sleep(300)
@@ -257,6 +445,16 @@ try {
   const noteId = (await s.evaluate('location.hash')).split('/').pop()
 
   // ---- 11. 编辑：进编辑页、回填、改正文、保存回详情
+  // 「编辑」是导航，必须是真链接（<a> 带 href），不是 <button>：
+  // 导航归 a、动作归 button 是语义 HTML 的基本分工。
+  const editTag = await s.evaluate(`(() => {
+    const el = document.querySelector('[data-test=note-edit-btn]')
+    return JSON.stringify({ tag: el.tagName, href: el.getAttribute('href') })
+  })()`)
+  const et = JSON.parse(editTag)
+  s.check('作者「编辑」是真链接（RouterLink，带 href），不是 button',
+    et.tag === 'A' && typeof et.href === 'string' && et.href.includes('/edit/'),
+    editTag)
   await s.evaluate("document.querySelector('[data-test=note-edit-btn]').click()")
   await s.waitFor(`location.hash === '#/edit/' + ${JSON.stringify(noteId)}`, '跳到编辑页', 20000)
   s.check('点「编辑」跳到 #/edit/{id}', true, await s.evaluate('location.hash'))
@@ -413,8 +611,129 @@ try {
   )
   s.check('详情页正好一张自动生成的文字卡片且解码成功', true)
 
-  // ---- 15. 清理：删掉这条纯文字笔记，保持本组自清（demo 账号不留新常驻数据）
+  // 记下纯文字笔记的 id：第 15 节要跳去发长正文，最后再回来删它
   const textNoteId = (await s.evaluate('location.hash')).split('/').pop()
+
+  // ---- 15. 长正文折叠 + 展开全文（用户反馈"正文一长就往下延长"）
+  // 先在当前这条短正文（30 字）详情页上钉一句：不该出现展开按钮
+  s.check(
+    '短正文不出现「展开全文」按钮',
+    (await s.evaluate("!document.querySelector('[data-test=note-expand]')")) === true,
+  )
+
+  // 用 goto 而不是点 ‹ 返回：这一串是 s.goto 直接跳进来的，
+  // router.back() 的历史栈里未必有首页，等它回来会超时
+  await s.goto(`${BASE}/#/`)
+  await s.waitFor("location.hash === '#/'", '回首页', 20000)
+  await s.waitFor("document.querySelector('[data-test=go-publish]')", '首页准备按钮', 10000)
+  await s.evaluate("document.querySelector('[data-test=go-publish]').click()")
+  await s.waitFor("location.hash === '#/publish'", '跳发布页', 20000)
+  await s.waitFor("document.querySelector('[data-test=note-title]')", '标题输入框')
+  // 12 段 × 约 30 字 ≈ 360 字：手机 8 行（约 176 字）必然截断，桌面 12 行也截断
+  const longText = Array.from({ length: 12 }, (_, i) => `第${i + 1}段` + '长正文折叠测试内容。'.repeat(2)).join('\n')
+  await s.evaluate(`
+    (() => {
+      const set = (el, v) => {
+        const proto = el instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+        Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, v)
+        el.dispatchEvent(new Event('input', { bubbles: true }))
+      }
+      set(document.querySelector('[data-test=note-title]'), '长正文折叠')
+      set(document.querySelector('[data-test=note-content]'), ${JSON.stringify(longText)})
+    })()
+  `)
+  await sleep(300)
+  await setFiles('[data-test=note-file]', [pngA])
+  await s.waitFor("document.querySelectorAll('[data-test=note-previews] .cell').length === 1", '预览出现', 20000)
+  await s.evaluate("document.querySelector('.submit').click()")
+  await s.waitFor("location.hash.startsWith('#/note/')", '长正文发布后跳详情', 25000)
+  await s.waitFor("!!document.querySelector('[data-test=note-detail-content]')", '正文渲染', 20000)
+
+  const clampInfo = await s.evaluate(`(() => {
+    const c = document.querySelector('[data-test=note-detail-content]')
+    const cs = getComputedStyle(c)
+    const r = c.getBoundingClientRect()
+    const btn = document.querySelector('[data-test=note-expand]')
+    return JSON.stringify({
+      // 刻意不看 display：Chrome 会把 display:-webkit-box 归一成 flow-root
+      // （实测就是 flow-root），断 display 等于断浏览器实现细节
+      clamp: cs.webkitLineClamp,
+      lines: Math.round(r.height / parseFloat(cs.lineHeight)),
+      btn: !!btn,
+      label: btn ? btn.textContent.trim() : '',
+      aria: btn ? btn.getAttribute('aria-expanded') : null,
+      h: Math.round(r.height),
+    })
+  })()`)
+  const ci = JSON.parse(clampInfo)
+  s.check(
+    '长正文折叠成 8 行（line-clamp）并出现「展开全文」',
+    ci.clamp === '8' && ci.lines <= 8
+      && ci.btn === true && ci.label === '展开全文' && ci.aria === 'false',
+    clampInfo,
+  )
+  await s.evaluate("document.querySelector('[data-test=note-expand]').click()")
+  await sleep(300)
+  const expInfo = await s.evaluate(`(() => {
+    const c = document.querySelector('[data-test=note-detail-content]')
+    const cs = getComputedStyle(c)
+    const r = c.getBoundingClientRect()
+    const btn = document.querySelector('[data-test=note-expand]')
+    return JSON.stringify({
+      clamp: cs.webkitLineClamp,
+      lines: Math.round(r.height / parseFloat(cs.lineHeight)),
+      h: Math.round(r.height),
+      label: btn ? btn.textContent.trim() : '',
+      aria: btn ? btn.getAttribute('aria-expanded') : null,
+    })
+  })()`)
+  const ex = JSON.parse(expInfo)
+  s.check(
+    '点「展开全文」后正文全展开（行数超折叠阈值）、按钮变「收起」',
+    ex.clamp === 'none' && ex.lines > 8 && ex.h > ci.h && ex.label === '收起' && ex.aria === 'true',
+    `${expInfo} collapsed=${clampInfo}`,
+  )
+  await s.evaluate("document.querySelector('[data-test=note-expand]').click()")
+  await sleep(300)
+  const backInfo = await s.evaluate(`(() => {
+    const c = document.querySelector('[data-test=note-detail-content]')
+    return JSON.stringify({
+      clamp: getComputedStyle(c).webkitLineClamp,
+      // 关键回归：展开后再量一次，展开状态下量会得到"没溢出"，
+      // 按钮就会自己消失（measuring 强制折叠态量就是为了防这个）
+      btn: !!document.querySelector('[data-test=note-expand]'),
+    })
+  })()`)
+  const bk = JSON.parse(backInfo)
+  s.check(
+    '点「收起」回到折叠态，且按钮仍在（不能自己消失）',
+    bk.clamp === '8' && bk.btn === true,
+    backInfo,
+  )
+  // 桌面阈值不同：12 行
+  await s.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
+  await sleep(400)
+  const deskClamp = await s.evaluate(
+    "getComputedStyle(document.querySelector('[data-test=note-detail-content]')).webkitLineClamp",
+  )
+  s.check('桌面折叠阈值放宽到 12 行', deskClamp === '12', `clamp=${deskClamp}`)
+  await s.send('Emulation.clearDeviceMetricsOverride')
+  await sleep(300)
+
+  // ---- 16. 清理：删掉长正文笔记与纯文字笔记，本组自清
+  const longNoteId = (await s.evaluate('location.hash')).split('/').pop()
+  await s.evaluate("document.querySelector('[data-test=note-delete-btn]').click()")
+  await s.waitFor("document.querySelector('.van-dialog')", '删除确认弹窗', 10000)
+  await s.evaluate("document.querySelector('.van-dialog__confirm').click()")
+  await s.waitFor("location.hash === '#/'", '删除后回首页', 20000)
+  const longGone = await (await fetch(`${API}/api/note/${longNoteId}`, {
+    headers: { Authorization: `Bearer ${await s.evaluate("localStorage.getItem('xk_token')")}` },
+  })).json()
+  s.check('长正文笔记删除后详情返回 20001', longGone.code === 20001, `code=${longGone.code}`)
+
+  await s.goto(`${BASE}/#/note/${textNoteId}`)
+  await s.waitFor("!!document.querySelector('[data-test=note-detail-content]')", '纯文字笔记详情', 20000)
   await s.evaluate("document.querySelector('[data-test=note-delete-btn]').click()")
   await s.waitFor("document.querySelector('.van-dialog')", '删除确认弹窗', 10000)
   await s.evaluate("document.querySelector('.van-dialog__confirm').click()")

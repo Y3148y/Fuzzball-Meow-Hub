@@ -10,9 +10,16 @@ const { isDark, toggle } = useTheme()
     type="button"
     :aria-label="isDark ? '切换到浅色模式' : '切换到深色模式'"
     :title="isDark ? '切换到浅色模式' : '切换到深色模式'"
+    data-test="theme-toggle"
     @click="toggle"
   >
-    <van-icon :name="isDark ? 'sun-o' : 'moon-o'" />
+    <!--
+      图标名必须来自 Vant 4.10 真实存在的 259 个图标。原先写的
+      sun-o / moon-o **不存在**：van-icon 找不到对应 class 就只渲染一个
+      空的 <i>，按钮变成一个空心圆（截图里一眼就能看见）。
+      现在用 bulb-o（深色→点它回浅色）/ circle（浅色→点它进深色）。
+    -->
+    <van-icon :name="isDark ? 'bulb-o' : 'circle'" />
   </button>
 </template>
 

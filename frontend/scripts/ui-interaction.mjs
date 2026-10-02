@@ -20,7 +20,7 @@
  *
  * 跑法：npm run test:ui
  */
-import { createSession, preflight } from './ui-cdp.mjs'
+import { createSession, loginDemo, preflight } from './ui-cdp.mjs'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -140,13 +140,8 @@ const lengthOf = (test) => s.evaluate(`document.querySelectorAll('[data-test=${t
 try {
   /* ============ 第一段：演示账号，点赞 / 收藏 ============ */
 
-  await s.goto(`${BASE}/#/login`)
-  await s.waitFor("document.querySelector('.demo')", '演示账号按钮')
-  s.check('登录页展示演示账号入口', true)
-  await s.evaluate("document.querySelector('.demo').click()")
-  await sleep(250)
-  await s.evaluate("document.querySelector('.xk-btn').click()")
-  await s.waitFor("location.hash === '#/'", '演示账号登录', 20000)
+
+  await loginDemo(s, BASE)
   s.check(`演示账号 ${DEMO_USERNAME} 登录成功`, true)
 
   // 发一篇笔记当素材。选自己的笔记是因为没有别人的可用，
@@ -274,7 +269,14 @@ try {
   s.check('回复内容回显正确', (await text('comment-reply'))?.includes('同意你的看法。') === true)
   s.check('回复里标注了被回复者昵称', (await s.evaluate("document.querySelector('[data-test=comment-reply] .c-nick')?.textContent?.includes('@')")) === true)
   s.check('评论总数（一级）不会被回复撑大，仍是 1', (await text('comment-total')) === '1')
-  s.check('详情页评论计数变成 2（1 条评论 + 1 条回复）', (await num('note-comment-count')) === 2)
+  // 跟上面「评论计数同步为 1」同一个坑：列表渲染 ≠ 详情计数跟上，先等落定再断言
+  await s.waitFor(
+    "document.querySelector('[data-test=note-comment-count]').textContent.trim() === '2'",
+    '计数落定为 2',
+    20000,
+  )
+  s.check('详情页评论计数变成 2（1 条评论 + 1 条回复）', (await num('note-comment-count')) === 2,
+    `实际=${await num('note-comment-count')}`)
   s.check('发完自动退出回复态', (await exists('comment-replying')) === false)
 
   // 不足 3 条子回复时不该出现「共 N 条回复」

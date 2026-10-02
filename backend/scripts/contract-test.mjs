@@ -549,11 +549,13 @@ async function main() {
     codeIs('纯空白评论被拦（100001）', json, 100001)
   }
   {
+    // 上限 1000（对齐小红书真机，原 500）：必须跟着 schema.sql 的
+    // comment.content 列宽和 CommentCreateDTO 的 @Size 一起改
     const { json } = await post('/api/comment', {
       token: actorAuth,
-      body: { noteId, content: '字'.repeat(501) },
+      body: { noteId, content: '字'.repeat(1001) },
     })
-    codeIs('评论超 500 字被拦（100001）', json, 100001)
+    codeIs('评论超 1000 字被拦（100001）', json, 100001)
   }
   {
     const { json } = await post('/api/comment', {

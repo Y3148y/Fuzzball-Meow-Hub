@@ -87,20 +87,20 @@ onMounted(load)
     </header>
 
     <p v-if="loading" class="hint" data-test="follow-loading">加载中…</p>
-    <p v-else-if="errorMsg" class="hint err" data-test="follow-error">{{ errorMsg }}</p>
+    <p v-else-if="errorMsg" class="hint err" role="alert" data-test="follow-error">{{ errorMsg }}</p>
     <p v-else-if="!rows.length" class="hint" data-test="follow-empty">
       {{ isFans ? '还没有粉丝' : '还没有关注任何人' }}
     </p>
 
     <ul v-else class="list" data-test="follow-list">
       <li v-for="row in rows" :key="row.id" class="row" data-test="follow-row">
-        <button class="user" type="button" @click="router.push(`/user/${row.id}`)">
-          <img class="avatar" src="/mascot/m02.webp" alt="" />
+        <RouterLink class="user" :to="`/user/${row.id}`">
+          <img class="avatar" src="/mascot/m02.webp" alt="" width="40" height="40" />
           <span class="names">
             <span class="nick" data-test="follow-nick">{{ row.nickname }}</span>
             <span class="uname">@{{ row.username }}</span>
           </span>
-        </button>
+        </RouterLink>
         <button
           v-if="!isSelf(row.id)"
           class="follow"

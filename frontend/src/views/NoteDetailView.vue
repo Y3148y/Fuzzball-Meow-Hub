@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { showConfirmDialog, showSuccessToast } from 'vant'
 import { changeNoteStatus, collectNote, deleteNote, getNoteDetail, likeNote, uncollectNote, unlikeNote } from '@/api/note'
@@ -8,7 +8,9 @@ import { createComment, deleteComment, likeComment, listComments, replyComment, 
 import { BizError } from '@/api/request'
 import { ErrorCode } from '@/api/types'
 import type { CommentVO, NoteVO, PageVO } from '@/api/types'
+import { useKeyboardInset } from '@/composables/useKeyboardInset'
 import { useUserStore } from '@/stores/user'
+import { formatDateTime } from '@/utils/datetime'
 
 const route = useRoute()
 const router = useRouter()
@@ -204,9 +206,15 @@ const replyTarget = ref<CommentVO | null>(null)
 const deletingId = ref('')
 
 /** 与后端 CommentCreateDTO 的 @Size 对齐，超了直接不让发，省得白跑一趟 */
-const COMMENT_MAX = 500
+const COMMENT_MAX = 1000
 const draftLen = computed(() => draft.value.length)
 const draftOver = computed(() => draftLen.value > COMMENT_MAX)
+/**
+ * 字数计数器过了 80% 才冒出来。
+ * 一上来就挂个「0/1000」纯属噪音（用户反馈"评论区设置字数上限"体验差），
+ * 真要撞顶了才需要提醒，所以用渐进披露而不是常驻。
+ */
+const showLen = computed(() => draftLen.value > COMMENT_MAX * 0.8)
 const canSubmit = computed(
   () => !submittingComment.value && draft.value.trim().length > 0 && !draftOver.value,
 )
@@ -408,14 +416,97 @@ async function load() {
   }
 }
 
+/*
+ * 吸底栏与键盘
+ * ---------------------------------------------------------------------------
+ * pageEl/barEl 两个 ref 只为把实测值写进 CSS 变量（--kb-inset / --bar-h），
+ * 吸底栏和 .page 的 padding-bottom 必须用同一个值，两处各写一遍必然漂移。
+ */
+const pageEl = ref<HTMLElement | null>(null)
+const barEl = ref<HTMLElement | null>(null)
+useKeyboardInset(pageEl)
+
+/*
+ * 长正文折叠（用户拍板：折叠 + 展开全文）
+ *
+ * 不用固定高度的滚动框：页面里再套一层滚动条在 Web 上是坑（滚动链、
+ * Ctrl+F 搜不到、手机上像 App 套 App）。折叠用 -webkit-line-clamp，
+ * 阈值移动端 8 行 / 桌面 12 行（桌面正文限宽 40em，12 行 ≈ 480 字）。
+ *
+ * 溢出检测：折叠态下 scrollHeight 是全文高、clientHeight 是截断后高，
+ * 差值 > 4px 就是被截掉了。**测量必须在折叠态做** —— 展开后两者相等，
+ * 直接量会得到"没溢出"，按钮一展开就消失。所以用 measuring 临时强制
+ * 折叠一次，量完再恢复。
+ */
+const contentEl = ref<HTMLElement | null>(null)
+const contentExpanded = ref(false)
+const contentMeasuring = ref(false)
+const contentOverflows = ref(false)
+const contentClamped = computed(() => !contentExpanded.value || contentMeasuring.value)
+
+async function measureContent() {
+  const el = contentEl.value
+  if (!el) return
+  if (!contentExpanded.value) {
+    contentOverflows.value = el.scrollHeight - el.clientHeight > 4
+    return
+  }
+  contentMeasuring.value = true
+  await nextTick()
+  contentOverflows.value = el.scrollHeight - el.clientHeight > 4
+  contentMeasuring.value = false
+}
+
+function toggleContent() {
+  contentExpanded.value = !contentExpanded.value
+  void measureContent()
+}
+
 onMounted(async () => {
   await load()
   await nextTick()
+  startObserving()
+})
+
+/*
+ * 吸底栏实测高度 → --bar-h，.page 用它补尾部空白。
+ * 不能写死：输入框是多行自增的（field-sizing: content），栏会从 112px
+ * 长到 188px，写死就会在打字时盖住最后一条评论（用户反馈的"遮挡"）。
+ * 桌面 .actionbar 是 static，这条写了也无害（那条媒体查询不读 --bar-h）。
+ */
+let barObserver: ResizeObserver | null = null
+let contentObserver: ResizeObserver | null = null
+
+function startObserving() {
+  if (barEl.value) {
+    const el = barEl.value
+    const write = () => pageEl.value?.style.setProperty('--bar-h', `${el.offsetHeight}px`)
+    write()
+    barObserver = new ResizeObserver(write)
+    barObserver.observe(el)
+  }
+  if (contentEl.value) {
+    // 宽度一变（旋转/改窗口），折叠阈值下的行数跟着变，重算要不要给展开按钮
+    contentObserver = new ResizeObserver(() => void measureContent())
+    contentObserver.observe(contentEl.value)
+  }
+  window.addEventListener('resize', onWinResize)
+  void measureContent()
+}
+
+function onWinResize() {
+  void measureContent()
+}
+
+onBeforeUnmount(() => {
+  barObserver?.disconnect()
+  contentObserver?.disconnect()
+  window.removeEventListener('resize', onWinResize)
 })
 </script>
 
 <template>
-  <main class="page">
+  <main ref="pageEl" class="page">
     <header class="top">
       <button class="back" type="button" aria-label="返回" @click="router.back()">‹</button>
       <span class="brand">笔记详情</span>
@@ -423,9 +514,14 @@ onMounted(async () => {
 
     <p v-if="loading" class="hint">加载中…</p>
 
-    <p v-else-if="errorMsg" class="hint err" data-test="note-detail-error">{{ errorMsg }}</p>
+    <p v-else-if="errorMsg" class="hint err" role="alert" data-test="note-detail-error">{{ errorMsg }}</p>
 
-    <article v-else-if="note" class="card xk-card" data-test="note-detail">
+    <article
+      v-else-if="note"
+      class="card xk-card"
+      data-test="note-detail"
+      :style="{ '--img-ratio': String(activeRatio) }"
+    >
       <!--
         桌面端（≥1024px）两栏：图片轮播绝对定位挂左栏（--media-h 撑高），
         标题/作者/正文/计数是右栏的普通网格单元 —— 图片列再高也不会把
@@ -433,15 +529,20 @@ onMounted(async () => {
         旧 grid-row:1/-1 在隐式网格退化成单行，整摞图片高度灌进第一行）。
         移动端这里 display:contents，顺序（标题→作者→正文→图片→计数）与
         改造前完全一致；--img-ratio 是当前图的真实宽高比。
+
+        桌面端这个 div 不再是网格容器（全程 display:contents）：网格容器
+        升格成了 .card 本身，这样**评论区**（.comments）能作为同一个网格的
+        直接子元素进右栏 —— 用户反馈"吸底区 1120px 通栏、正文栏才 648px"
+        时位置不对。移动端 .card 仍是普通块级流，DOM 顺序一字未动。
       -->
-      <div class="detail-grid" :style="{ '--img-ratio': String(activeRatio) }">
+      <div class="detail-grid">
         <h1 class="title" data-test="note-detail-title">{{ note.title }}</h1>
 
         <div class="who">
-          <img class="avatar" src="/mascot/m02.webp" alt="" />
+          <img class="avatar" src="/mascot/m02.webp" alt="" width="34" height="34" />
           <div class="names">
             <p class="nickname" data-test="note-detail-author">{{ note.authorNickname }}</p>
-            <p class="time">{{ note.createTime.replace('T', ' ').slice(0, 16) }}</p>
+            <p class="time">{{ formatDateTime(note.createTime) }}</p>
           </div>
           <button
             v-if="!isMyNote"
@@ -456,9 +557,7 @@ onMounted(async () => {
           </button>
 
           <div v-else class="mine-ops" data-test="note-author-ops">
-            <button type="button" class="op" @click="router.push(`/edit/${note!.id}`)" data-test="note-edit-btn">
-              编辑
-            </button>
+            <RouterLink class="op" :to="`/edit/${note!.id}`" data-test="note-edit-btn">编辑</RouterLink>
             <button
               type="button"
               class="op"
@@ -474,7 +573,25 @@ onMounted(async () => {
           </div>
         </div>
 
-        <p class="content" data-test="note-detail-content">{{ note.content }}</p>
+        <p
+          ref="contentEl"
+          class="content"
+          :class="{ clamped: contentClamped }"
+          data-test="note-detail-content"
+        >
+          {{ note.content }}
+        </p>
+
+        <button
+          v-if="contentOverflows"
+          class="expand"
+          type="button"
+          :aria-expanded="contentExpanded"
+          data-test="note-expand"
+          @click="toggleContent"
+        >
+          {{ contentExpanded ? '收起' : '展开全文' }}
+        </button>
 
         <div v-if="note.images.length" class="grid" data-test="note-detail-images">
           <van-swipe
@@ -488,7 +605,13 @@ onMounted(async () => {
             <van-swipe-item v-for="(src, i) in note.images" :key="src">
               <!--
                 不能加 loading="lazy"：非当前张被平移出可视框后，浏览器判定
-                不相交就不去加载，「两张图都解码成功」的断言会永远等不到
+                不相交就不去加载，「两张图都解码成功」的断言会永远等不到。
+
+                刻意不写 width/height 属性：轮播图的宽高比每张都不同，
+                写死任何一对都会和 CSS 的 aspect-ratio 打架。占位由
+                .grid 的 aspect-ratio + 绝对定位高度完全确定（真实尺寸在
+                onImgLoad 里量），布局不会因为图片到达而跳动，不构成 CLS。
+                对比：.avatar / .c-avatar 尺寸固定，已经补上 width/height。
               -->
               <img :src="src" :alt="note.title" @load="onImgLoad(i, $event)" />
             </van-swipe-item>
@@ -501,47 +624,6 @@ onMounted(async () => {
           </template>
         </div>
 
-        <!--
-          点赞 / 收藏是真按钮，评论那一格只是个跳转到评论区的锚点。
-          aria-pressed 把「当前是否已点赞」暴露给读屏软件，
-          纯样式的高亮对无障碍是不存在的
-        -->
-        <div class="stats">
-          <button
-            class="stat"
-            :class="{ on: isLiked }"
-            type="button"
-            :aria-pressed="isLiked"
-            :disabled="liking"
-            data-test="note-like-btn"
-            @click="toggleLike"
-          >
-            <span class="ico">{{ isLiked ? '♥' : '♡' }}</span>
-            <span class="cap">点赞</span>
-            <span class="num" data-test="note-like-count">{{ note.likeCount }}</span>
-          </button>
-
-          <button
-            class="stat"
-            :class="{ on: isCollected }"
-            type="button"
-            :aria-pressed="isCollected"
-            :disabled="collecting"
-            data-test="note-collect-btn"
-            @click="toggleCollect"
-          >
-            <span class="ico">{{ isCollected ? '★' : '☆' }}</span>
-            <span class="cap">收藏</span>
-            <span class="num" data-test="note-collect-count">{{ note.collectCount }}</span>
-          </button>
-
-          <button class="stat" type="button" data-test="note-comment-btn" @click="scrollToComments">
-            <span class="ico">💬</span>
-            <span class="cap">评论</span>
-            <span class="num" data-test="note-comment-count">{{ note.commentCount }}</span>
-          </button>
-        </div>
-
         <p v-if="notFound" class="gone">内容已不可见</p>
       </div>
 
@@ -552,47 +634,17 @@ onMounted(async () => {
           <span class="c-total" data-test="comment-total">{{ commentTotal }}</span>
         </h2>
 
-        <!-- 发表框 -->
-        <div class="editor">
-          <div v-if="replyTarget" class="replying" data-test="comment-replying">
-            回复 @{{ replyTarget.nickname }}
-            <button type="button" data-test="comment-cancel-reply" @click="cancelReply">取消</button>
-          </div>
-          <textarea
-            v-model="draft"
-            class="c-input"
-            rows="2"
-            :maxlength="COMMENT_MAX + 50"
-            :placeholder="draftPlaceholder"
-            data-test="comment-input"
-          />
-          <div class="c-actions">
-            <span class="c-len" :class="{ over: draftOver }" data-test="comment-len">
-              {{ draftLen }}/{{ COMMENT_MAX }}
-            </span>
-            <button
-              class="c-send"
-              type="button"
-              :disabled="!canSubmit"
-              data-test="comment-submit"
-              @click="submitComment"
-            >
-              发表
-            </button>
-          </div>
-        </div>
-
         <p v-if="loadingComments" class="c-hint">评论加载中…</p>
 
         <p v-else-if="!comments.length" class="c-hint" data-test="comment-empty">还没有评论，来说两句吧</p>
 
         <ul v-else class="c-list" data-test="comment-list">
           <li v-for="c in comments" :key="c.id" class="c-item" data-test="comment-item">
-            <img class="c-avatar" src="/mascot/m02.webp" alt="" />
+            <img class="c-avatar" src="/mascot/m02.webp" alt="" width="28" height="28" />
             <div class="c-main">
               <p class="c-nick">{{ c.nickname }}</p>
               <p class="c-content" data-test="comment-content">{{ c.content }}</p>
-              <p class="c-meta">{{ c.createTime.replace('T', ' ').slice(0, 16) }}</p>
+              <p class="c-meta">{{ formatDateTime(c.createTime) }}</p>
 
               <div class="c-ops">
                 <button
@@ -683,6 +735,109 @@ onMounted(async () => {
           加载更多评论
         </button>
       </section>
+
+      <!--
+        操作栏：评论输入框 + 点赞/收藏/评论三键，合成一个容器、放在评论区最下面
+        （DOM 位置决定落位，不是样式炫技）：
+        - 移动端（基础样式）position:fixed 吸底 —— 滚到评论区也能直接打字；
+          fixed 脱离流，DOM 在哪儿都不影响它贴视口底
+        - 桌面 ≥1024 撤掉 fixed 壳，静态落在 .comments 正下方，与评论区一样
+          通栏、左缘对齐（缩进到右栏会像悬在评论中间，用户明确否掉了）
+        三键刻意只留「图标+数字」：无边框、无底色、无文字标签（aria-label
+        保留给读屏），激活才变琥珀 —— 用户反馈三个大按钮抢了正文的注意力
+      -->
+      <div ref="barEl" class="actionbar" data-test="action-bar">
+        <!--
+          行1 = 输入。通栏（移动端整条 406px），不再被三键挤成 170px
+          （那是"不方便操作"的根因：pill 里只剩约 10 个汉字的位置）。
+          发表按钮原来绝对定位在胶囊右下角，右侧只靠 padding 让位 56px
+          —— 恰好等于按钮宽度，textarea 超过 max-height 内部滚动后，
+          滚出来的行直接走到按钮底下（用户反馈的"输入时遮挡"）。
+          搬进行2 之后让位不需要了，按钮热区也能做到 44×44。
+        -->
+        <div class="bar-input">
+          <div v-if="replyTarget" class="replying" data-test="comment-replying">
+            回复 @{{ replyTarget.nickname }}
+            <button type="button" data-test="comment-cancel-reply" @click="cancelReply">取消</button>
+          </div>
+          <textarea
+            v-model="draft"
+            class="c-input"
+            rows="1"
+            :maxlength="COMMENT_MAX + 50"
+            :placeholder="draftPlaceholder"
+            :aria-label="replyTarget ? `回复 @${replyTarget.nickname}` : '发表评论'"
+            data-test="comment-input"
+          />
+          <div v-if="showLen" class="c-len" :class="{ over: draftOver }" data-test="comment-len">
+            {{ draftLen }}/{{ COMMENT_MAX }}
+          </div>
+        </div>
+
+        <!-- 行2 = 动作行：左边发送，右边三键 -->
+        <div class="bar-actions">
+          <button
+            class="c-send"
+            type="button"
+            :disabled="!canSubmit"
+            aria-label="发表评论"
+            title="发表评论"
+            data-test="comment-submit"
+            @click="submitComment"
+          >
+            <van-icon name="arrow" />
+          </button>
+
+          <div class="bar-keys">
+            <!--
+              点赞/收藏是真按钮，评论那一格只是跳转到评论区的锚点。
+              aria-pressed 把「当前是否已点赞」暴露给读屏软件，
+              纯样式的高亮对无障碍是不存在的；可见标签删了，aria-label 顶上
+            -->
+            <button
+              class="kbtn"
+              :class="{ on: isLiked }"
+              type="button"
+              :aria-pressed="isLiked"
+              :disabled="liking"
+              aria-label="点赞"
+              title="点赞"
+              data-test="note-like-btn"
+              @click="toggleLike"
+            >
+              <van-icon :name="isLiked ? 'like' : 'like-o'" />
+              <span class="num" data-test="note-like-count">{{ note.likeCount }}</span>
+            </button>
+
+            <button
+              class="kbtn"
+              :class="{ on: isCollected }"
+              type="button"
+              :aria-pressed="isCollected"
+              :disabled="collecting"
+              aria-label="收藏"
+              title="收藏"
+              data-test="note-collect-btn"
+              @click="toggleCollect"
+            >
+              <van-icon :name="isCollected ? 'star' : 'star-o'" />
+              <span class="num" data-test="note-collect-count">{{ note.collectCount }}</span>
+            </button>
+
+            <button
+              class="kbtn"
+              type="button"
+              aria-label="评论"
+              title="评论"
+              data-test="note-comment-btn"
+              @click="scrollToComments"
+            >
+              <van-icon name="chat-o" />
+              <span class="num" data-test="note-comment-count">{{ note.commentCount }}</span>
+            </button>
+          </div>
+        </div>
+      </div>
     </article>
   </main>
 </template>
@@ -765,13 +920,19 @@ onMounted(async () => {
   color: var(--xk-text-3);
 }
 
+/*
+ * 关注/编辑/下架/删除这排小圆钮：热区从 28px 提到 40px（P13 下限）。
+ * padding 5px + 12px 字高 ≈ 28px，实测 66×28，拇指点不准 —— 体检表一直在报。
+ * 文字左右内边距从 14 收到 12，视觉宽度基本不变。
+ */
 .follow {
   flex-shrink: 0;
-  padding: 5px 14px;
+  min-height: 40px;
+  padding: 0 12px;
   border: var(--xk-stroke-w) solid var(--xk-border);
   border-radius: 999px;
   background: var(--xk-surface-2);
-  color: var(--xk-text-2);
+  color: var(--xk-text);
   font-size: var(--xk-fs-12);
   cursor: pointer;
 }
@@ -796,11 +957,12 @@ onMounted(async () => {
 }
 
 .op {
-  padding: 5px 12px;
+  min-height: 40px;
+  padding: 0 12px;
   border: var(--xk-stroke-w) solid var(--xk-border);
   border-radius: 999px;
   background: var(--xk-surface-2);
-  color: var(--xk-text-2);
+  color: var(--xk-text);
   font-size: var(--xk-fs-12);
   cursor: pointer;
 }
@@ -821,6 +983,37 @@ onMounted(async () => {
   line-height: 1.7;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/*
+ * 长正文折叠：line-clamp 8 行（桌面 12 行，见 @media 里的覆盖）。
+ * 阈值写 8 而不是更多 —— 手机上正文栏约 22 字/行，8 行 ≈ 176 字，
+ * 再多首屏就被正文吃光了。真正的完整内容点「展开全文」拿。
+ * white-space: pre-wrap 与 line-clamp 不冲突：段落空行照常保留。
+ */
+.content.clamped {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 8;
+  overflow: hidden;
+}
+
+/* 「展开全文 / 收起」：无边框无底色，热区 40px（P13 下限） */
+.expand {
+  justify-self: start;
+  min-height: 40px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--xk-amber-text);
+  font: inherit;
+  font-size: var(--xk-fs-14);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.expand:hover {
+  text-decoration: underline;
 }
 
 /**
@@ -910,14 +1103,28 @@ onMounted(async () => {
 /* 桌面端：左图右信息的两栏笔记页（小红书桌面版排法） */
 @media (min-width: 1024px) {
   /*
-   * 图列固定 440、右栏吃掉剩余。之前是 1fr + 420 —— 图列被撑到 704px，
-   * 高 1420px，而右栏正文只有几十 px，右侧空一大片。
-   * 440 配合图片原比例，一条正文笔记的高度才对得上。
+   * 两栏的列宽单一来源：网格列模板与图片框宽度都取这几个变量。
+   * 写死两处 440/32 的话，早晚会出现「网格改了、图框没改」的错位
+   * （且错位只在桌面显形，很难第一时间联想到）。
    */
-  .detail-grid {
+  .card {
+    --xk-col1: 440px;
+    --xk-colgap: 32px;
+    --xk-col1-narrow: 620px; /* 无图笔记退回单栏时的带宽 */
+
+    /*
+     * 图列固定 440、右栏吃掉剩余。之前是 1fr + 420 —— 图列被撑到 704px，
+     * 高 1420px，而右栏正文只有几十 px，右侧空一大片。
+     * 440 配合图片原比例，一条正文笔记的高度才对得上。
+     *
+     * 网格容器是 .card 而不是 .detail-grid（后者全程 display:contents）：
+     * 只有让 .comments 成为同一个网格的直接子元素，评论区才能进右栏。
+     * .card 的内容盒与原来的 .detail-grid 盒子同宽同 padding，列宽与
+     * 图框定位因此不受影响。移动端 .card 不进这条媒体查询，仍是块级流。
+     */
     display: grid;
-    grid-template-columns: minmax(0, 440px) minmax(0, 1fr);
-    column-gap: 32px;
+    grid-template-columns: minmax(0, var(--xk-col1)) minmax(0, 1fr);
+    column-gap: var(--xk-colgap);
     row-gap: 4px;
     align-items: start;
   }
@@ -925,9 +1132,18 @@ onMounted(async () => {
   /*
    * 右栏 684px 放 15px 字符就是 45 个汉字/行，读长文太累。
    * 限到 40em（600px ≈ 40 字），剩下的留白在左边反而舒服。
+   * 截图反馈「注意力回到正文」：桌面正文 16→17px、行高 1.7→1.75、
+   * 标题 22→24px（都在字阶 token 内）—— 正文成为页面上最大最密的文本块。
    */
   .content {
     max-width: 40em;
+    font-size: var(--xk-fs-17);
+    line-height: 1.75;
+  }
+
+  /* 桌面正文栏 40em 宽，12 行 ≈ 480 字，比移动端宽所以给更多行 */
+  .content.clamped {
+    -webkit-line-clamp: 12;
   }
 
   /*
@@ -937,8 +1153,8 @@ onMounted(async () => {
    * 高度上限取 660 / 72vh / 原比例高度三者最小：竖长图封顶留 letterbox，
    * 横图方图按自己比例占满，不白撑。
    */
-  .detail-grid:has(.grid) {
-    --media-h: min(660px, 72vh, calc(440px / var(--img-ratio, 0.75)));
+  .card:has(.grid) {
+    --media-h: min(660px, 72vh, calc(var(--xk-col1) / var(--img-ratio, 0.75)));
     position: relative;
     min-height: var(--media-h);
     /*
@@ -956,7 +1172,7 @@ onMounted(async () => {
     position: absolute;
     top: 0;
     left: 0;
-    width: 440px;
+    width: var(--xk-col1);
     height: var(--media-h);
     aspect-ratio: auto;
     margin: 0;
@@ -964,35 +1180,35 @@ onMounted(async () => {
   }
 
   /* 没有图片的笔记（改图后清空等）退回单栏居中，不留一整片空白左栏 */
-  .detail-grid:not(:has(.grid)) {
+  .card:not(:has(.grid)) {
     grid-template-columns: minmax(0, 1fr);
-    max-width: 620px;
+    max-width: var(--xk-col1-narrow);
     margin: 0 auto;
   }
 
-  .detail-grid:not(:has(.grid)) .title,
-  .detail-grid:not(:has(.grid)) .who,
-  .detail-grid:not(:has(.grid)) .content,
-  .detail-grid:not(:has(.grid)) .stats,
-  .detail-grid:not(:has(.grid)) .gone {
+  .card:not(:has(.grid)) .title,
+  .card:not(:has(.grid)) .who,
+  .card:not(:has(.grid)) .content,
+  .card:not(:has(.grid)) .expand,
+  .card:not(:has(.grid)) .gone,
+  .card:not(:has(.grid)) .comments,
+  .card:not(:has(.grid)) .actionbar {
     grid-column: 1;
   }
 
   .title,
   .who,
   .content,
-  .stats,
-  .gone {
+  .expand,
+  .gone,
+  .comments,
+  .actionbar {
     grid-column: 2;
   }
 
   .title {
-    font-size: var(--xk-fs-22);
+    font-size: var(--xk-fs-24);
     margin-top: 0;
-  }
-
-  .stats {
-    margin-top: 18px;
   }
 }
 
@@ -1000,6 +1216,13 @@ onMounted(async () => {
  * 轮播里的图片完整可见：图框比例已经跟着图走，contain 只是比例过渡
  * 瞬间的第二道保险。旧版「原比例 + align-self + 无 aspect-ratio」那
  * 三条注释讲的都是 grid 摆位时代的坑，轮播化之后一并作废。
+ *
+ * `transition: aspect-ratio/height/min-height` 严格说违反
+ * web-design-guidelines 的「只过渡 transform/opacity」（这三项会触发
+ * layout，不是合成器友好的）。这里刻意保留：图框比例跟着图片真实宽高比
+ * 平滑变化，正是 P12 起「桌面图列不再撑出大空白」那套机制的手感来源；
+ * 改成瞬变会让切图时出现明显的跳变。用一张静止的图换 0.25s 的平滑，
+ * 性能上不划算（只切图时触发，不是持续动画）。
  */
 .grid img {
   width: 100%;
@@ -1009,61 +1232,229 @@ onMounted(async () => {
   display: block;
 }
 
-.stats {
-  margin: 20px 0 0;
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
+/* ---------------- 操作栏：吸底的评论输入 + 点赞/收藏/评论三键 ---------------- */
+
+/*
+ * 两行结构（用户拍板）：
+ *   行1 输入胶囊 —— **通栏**。旧版是一行里挤「输入 + 三键」，430 视口下
+ *   pill 只剩 242px，再减掉给发表按钮让位的 56px，可输入宽度 ≈170px ≈10 个
+ *   汉字，这是"不方便操作"的根因。
+ *   行2 动作行 —— 左 发表（44×44 圆形），右 三键（44×44，键距 12）。
+ *
+ * 移动端吸底（小红书式）：滚到评论区底部也能直接打字/点赞。
+ * 底色 surface（和卡片同层）+ 顶部发丝线，桌面整套撤掉（见 @media）。
+ * 栏高不写死：ResizeObserver 把实测高度写进 --bar-h，.page 用它补尾部空白。
+ */
+.actionbar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: var(--xk-space-2);
+  padding: var(--xk-space-2) var(--xk-space-3)
+    calc(var(--xk-space-2) + var(--kb-inset, 0px));
+  border-top: var(--xk-stroke-w) solid var(--xk-border);
+  background: var(--xk-surface);
+  box-shadow: 0 -6px 20px rgb(18 18 18 / 6%);
+}
+
+@media (max-width: 1023px) {
+  /*
+   * 吸底栏会盖住页面末尾，给等高空白让最后一条评论能滚上来。
+   * 覆盖全局 .page 的 padding-bottom（scoped 规则特异性 0,2,0 压得过）。
+   * --bar-h 由 ResizeObserver 实测写入（折叠态 8+44+8+44+8 = 112px），
+   * 写死 76px 就会在输入框长高时盖住最后一条评论（用户反馈的"遮挡"）。
+   * --kb-inset 是软键盘高度：Android 靠 viewport meta 的
+   * interactive-widget=resizes-content 让 layout viewport 自己缩，
+   * iOS Safari 不缩，得靠 useKeyboardInset 读 visualViewport 补。
+   */
+  .page {
+    padding-bottom: calc(var(--bar-h, 112px) + var(--kb-inset, 0px));
+  }
+}
+
+.bar-input {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0; /* flex 容器里的输入框不写这条会溢出（SiteNav 搜索框前科） */
+}
+
+.replying {
+  margin-bottom: var(--xk-space-1);
+  font-size: var(--xk-fs-12);
+  color: var(--xk-text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.replying button {
+  margin-left: 8px;
+  border: 0;
+  background: none;
+  color: var(--xk-danger);
+  font-size: var(--xk-fs-12);
+  cursor: pointer;
+  padding: 0;
+  min-height: 24px;
+}
+
+.c-input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  border: var(--xk-stroke-w) solid var(--xk-border);
+  border-radius: 999px;
+  background: var(--xk-surface-2);
+  color: var(--xk-text);
+  font: inherit;
+  font-size: var(--xk-fs-16);
+  line-height: 1.4;
+  /* 行1 是通栏的，右侧不用再给按钮留位置 —— 旧版那 56px 让位正好等于
+     按钮宽度，textarea 内部滚动后滚出来的行直接走到按钮底下 */
+  padding: 11px var(--xk-space-4);
+  min-height: 44px;
+  max-height: 120px;
+  field-sizing: content; /* 单行 44px 起，随内容长到 120px 封顶后内部滚动 */
+  resize: none;
+  overflow-y: auto;
 }
 
 /*
- * 点赞/收藏从原来的 <div> 改成了 <button>，所以要显式抹掉浏览器默认样式：
- * 不写这几条的话每个平台会给出不同的边框、背景和字体，页面会明显走样
+ * 行2 动作行：左边发送、右边三键。发表按钮原来绝对定位压在胶囊右下角
+ * （30px 高、热区不足 40px），搬出来后才做得成 44×44 的圆形。
+ * 配色改用品牌 token：旧版是硬编码 #f5a623 底 + 白字 = 2.03:1（AA 要 4.5），
+ * --xk-amber 底 + --xk-amber-ink 字是 9.69:1，与 .xk-btn 同一套。
  */
-.stats .stat {
-  padding: 9px 6px;
-  border: var(--xk-stroke-w) solid var(--xk-border);
-  border-radius: var(--xk-radius-blob-sm);
-  background: var(--xk-surface-2);
-  text-align: center;
-  cursor: pointer;
-  font: inherit;
-  color: inherit;
-  transition: transform 0.12s ease, border-color 0.12s ease;
+.bar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--xk-space-3);
+  min-height: 44px;
 }
 
-.stats .stat:active {
+.c-send {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--xk-amber);
+  color: var(--xk-amber-ink);
+  font-size: 20px;
+  cursor: pointer;
+  transition: transform 0.12s ease, opacity 0.12s ease;
+}
+
+.c-send:active {
+  transform: scale(0.94);
+}
+
+.c-send:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.c-len {
+  margin-top: var(--xk-space-1);
+  text-align: right;
+  font-size: var(--xk-fs-12);
+  color: var(--xk-text-2);
+}
+
+.c-len.over {
+  color: var(--xk-danger);
+}
+
+.bar-keys {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--xk-space-3);
+}
+
+/*
+ * 三键降权：无边框、无底色、无文字标签（可见标签只是「点赞」两个字，
+ * 信息量为零；读屏用 aria-label，悬停用 title）。激活态只变琥珀。
+ * 44×44：P13 的热区下限是 40，拇指目标按 44 做（iOS HIG）。
+ */
+.kbtn {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 var(--xk-space-1);
+  border: 0;
+  background: none;
+  color: var(--xk-text);
+  font: inherit;
+  cursor: pointer;
+  /* 只过渡 transform（合成器友好）。不写 color：激活态换色 0.12s 才过渡
+     的话，"点赞"变琥珀色会变成一段缓慢的颜色爬坡，比瞬切更像卡住 */
+  transition: transform 0.12s ease;
+}
+
+.kbtn:active {
   transform: scale(0.95);
 }
 
-.stats .stat:disabled {
+.kbtn:disabled {
   opacity: 0.6;
   cursor: not-allowed;
 }
 
-.stats .stat.on {
-  border-color: #f5a623;
-  background: #fff7e6;
+/* 激活态用 --xk-amber-text（按主题给值），直接写 --xk-amber 只有 2.26:1 */
+.kbtn.on {
+  color: var(--xk-amber-text);
 }
 
-.stats .ico {
-  display: block;
-  font-size: var(--xk-fs-17);
-  line-height: 1.2;
+.kbtn .van-icon {
+  font-size: 20px;
 }
 
-.stats .cap {
-  display: block;
-  margin-top: 2px;
-  font-size: var(--xk-fs-12);
-  color: var(--xk-text-3);
+.kbtn .num {
+  font-size: var(--xk-fs-14);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums; /* 计数跳动不抖宽度 */
 }
 
-.stats .num {
-  display: block;
-  margin-top: 3px;
-  font-size: var(--xk-fs-16);
-  font-weight: 700;
+/*
+ * 桌面 ≥1024：撤掉吸底壳，操作栏静态落在**评论区最下面**（DOM 里它是
+ * article 的最后一个子元素，紧跟 .comments），并且和评论区一起进右栏
+ * （grid-column: 2，见上面 .card 那组规则）—— 之前是整卡通栏 1120px，
+ * 而上方正文栏只有 648px，输入框甩到离文字 470px 远的地方。
+ * 排版方向与手机端一致（行1 输入、行2 动作行）。
+ *
+ * 这块媒体查询必须写在基础 .actionbar 规则**之后**：同特异性下
+ * source-order 决胜负，写在前面会被后面的 position:fixed 覆盖掉
+ * （ProfileView / NoteDetailView 的 aspect-ratio 已各踩过一次）。
+ * 桌面鼠标没有软键盘，--kb-inset 为 0，.page 的 padding-bottom 补丁也被
+ * max-width:1023 那条媒体查询收回了。
+ */
+@media (min-width: 1024px) {
+  .actionbar {
+    position: static;
+    left: auto;
+    right: auto;
+    bottom: auto;
+    z-index: auto;
+    margin: var(--xk-space-4) 0 0;
+    padding: var(--xk-space-3) 0 0;
+    border-top: var(--xk-stroke-w) solid var(--xk-border);
+    background: none;
+    box-shadow: none;
+  }
 }
 
 /* ---------------- 评论 ---------------- */
@@ -1085,76 +1476,6 @@ onMounted(async () => {
   font-size: var(--xk-fs-13);
   font-weight: 400;
   color: var(--xk-text-3);
-}
-
-.editor {
-  padding: 12px;
-  border-radius: var(--xk-radius-blob-sm);
-  background: var(--xk-surface-2);
-  margin-bottom: 16px;
-}
-
-.replying {
-  margin-bottom: 8px;
-  font-size: var(--xk-fs-12);
-  color: var(--xk-text-2);
-}
-
-.replying button {
-  margin-left: 8px;
-  border: 0;
-  background: none;
-  color: #e5484d;
-  font-size: var(--xk-fs-12);
-  cursor: pointer;
-  padding: 0;
-}
-
-.c-input {
-  width: 100%;
-  box-sizing: border-box;
-  border: var(--xk-stroke-w) solid var(--xk-border);
-  border-radius: var(--xk-radius-blob-sm);
-  /* 其它输入框统一用 surface-2，跟卡片（surface）区分开，不然只剩一条边框 */
-  background: var(--xk-surface-2);
-  color: var(--xk-text);
-  font: inherit;
-  font-size: var(--xk-fs-16);
-  padding: var(--xk-space-2) var(--xk-space-3);
-  resize: vertical;
-}
-
-.c-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 10px;
-  margin-top: 8px;
-}
-
-.c-len {
-  font-size: var(--xk-fs-12);
-  color: var(--xk-text-3);
-}
-
-.c-len.over {
-  color: #e5484d;
-}
-
-.c-send {
-  border: 0;
-  border-radius: 999px;
-  padding: 7px 18px;
-  background: #f5a623;
-  color: #fff;
-  font-size: var(--xk-fs-13);
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.c-send:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }
 
 .c-hint {

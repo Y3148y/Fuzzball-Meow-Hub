@@ -12,6 +12,7 @@ import {
   textCardPageCount,
   textCardPreview,
 } from '@/utils/textCard'
+import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
 
 const route = useRoute()
 const router = useRouter()
@@ -127,8 +128,12 @@ async function load() {
     // 编辑入口只对作者开放，详情页按钮已隐藏；这里再兜一层防手输 URL
     title.value = note.title
     content.value = note.content
-    noteType.value = note.type
-    urls.value = [...note.images]
+noteType.value = note.type
+        urls.value = [...note.images]
+        // 记下「原值」作为未保存判定的基准（见文件末尾 useUnsavedChanges）
+        initialTitle = note.title
+        initialContent = note.content
+        initialUrls = JSON.stringify(urls.value)
   } catch (e) {
     if (e instanceof BizError) {
       if (
@@ -170,6 +175,8 @@ async function submit() {
       imageUrls: finalUrls,
     })
     showSuccessToast('保存成功')
+    // 存库成功，这次跳转不算「丢掉未保存内容」
+    markClean()
     await router.replace(`/note/${note.id}`)
   } catch (e) {
     if (e instanceof BizError) {
@@ -183,6 +190,24 @@ async function submit() {
 }
 
 onMounted(load)
+
+/*
+ * 未保存提醒：编辑页的「干净」基准是**加载回来的原值**，不是空串。
+ * 所以这里存一份初始快照，逐项比标题/正文/图片 URL 列表。
+ * 图片列表要按内容比（顺序即语义），用 JSON 字符串比最省事。
+ */
+let initialTitle = ''
+let initialContent = ''
+let initialUrls = ''
+
+const { markClean } = useUnsavedChanges(() => {
+  if (loading.value) return false
+  return (
+    title.value.trim() !== initialTitle ||
+    content.value.trim() !== initialContent ||
+    JSON.stringify(urls.value) !== initialUrls
+  )
+})
 </script>
 
 <template>
@@ -285,13 +310,14 @@ onMounted(load)
             type="file"
             accept="image/jpeg,image/png,image/webp,image/gif"
             multiple
+            aria-label="选择图片"
             data-test="note-edit-file"
             @change="onFileChange"
           />
           <span>+ 添加图片</span>
         </label>
 
-        <p v-if="errorMsg" class="err" data-test="note-edit-error">{{ errorMsg }}</p>
+        <p v-if="errorMsg" class="err" role="alert" data-test="note-edit-error">{{ errorMsg }}</p>
       </section>
     </template>
   </main>

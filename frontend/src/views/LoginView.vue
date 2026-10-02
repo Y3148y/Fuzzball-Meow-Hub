@@ -110,7 +110,7 @@ async function submit() {
     </header>
 
     <section class="intro">
-      <img class="mascot" src="/mascot/m05.webp" alt="小哭猫" />
+      <img class="mascot" src="/mascot/m05.webp" alt="小哭猫" width="168" height="168" />
       <h1 class="title">毛球喵社</h1>
       <p class="tagline">记下来，就不算白忙</p>
     </section>
@@ -147,7 +147,8 @@ async function submit() {
             class="xk-input"
             type="text"
             autocomplete="username"
-            placeholder="4~20 位字母 / 数字 / 下划线"
+            spellcheck="false"
+            placeholder="4~20 位字母 / 数字 / 下划线…"
             :disabled="loading"
           />
         </label>
@@ -158,7 +159,9 @@ async function submit() {
             v-model="form.nickname"
             class="xk-input"
             type="text"
-            placeholder="不填就用用户名"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="不填就用用户名…"
             :disabled="loading"
           />
         </label>
@@ -170,7 +173,7 @@ async function submit() {
             class="xk-input"
             type="password"
             :autocomplete="isRegister ? 'new-password' : 'current-password'"
-            placeholder="8~20 位"
+            placeholder="8~20 位…"
             :disabled="loading"
           />
         </label>

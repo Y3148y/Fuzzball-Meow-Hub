@@ -105,9 +105,9 @@ try {
   s.check('演示账号登录成功', true)
 
   // ---- 3. 首页有发布入口
-  await s.waitFor("document.querySelector('[data-test=go-publish]')", '发布入口按钮')
+  await s.waitFor("document.querySelector('[data-test=tab-publish]')", '发布入口按钮')
   s.check('首页展示「发布笔记」入口', true)
-  await s.evaluate("document.querySelector('[data-test=go-publish]').click()")
+  await s.evaluate("document.querySelector('[data-test=tab-publish]').click()")
   await s.waitFor("location.hash === '#/publish'", '跳到发布页', 20000)
   s.check('点击入口跳转到 #/publish', true)
 
@@ -616,8 +616,8 @@ await s.evaluate("document.querySelector('[data-test=img-next]').click()")
   s.check('删除后详情接口返回 20001', deleted.code === 20001, `code=${deleted.code}`)
 
   // ---- 14. 纯文字发布：无图合法，自动生成 3:4 文字卡片（小红书同款做法）
-  await s.waitFor("document.querySelector('[data-test=go-publish]')", '回首页准备纯文字发布', 10000)
-  await s.evaluate("document.querySelector('[data-test=go-publish]').click()")
+  await s.waitFor("document.querySelector('[data-test=tab-publish]')", '回首页准备纯文字发布', 10000)
+  await s.evaluate("document.querySelector('[data-test=tab-publish]').click()")
   await s.waitFor("location.hash === '#/publish'", '跳发布页', 20000)
   await s.waitFor("document.querySelector('[data-test=note-title]')", '标题输入框')
   await s.evaluate(`
@@ -726,8 +726,8 @@ await s.evaluate("document.querySelector('[data-test=img-next]').click()")
   // router.back() 的历史栈里未必有首页，等它回来会超时
   await s.goto(`${BASE}/#/`)
   await s.waitFor("location.hash === '#/'", '回首页', 20000)
-  await s.waitFor("document.querySelector('[data-test=go-publish]')", '首页准备按钮', 10000)
-  await s.evaluate("document.querySelector('[data-test=go-publish]').click()")
+  await s.waitFor("document.querySelector('[data-test=tab-publish]')", '首页准备按钮', 10000)
+  await s.evaluate("document.querySelector('[data-test=tab-publish]').click()")
   await s.waitFor("location.hash === '#/publish'", '跳发布页', 20000)
   await s.waitFor("document.querySelector('[data-test=note-title]')", '标题输入框')
   // 12 段 × 约 30 字 ≈ 360 字：手机 8 行（约 176 字）必然截断，桌面 12 行也截断

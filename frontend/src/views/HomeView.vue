@@ -87,6 +87,28 @@ async function logout() {
   await router.replace('/login')
 }
 
+/* ---------------- 封面真实宽高比（瀑布卡片高度自适应） ---------------- */
+
+/**
+ * 封面高度按图片**真实**宽高比自适应，而不是一律裁成 3/4 或方块。
+ *
+ * <p>VO 里没有图片尺寸，加载前也不知道，所以：未加载时先用 3/4 占位（避免 CLS），
+ * `@load` 拿到 naturalWidth/naturalHeight 后改写成真实比例。值写进
+ * `coverRatio[id]`，模板上以 `--r` 内联变量喂给 `.cover` 的 `aspect-ratio`。
+ *
+ * <p>刻意**不用**给 `<img>` 写 width/height 属性：真实比例只有解码后才知道，
+ * 写死的值必然是错的（详情页封面同理，见 AGENTS.md）。
+ */
+const coverRatio = ref<Record<string, string>>({})
+
+function onCoverLoad(item: NoteListItemVO, ev: Event) {
+  const img = ev.target as HTMLImageElement
+  const w = img.naturalWidth
+  const h = img.naturalHeight
+  if (!w || !h || coverRatio.value[item.id]) return
+  coverRatio.value = { ...coverRatio.value, [item.id]: `${w} / ${h}` }
+}
+
 // 进来先把用户信息拉齐（守卫只校验 token 有没有，资料还是要后端给）
 void userStore.loadProfile().catch(() => {
   // token 失效时拦截器已经跳登录页
@@ -102,6 +124,13 @@ onMounted(loadFeed)
       <ThemeToggle />
     </header>
 
+    <!--
+      个人信息卡片：**只在桌面出现**（≥1024 作左栏资料栏，sticky）。
+      移动端整块 display:none —— display:none 会同时把它从无障碍树和 Tab 序里
+      摘掉，所以读屏不会念、键盘也 tab 不到，这正是要的。
+      卡片上的功能在移动端都有别的入口：发布/我的在 TabBar，关注/粉丝/退出在「我的」页。
+      ⚠️ 断点归 CSS 媒体查询管，组件不要监听 resize（见 AGENTS.md）。
+    -->
     <section class="card xk-card who-card">
       <div class="who">
         <img class="avatar" src="/mascot/m02.webp" alt="" width="62" height="62" />
@@ -164,7 +193,12 @@ type="search"
       <button class="xk-btn go-search" type="submit" data-test="home-search-btn">搜索</button>
     </form>
 
-    <section class="card xk-card xk-card--flat feed" data-test="feed" style="padding-top: 14px">
+    <!--
+      关注流不再套外层卡片：条目自己就是卡片（描边 + 硬阴影），
+      卡片套卡片会显得又厚又乱（小红书的墙也是直接铺在页面底色上）。
+      桌面这里只保留 grid-area 定位。
+    -->
+    <section class="feed" data-test="feed">
       <h2 class="feed-title">关注的人刚发的笔记</h2>
 
       <p v-if="feedLoading" class="hint" data-test="feed-loading">加载中…</p>
@@ -183,7 +217,14 @@ type="search"
             两者是**兄弟节点**而不是嵌套 —— `<a><button>` 是非法嵌套。
           -->
           <RouterLink class="main" :to="`/note/${item.id}`">
-            <img class="cover" :src="item.cover ?? '/mascot/m02.webp'" alt="" loading="lazy" />
+            <img
+              class="cover"
+              :src="item.cover ?? '/mascot/m02.webp'"
+              alt=""
+              loading="lazy"
+              :style="coverRatio[item.id] ? { '--r': coverRatio[item.id] } : undefined"
+              @load="onCoverLoad(item, $event)"
+            />
             <div class="body">
               <p class="title">{{ item.title }}</p>
               <p class="meta">
@@ -396,26 +437,42 @@ type="search"
   color: var(--xk-danger);
 }
 
+/*
+  关注流 = 双列瀑布（移动端 2 列、桌面 4 列），卡片化描边 + 硬阴影。
+  刻意抄小红书：**CSS `columns` 瀑布**而不是 grid —— grid 每行等高，横图会把
+  竖图顶出空洞；columns 让每张卡按自己的内容高度落位。
+  封面高度按图片**真实**宽高比走（`--r`，@load 时由 JS 写），不再一律裁 3/4。
+*/
 .items {
   margin: 0;
   padding: 0;
   list-style: none;
-  display: flex;
-  flex-direction: column;
+  display: block;
+  columns: 2;
+  column-gap: 10px;
 }
 
-.item {
-  padding: 12px 0;
-  border-top: var(--xk-stroke-w) solid var(--xk-border);
-}
-
+.item,
 .item:first-child {
-  border-top: 0;
+  break-inside: avoid;
+  margin: 0 0 10px;
+  padding: 0;
+  border: var(--xk-stroke-w) solid var(--xk-stroke);
+  border-radius: var(--xk-radius-blob);
+  background: var(--xk-surface);
+  box-shadow: var(--xk-shadow-hard-sm);
+  overflow: hidden;
+  transition: transform 0.12s ease;
+}
+
+.item:hover {
+  transform: translate(-2px, -2px);
 }
 
 .main {
   display: flex;
-  gap: 12px;
+  flex-direction: column;
+  gap: 0;
   width: 100%;
   padding: 0;
   border: 0;
@@ -424,45 +481,54 @@ type="search"
   cursor: pointer;
 }
 
+/*
+  封面：宽 100%、高按真实比例自适应。
+  `aspect-ratio: var(--r, 3 / 4)` 里 3/4 只是**加载前**的占位（防 CLS），
+  @load 拿到 naturalWidth/Height 后 --r 被改写成真实比例。
+  不要写死 height，也不要给 <img> 加 width/height 属性（那是错的值）。
+*/
 .cover {
-  width: 84px;
-  height: 84px;
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: var(--r, 3 / 4);
   object-fit: cover;
-  border-radius: var(--xk-radius-blob-sm);
-  flex-shrink: 0;
   background: var(--xk-surface-2);
 }
 
 .body {
   min-width: 0;
-  flex: 1;
+  padding: 8px 8px 0;
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
 }
 
 .title {
   margin: 0;
-  font-size: var(--xk-fs-15);
+  font-size: var(--xk-fs-14);
   font-weight: 600;
   line-height: 1.4;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  /* 瀑布列宽比原来窄，标题不换行会溢出 */
+  overflow-wrap: anywhere;
 }
 
 .meta {
-  margin: 0;
+  margin: 4px 0 0;
   color: var(--xk-text-3);
   font-size: var(--xk-fs-12);
+  font-variant-numeric: tabular-nums;
 }
 
 .who-line {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-top: 10px;
+  gap: 6px;
+  padding: 6px 8px 8px;
 }
 
 .author {
@@ -496,6 +562,20 @@ type="search"
   cursor: not-allowed;
 }
 
+/* ---------------- 移动端隐藏个人信息卡片（<1024） ---------------- */
+
+/*
+  资料卡只在桌面作左栏。移动端整块 display:none：它同时退出无障碍树和 Tab 序，
+  所以读屏不会念、键盘也 tab 不到。功能入口在 TabBar（发布/我的）与「我的」页
+  （关注/粉丝/退出），删掉不会丢功能。
+  ⚠️ 断点归 CSS 管，组件不监听 resize（AGENTS.md）。
+*/
+@media (max-width: 1023px) {
+  .who-card {
+    display: none;
+  }
+}
+
 /* ---------------- 桌面端（≥1024px，抄小红书：顶栏在 SiteNav，主体左栏 + 右瀑布） ---------------- */
 
 @media (min-width: 1024px) {
@@ -504,7 +584,7 @@ type="search"
    * acts 起于 853，中间空 228px —— 这就是「只是把尺寸拉大」的实证。
    * 现在改 grid：左 240 资料栏吸顶，右 1fr 瀑布。
    *
-   * 没有加任何包裹元素，所以移动端的 DOM 顺序（顶栏→卡片→搜索→瀑布）
+   * 没有加任何包裹元素，所以移动端的 DOM 顺序（顶栏→搜索→瀑布）
    * 一个字节都没动；这里只是换掉 .page 在桌面的布局方式。
    */
   .page {
@@ -543,44 +623,23 @@ type="search"
     width: auto;
   }
 
-  /* 关注流改 CSS columns 瀑布（正是小红书的墙感），类名与 data-test 全部不动 */
+  /* 瀑布列数 2 → 4，卡片样式已在基础规则里（移动端同款），这里只改列宽间距 */
   .items {
-    display: block;
     columns: 4;
     column-gap: 20px;
   }
 
   .item,
   .item:first-child {
-    break-inside: avoid;
     margin: 0 0 20px;
-    padding: 0;
-    border: var(--xk-stroke-w) solid var(--xk-stroke);
-    border-radius: var(--xk-radius-blob);
-    background: var(--xk-surface);
-    box-shadow: var(--xk-shadow-hard-sm);
-    overflow: hidden;
-    transition: transform 0.12s ease;
-  }
-
-  .item:hover {
-    transform: translate(-2px, -2px);
-  }
-
-  .main {
-    flex-direction: column;
-    gap: 0;
-  }
-
-  .cover {
-    width: 100%;
-    height: auto;
-    aspect-ratio: 3 / 4;
-    border-radius: 0;
   }
 
   .body {
     padding: 12px 12px 0;
+  }
+
+  .title {
+    font-size: var(--xk-fs-15);
   }
 
   .who-line {

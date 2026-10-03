@@ -136,7 +136,7 @@ cd backend && node scripts/contract-test.mjs
 # 换地址：XK_API_BASE=http://ip:8088 node scripts/contract-test.mjs
 
 # 前端（需前端 5180 + 后端 8088 同时在跑）
-# → 24 + 8 + 82 + 26 + 52 + 25 + 19 + 9 + 108 = 353 条
+# → 24 + 8 + 82 + 26 + 52 + 25 + 19 + 9 + 113 = 358 条
 cd frontend && npm run test:ui
 
 # 单跑某一组：:smoke / :refresh / :note / :profile / :interaction / :follow / :search / :idempotent / :layout
@@ -749,7 +749,7 @@ get('/comment/list', { params: { noteId, page } })    // ❌ 发出 ?params[note
   - **验收**：430 / 1280 各两张截图读图核对（移动吸底两行、桌面右栏评论区+
     两行操作栏、主题钮有字形）；4 个临时诊断脚本（`_shot` / `_diag-theme` /
     `_diag-icon` / `_check-icons`）用完即删。
-- **v1.2 之后的第五轮 —— 移动端导航缺失 + a11y/交互审计整改**，CDP 300 → **353**
+- **v1.2 之后的第五轮 —— 移动端导航缺失 + a11y/交互审计整改**，CDP 300 → **358**
   （smoke 26 / refresh 8 / note 77 / profile 26 / interaction 51 / follow 25 /
   search 19 / idempotent 9 / layout 108），契约仍 **355**（本轮后端只改了评论
   字数上限那一处，已单独验过）：

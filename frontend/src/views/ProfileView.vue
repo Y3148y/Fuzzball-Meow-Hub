@@ -169,14 +169,30 @@ async function logout() {
       </p>
 
       <dl class="stats">
-        <div class="stat">
+        <!--
+          关注/粉丝是**导航**（去 /follow/:id 与 /fans/:id），所以是 RouterLink。
+          首页资料卡在移动端已隐藏（display:none），这两个链接是移动端唯一能进
+          关注/粉丝列表的入口 —— 去掉它们，移动端就彻底没路可走了。
+          获赞没有对应列表，保持 <div>。
+        -->
+        <RouterLink
+          v-if="userStore.userInfo"
+          class="stat link"
+          :to="`/follow/${userStore.userInfo.id}`"
+          data-test="me-follow-link"
+        >
           <dt>关注</dt>
-          <dd data-test="me-follow">{{ userStore.userInfo?.followCount ?? 0 }}</dd>
-        </div>
-        <div class="stat">
+          <dd data-test="me-follow">{{ userStore.userInfo.followCount ?? 0 }}</dd>
+        </RouterLink>
+        <RouterLink
+          v-if="userStore.userInfo"
+          class="stat link"
+          :to="`/fans/${userStore.userInfo.id}`"
+          data-test="me-fans-link"
+        >
           <dt>粉丝</dt>
-          <dd data-test="me-fans">{{ userStore.userInfo?.fansCount ?? 0 }}</dd>
-        </div>
+          <dd data-test="me-fans">{{ userStore.userInfo.fansCount ?? 0 }}</dd>
+        </RouterLink>
         <div class="stat">
           <dt>获赞</dt>
           <dd data-test="me-like">{{ userStore.userInfo?.likeReceivedCount ?? 0 }}</dd>
@@ -441,6 +457,16 @@ class="xk-input area"
   border-radius: var(--xk-radius-blob-sm);
   background: var(--xk-surface-2);
   text-align: center;
+}
+
+/* 可点的那两格（关注/粉丝）：给出 hover / 指针，别让它看起来像纯数字 */
+.stat.link {
+  cursor: pointer;
+  transition: border-color 0.12s ease;
+}
+
+.stat.link:hover {
+  border-color: var(--xk-amber);
 }
 
 .stat dt {

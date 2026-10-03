@@ -129,8 +129,11 @@ try {
   await loginDemo(s, BASE)
   s.check('演示账号登录成功', true)
 
-  // 用户资料（关注数/粉丝数）由 loadProfile 拉，等它渲染出「关注」入口再往下走
-  await s.waitFor("document.querySelector('[data-test=home-follow]')", '首页数据')
+  // 用户资料（关注数/粉丝数）由 loadProfile 拉，等它渲染出关注入口再往下走。
+  // 走「我的」页的 me-follow-link：首页那张个人信息卡片在移动端已隐藏
+  //（display:none），再等 home-follow 就等于在等一个用户看不到的元素
+  await s.goto(`${BASE}/#/profile`)
+  await s.waitFor("document.querySelector('[data-test=me-follow]')", '「我的」页关注入口')
 
   /* ============ 基线归零：上次跑挂半路可能留下「已关注」残局 ============ */
 
@@ -243,10 +246,9 @@ try {
 
   /* ============ 关注列表页 ============ */
 
-  await s.goto(`${BASE}/#/`)
-  await s.waitFor("document.querySelector('[data-test=follow-list]') || document.querySelector('[data-test=follow-empty]')", '关注入口数据', 10000).catch(() => '')
-  await s.waitFor("document.querySelector('[data-test=home-follow]')", '首页就绪')
-  await click('home-follow')
+  await s.goto(`${BASE}/#/profile`)
+  await s.waitFor("document.querySelector('[data-test=me-follow-link]')", '「我的」页就绪')
+  await click('me-follow-link')
   await s.waitFor("location.hash.includes('#/follow/')", '进入关注列表', 10000)
   await s.waitFor(
     "document.querySelector('[data-test=follow-list]') || document.querySelector('[data-test=follow-empty]')",
@@ -267,9 +269,9 @@ try {
 
   /* ============ 粉丝列表页：空态 ============ */
 
-  await s.goto(`${BASE}/#/`)
-  await s.waitFor("document.querySelector('[data-test=home-fans]')", '首页就绪')
-  await click('home-fans')
+  await s.goto(`${BASE}/#/profile`)
+  await s.waitFor("document.querySelector('[data-test=me-fans-link]')", '「我的」页就绪')
+  await click('me-fans-link')
   await s.waitFor("location.hash.includes('#/fans/')", '进入粉丝列表', 10000)
   await s.waitFor(
     "document.querySelector('[data-test=follow-empty]') || document.querySelector('[data-test=follow-list]')",

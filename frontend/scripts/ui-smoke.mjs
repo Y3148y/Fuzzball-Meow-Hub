@@ -134,9 +134,12 @@ try {
   s.check('刷新后主题选择被持久化', (await s.evaluate("document.documentElement.dataset.theme")) === after)
 
   // 9. 退出登录
-  // 用 data-test 而不是 .xk-btn--ghost：那个 class 现在是「我的」按钮，
-  // 断言挂在一个含义会变的类名上，改个样式就悄悄变成测别的东西了
-  await s.evaluate("document.querySelector('[data-test=home-logout]').click()")
+  // 走「我的」页的 me-logout：首页那张个人信息卡片在移动端已隐藏
+  //（display:none），再点它就变成「测试在点用户看不到的东西」。
+  // 用 data-test 而不是类名：断言挂在一个含义会变的类名上，改个样式就悄悄变成测别的东西了
+  await s.goto(`${BASE}/#/profile`)
+  await s.waitFor("document.querySelector('[data-test=me-logout]')", '「我的」页退出按钮', 20000)
+  await s.evaluate("document.querySelector('[data-test=me-logout]').click()")
   await sleep(800)
   s.check('退出登录清空双 token',
     await s.evaluate("!localStorage.getItem('xk_token') && !localStorage.getItem('xk_refresh_token')"))

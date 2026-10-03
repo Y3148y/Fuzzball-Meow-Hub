@@ -109,8 +109,9 @@ try {
   s.check('演示账号登录成功', true)
 
   // ---- 2. 发布页走一遭：上传 + 发布
-  await s.waitFor("document.querySelector('[data-test=go-publish]')", '发布入口按钮')
-  await s.evaluate("document.querySelector('[data-test=go-publish]').click()")
+  // 走 TabBar 的发布钮：首页资料卡在移动端已隐藏（go-publish 不可见）
+  await s.waitFor("document.querySelector('[data-test=tab-publish]')", 'TabBar 发布按钮')
+  await s.evaluate("document.querySelector('[data-test=tab-publish]').click()")
   await s.waitFor("location.hash === '#/publish'", '跳到发布页', 20000)
   await s.waitFor("document.querySelector('[data-test=note-title]')", '标题输入框')
   const title = `幂等CDP${Date.now().toString(36).slice(-5)}`

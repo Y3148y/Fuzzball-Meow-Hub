@@ -49,10 +49,11 @@ try {
   const token = await s.evaluate("localStorage.getItem('xk_token')")
   const orig = await fetchMe(token)
 
-  // ---- 3. 首页有「我的」入口
-  await s.waitFor("document.querySelector('[data-test=go-profile]')", '我的入口按钮')
-  s.check('首页展示「我的」入口', true)
-  await s.evaluate("document.querySelector('[data-test=go-profile]').click()")
+  // ---- 3. 底部导航有「我的」入口
+  // 走 TabBar 的我的钮：首页资料卡在移动端已隐藏（go-profile 不可见）
+  await s.waitFor("document.querySelector('[data-test=tab-profile]')", 'TabBar 我的按钮')
+  s.check('底部导航展示「我的」入口', true)
+  await s.evaluate("document.querySelector('[data-test=tab-profile]').click()")
   await s.waitFor("location.hash === '#/profile'", '跳到我的页', 20000)
   s.check('点击入口跳转到 #/profile', true)
 

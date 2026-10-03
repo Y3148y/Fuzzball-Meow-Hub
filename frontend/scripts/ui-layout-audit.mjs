@@ -145,6 +145,22 @@ export const AUDIT_EXPR = `(() => {
       const d = [...new Set(lefts)].sort((a, b) => a - b)
       spec.homeColGap = d.length > 1 ? d[1] - d[0] : 0
     }
+    /* 个人信息卡片：只在桌面作左栏，移动端整块 display:none */
+    const wc = document.querySelector('.who-card')
+    spec.whoCard = wc ? getComputedStyle(wc).display : 'absent'
+    /*
+      封面「自适应」：卡片高度按图片**真实**宽高比，所以计算出的 aspect-ratio
+      必须等于 naturalWidth/naturalHeight（不是写死的 3/4）。
+      量不到图（懒加载未进视口）时 nat=0，跳过这条而不是假装通过。
+    */
+    const cv = document.querySelector('.items .cover')
+    if (cv) {
+      spec.coverRatio = getComputedStyle(cv).aspectRatio
+      spec.coverNat = cv.naturalWidth && cv.naturalHeight
+        ? cv.naturalWidth + '/' + cv.naturalHeight : ''
+      const r = cv.getBoundingClientRect()
+      spec.coverH = Math.round(r.height)
+    }
   } else if (h.startsWith('#/note/')) {
     const g = document.querySelector('.col-media .grid')
     if (g) {
@@ -496,9 +512,28 @@ function specChecks(s, label, w, r) {
       JSON.stringify({ present: tb.present, display: tb.display }))
   }
 
-  if (label === '首页' && w >= 1024) {
-    s.check('首页瀑布 columns=4 且相邻列距>100px',
-      sp.homeCols === '4' && sp.homeColGap > 100, `cols=${sp.homeCols} gap=${sp.homeColGap}`)
+  if (label === '首页') {
+    // 个人信息卡片：桌面显示（sticky 左栏），移动端整块隐藏
+    s.check(w >= 1024
+      ? '首页个人信息卡片在桌面显示（sticky 左栏）'
+      : '首页个人信息卡片在移动端隐藏（功能移到 TabBar 与「我的」页）',
+      sp.whoCard === (w >= 1024 ? 'flex' : 'none'),
+      `display=${sp.whoCard} vw=${w}`)
+    // 双列瀑布（移动）/ 四列（桌面）
+    s.check(w >= 1024
+      ? '首页瀑布 columns=4 且相邻列距>100px'
+      : '首页瀑布 columns=2（移动端也是双列，不是单列横排小方图）',
+      w >= 1024
+        ? (sp.homeCols === '4' && sp.homeColGap > 100)
+        : sp.homeCols === '2',
+      `cols=${sp.homeCols} gap=${sp.homeColGap} vw=${w}`)
+    // 封面按真实宽高比自适应，而不是一律裁 3/4
+    if (sp.coverNat) {
+      const want = sp.coverNat.replace(/(\d+)\/(\d+)/, '$1 / $2')
+      s.check('首页封面高度按图片真实宽高比自适应（不是写死 3/4）',
+        sp.coverRatio === want || sp.coverRatio === sp.coverNat,
+        `computed=${sp.coverRatio} natural=${sp.coverNat}`)
+    }
   }
   if (label === '详情页') {
     // 热区扫描放在最前：不达标先报，且报告里点名是谁

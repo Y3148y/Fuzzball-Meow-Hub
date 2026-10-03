@@ -248,6 +248,28 @@ try {
   s.check('一级评论总数显示为 1', (await text('comment-total')) === '1')
   s.check('自己发的评论带删除按钮', (await exists('comment-delete-btn')) === true)
 
+  // 评论操作钮是视觉降权的（无边框无底色），但热区不能降权：
+  // 原来 padding:0 + 无最小高度 → 按钮盒子就等于文字（19×16），
+  // layout 体检的「热区 ≥40」在**恰好有评论的笔记上**才抓得到，这里无条件钉死。
+  const cHot = await s.evaluate(`(() => {
+    const sel = ['comment-like-btn', 'comment-reply-btn', 'comment-delete-btn']
+    const out = []
+    for (const t of sel) {
+      for (const el of document.querySelectorAll('[data-test=' + t + ']')) {
+        const r = el.getBoundingClientRect()
+        out.push(t + ' ' + Math.round(r.width) + 'x' + Math.round(r.height))
+      }
+    }
+    return JSON.stringify(out)
+  })()`)
+  const cHotArr = JSON.parse(cHot)
+  s.check('评论的赞/回复/删除按钮热区都 ≥40×40（视觉降权不等于热区降权）',
+    cHotArr.length >= 3 && cHotArr.every((x) => {
+      const m = x.match(/(\d+)x(\d+)$/)
+      return m && +m[1] >= 40 && +m[2] >= 40
+    }),
+    cHot)
+
   // 空白内容不该发得出去
   await setValue('[data-test=comment-input]', '   ')
   s.check('只有空白时「发表」按钮禁用', (await disabled('comment-submit')) === true)

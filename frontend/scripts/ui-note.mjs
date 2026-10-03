@@ -305,49 +305,111 @@ try {
     Math.abs(tr.barH - tr.barVar) <= 2 && Math.abs(tr.pagePad - tr.barH) <= 2,
     `barH=${tr.barH} --bar-h=${tr.barVar} pagePad=${tr.pagePad}`)
 
-  // ---- 8.5 桌面端两栏：1280 宽下图片独占左栏、标题在右栏；切回手机恢复单列
+  // ---- 8.5 桌面两栏（用户要求：评论**放在照片下面**，展开长文不推动评论）
   await s.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
-  await sleep(500)
-  // 网格容器从 .detail-grid 升格成 .card 本身 —— 只有这样评论区才能作为
-  // 同一个网格的直接子元素进右栏（.detail-grid 全程 display:contents）
+  await sleep(600)
   const gridHost = await s.evaluate(`(() => {
     const card = document.querySelector('[data-test=note-detail]')
-    const sec = document.querySelector('[data-test=comment-section]')
+    const media = document.querySelector('.col-media')
+    const text = document.querySelector('.col-text')
     return JSON.stringify({
       cardDisplay: getComputedStyle(card).display,
       cols: getComputedStyle(card).gridTemplateColumns,
-      dg: getComputedStyle(document.querySelector('.detail-grid')).display,
-      secCol: getComputedStyle(sec).gridColumnStart,
+      mediaDisplay: getComputedStyle(media).display,
+      mediaCol: getComputedStyle(media).gridColumnStart,
+      textCol: getComputedStyle(text).gridColumnStart,
     })
   })()`)
   const gh = JSON.parse(gridHost)
-  s.check('桌面视口下详情卡片是两栏 grid（评论区与正文同容器）',
-    gh.cardDisplay === 'grid' && gh.dg === 'contents' && gh.secCol === '2',
+  s.check('桌面视口下卡片是两栏网格，.col-media / .col-text 各占一列',
+    gh.cardDisplay === 'grid' && gh.mediaDisplay === 'block'
+      && gh.mediaCol === '1' && gh.textCol === '2',
     JSON.stringify(gh))
+
   const twoCol = await s.evaluate(`(() => {
     const img = document.querySelector('[data-test=note-detail-images]').getBoundingClientRect()
     const title = document.querySelector('[data-test=note-detail-title]').getBoundingClientRect()
     return { imgLeft: Math.round(img.left), titleLeft: Math.round(title.left) }
   })()`)
   s.check('桌面视口下图片在左栏、标题在右栏', twoCol.imgLeft < twoCol.titleLeft, JSON.stringify(twoCol))
-  // ---- 8.6 v1.2 截图反馈：右栏连续堆叠 + 多图轮播真的能切
-  const stackGap = await s.evaluate(`(() => {
-    const t = document.querySelector('[data-test=note-detail-title]').getBoundingClientRect()
-    const w = document.querySelector('.who').getBoundingClientRect()
-    return Math.round(w.top - t.bottom)
+
+  // ---- 评论紧贴照片下方，且与照片同在左栏
+  const underPhoto = await s.evaluate(`(() => {
+    const img = document.querySelector('[data-test=note-detail-images]').getBoundingClientRect()
+    const sec = document.querySelector('[data-test=comment-section]').getBoundingClientRect()
+    const content = document.querySelector('[data-test=note-detail-content]').getBoundingClientRect()
+    return JSON.stringify({
+      gapBelowPhoto: Math.round(sec.top - img.bottom),
+      leftAlign: Math.round(sec.left - img.left),
+      // 评论在正文列之外（正文列起点远在右边）
+      contentLeft: Math.round(content.left),
+      secLeft: Math.round(sec.left),
+    })
   })()`)
-  s.check('桌面右栏标题与作者紧邻（图片列不再撑出大空白）',
-    stackGap >= -8 && stackGap < 40, `gap=${stackGap}px`)
-  // ---- 8.6b 桌面：吸底壳撤掉、操作栏落在评论区下面，且两者都在**右栏**
-  // （旧版是整卡通栏 1120px，而上方正文栏只有 648px —— 用户反馈"位置不对"）
+  const up = JSON.parse(underPhoto)
+  s.check('桌面评论区紧贴照片下方（同一栏，间距 <24px）',
+    up.gapBelowPhoto >= -4 && up.gapBelowPhoto < 24, `gap=${up.gapBelowPhoto}px`)
+  s.check('桌面评论区与照片左缘对齐、且不在正文那一栏',
+    Math.abs(up.leftAlign) <= 2 && up.secLeft < up.contentLeft - 100, JSON.stringify(up))
+
+  // ---- 用户要求：用户信息在最上面、标题和正文一起（作者别夹在标题与正文中间）
+  const order3 = await s.evaluate(`(() => {
+    const b = (sel) => {
+      const el = document.querySelector(sel)
+      if (!el) return null
+      const r = el.getBoundingClientRect()
+      return { top: Math.round(r.top), bottom: Math.round(r.bottom), left: Math.round(r.left) }
+    }
+    return JSON.stringify({
+      who: b('.who'), title: b('[data-test=note-detail-title]'),
+      content: b('[data-test=note-detail-content]'),
+      img: b('[data-test=note-detail-images]'),
+      authorName: (document.querySelector('[data-test=note-detail-author]')?.textContent || '').trim(),
+    })
+  })()`)
+  const o3 = JSON.parse(order3)
+  s.check('桌面右栏顺序：作者 → 标题 → 正文（作者在最上面，标题与正文相邻）',
+    o3.who.bottom <= o3.title.top + 2 && o3.title.bottom <= o3.content.top + 2,
+    `who.bottom=${o3.who.bottom} title.top=${o3.title.top} `
+    + `title.bottom=${o3.title.bottom} content.top=${o3.content.top}`)
+  s.check('作者区与正文同在右栏、且在图片那一栏之上',
+    Math.abs(o3.who.left - o3.title.left) <= 2 && Math.abs(o3.who.left - o3.content.left) <= 2
+      && o3.who.top <= o3.img.top + 2,
+    `who.left=${o3.who.left} title.left=${o3.title.left} content.left=${o3.content.left} `
+    + `who.top=${o3.who.top} img.top=${o3.img.top}`)
+
+  // ---- 用户的核心诉求：展开长文**不能**把评论往下推
+  // 这一节看的是短正文笔记，没有展开按钮可点；真正的检查在第 15 节
+  //（那里发布了长正文笔记）用同一套几何断言做。
+  const hasExpandBtn = await s.evaluate("!!document.querySelector('[data-test=note-expand]')")
+  if (hasExpandBtn) {
+    const beforeExpand = await s.evaluate(
+      "Math.round(document.querySelector('[data-test=comment-section]').getBoundingClientRect().top)",
+    )
+    await s.evaluate("document.querySelector('[data-test=note-expand]').click()")
+    await sleep(500)
+    const afterExpand = await s.evaluate(
+      "Math.round(document.querySelector('[data-test=comment-section]').getBoundingClientRect().top)",
+    )
+    s.check('展开长文后评论区位置不动（评论在照片下方，不受正文高度影响）',
+      Math.abs(afterExpand - beforeExpand) <= 2,
+      `展开前 top=${beforeExpand} 展开后 top=${afterExpand}`)
+    await s.evaluate("document.querySelector('[data-test=note-expand]').click()")
+    await sleep(300)
+  } else {
+    s.log('本节笔记是短正文（无展开按钮），"展开不动评论"在第 15 节的长正文笔记上验')
+  }
+
+  // ---- 操作栏在评论区下面（评论区的页脚），仍在左栏
   const deskBar = await s.evaluate(`(() => {
     const bar = document.querySelector('[data-test=action-bar]')
     const c = document.querySelector('[data-test=note-detail-content]')
     const sec = document.querySelector('[data-test=comment-section]')
+    const img = document.querySelector('[data-test=note-detail-images]')
     const t = document.querySelector('[data-test=note-detail-title]')
-    if (!bar || !c || !sec || !t) return JSON.stringify({ miss: true })
+    if (!bar || !c || !sec || !t || !img) return JSON.stringify({ miss: true })
     const br = bar.getBoundingClientRect(), sr = sec.getBoundingClientRect()
-    const tr = t.getBoundingClientRect(), cr = c.getBoundingClientRect()
+    const ir = img.getBoundingClientRect(), cr = c.getBoundingClientRect()
     const keys = bar.querySelector('.bar-keys').getBoundingClientRect()
     const input = bar.querySelector('[data-test=comment-input]').getBoundingClientRect()
     const send = bar.querySelector('[data-test=comment-submit]').getBoundingClientRect()
@@ -356,16 +418,12 @@ try {
       pos: cs.position,
       shadow: cs.boxShadow,
       bg: cs.backgroundColor,
+      belowComments: Math.round(br.top - sr.bottom),
       leftAlign: Math.round(br.left - sr.left),
       widthMatch: Math.abs(br.width - sr.width) <= 2,
-      belowComments: Math.round(br.top - sr.bottom),
-      isLast: bar.parentElement.lastElementChild === bar,
-      // 评论区与正文同在右栏：左缘对齐，且都不是整卡宽
-      secLeftAlign: Math.round(sr.left - cr.left),
-      secNarrow: sr.width < 700,
-      barNarrow: br.width < 700,
+      leftIsPhotoCol: Math.abs(br.left - ir.left) <= 2,
+      notInTextCol: br.left < cr.left - 100,
       secWidth: Math.round(sr.width),
-      // 两行结构在桌面同样成立
       flexDir: cs.flexDirection,
       inputFull: Math.abs(input.width - br.width) <= 2,
       keysBelowInput: Math.round(keys.top - input.bottom),
@@ -378,14 +436,11 @@ try {
   const db = JSON.parse(deskBar)
   s.check('桌面操作栏静置流内（撤掉吸底壳：无底色无浮层阴影）',
     db.pos === 'static' && db.bg === 'rgba(0, 0, 0, 0)' && db.shadow === 'none', JSON.stringify(db))
-  s.check('桌面操作栏在评论区之下、且是卡片最后一个元素',
-    db.belowComments >= -4 && db.isLast === true, `belowComments=${db.belowComments} isLast=${db.isLast}`)
-  s.check('桌面评论区与操作栏都在右栏（不再是 1120px 整卡通栏）',
-    db.secNarrow === true && db.barNarrow === true && Math.abs(db.secLeftAlign) <= 2,
-    `secW=${db.secWidth} barNarrow=${db.barNarrow} Δleft=${db.secLeftAlign}`)
-  s.check('桌面操作栏与评论区同宽、左缘对齐（评论区的页脚）',
-    Math.abs(db.leftAlign) <= 2 && db.widthMatch === true,
-    `Δleft=${db.leftAlign}px sameWidth=${db.widthMatch}`)
+  s.check('桌面操作栏在评论区之下、与评论区同宽同左缘',
+    db.belowComments >= -4 && Math.abs(db.leftAlign) <= 2 && db.widthMatch === true,
+    `below=${db.belowComments} Δleft=${db.leftAlign} sameWidth=${db.widthMatch}`)
+  s.check('桌面评论区与操作栏都在左栏（照片那一栏），不在正文栏',
+    db.leftIsPhotoCol === true && db.notInTextCol === true, `secW=${db.secWidth} ${JSON.stringify(db)}`)
   s.check('桌面操作栏也是两行：行1 输入通栏，行2 发表 + 三键',
     db.flexDir === 'column' && db.inputFull === true && db.keysBelowInput >= 0
       && db.keysBelowInput < 24 && db.sendW >= 44 && db.sendH >= 44 && db.keysRightOfSend > 0,
@@ -423,14 +478,38 @@ await s.evaluate("document.querySelector('[data-test=img-next]').click()")
   })()`.replace('__TRACK0__', track0))
   s.check('轮播轨道确实位移（换图真实发生）', track0 !== track1, `${track0} → ${track1}`)
   await s.send('Emulation.clearDeviceMetricsOverride')
-  await sleep(300)
+  await sleep(400)
   const singleCol = await s.evaluate(`(() => {
-    const img = document.querySelector('[data-test=note-detail-images]').getBoundingClientRect()
-    const title = document.querySelector('[data-test=note-detail-title]').getBoundingClientRect()
-    return { imgLeft: Math.round(img.left), titleLeft: Math.round(title.left) }
+    const box = (sel) => {
+      const el = document.querySelector(sel)
+      if (!el) return null
+      const r = el.getBoundingClientRect()
+      return { left: Math.round(r.left), top: Math.round(r.top), bottom: Math.round(r.bottom) }
+    }
+    return JSON.stringify({
+      img: box('[data-test=note-detail-images]'),
+      title: box('[data-test=note-detail-title]'),
+      who: box('.who'),
+      content: box('[data-test=note-detail-content]'),
+      sec: box('[data-test=comment-section]'),
+      cardDisplay: getComputedStyle(document.querySelector('[data-test=note-detail]')).display,
+      mediaDisplay: getComputedStyle(document.querySelector('.col-media')).display,
+    })
   })()`)
-  s.check('切回手机视口后恢复单列（图片与标题左边缘对齐）', singleCol.imgLeft === singleCol.titleLeft,
-    JSON.stringify(singleCol))
+  const sc = JSON.parse(singleCol)
+  s.check('切回手机视口后恢复单列（图片与标题左边缘对齐）',
+    sc.cardDisplay === 'flex' && sc.mediaDisplay === 'contents'
+      && sc.img.left === sc.title.left,
+    JSON.stringify(sc))
+  // 用户要求：移动端照片放在**全文上面**、作者在标题上方
+  //（顺序是 图片 → 作者 → 标题 → 正文 → 评论）
+  s.check('移动端顺序：图片 → 作者 → 标题 → 正文 → 评论',
+    sc.img.bottom <= sc.who.top + 2
+      && sc.who.bottom <= sc.title.top + 2
+      && sc.title.bottom <= sc.content.top + 2
+      && sc.content.bottom <= sc.sec.top + 2,
+    `img.bottom=${sc.img.bottom} who.top=${sc.who.top} `
+    + `title.top=${sc.title.top} content.top=${sc.content.top} sec.top=${sc.sec.top}`)
 
   // ---- 9. 详情接口对不存在的 ID 返回可读提示
   const missing = await (await fetch(`${API}/api/note/123456789012345`, {
@@ -455,6 +534,28 @@ await s.evaluate("document.querySelector('[data-test=img-next]').click()")
   s.check('作者「编辑」是真链接（RouterLink，带 href），不是 button',
     et.tag === 'A' && typeof et.href === 'string' && et.href.includes('/edit/'),
     editTag)
+
+  // 三个按钮的**文字要各自在自己盒子里垂直居中**。「编辑」是 <a>，另两个是
+  // <button>：Chrome 只给 <button> 做内容居中，<a> 曾把行盒贴在 40px 盒子顶部
+  // （上 2px / 下 22px，字往上飘，截图可见）。CSS 已改 inline-flex，这里钉死。
+  const opCenters = await s.evaluate(`(() => {
+    const r = document.createRange()
+    return JSON.stringify([...document.querySelectorAll('[data-test=note-author-ops] .op')].map((el) => {
+      r.selectNodeContents(el)
+      const t = r.getBoundingClientRect()
+      const b = el.getBoundingClientRect()
+      return {
+        test: el.dataset.test,
+        h: Math.round(b.height),
+        top: Math.round(t.top - b.top),
+        bottom: Math.round(b.bottom - t.bottom),
+      }
+    }))
+  })()`)
+  const opc = JSON.parse(opCenters)
+  s.check('编辑/上下架/删除三个按钮的文字都垂直居中（上间距≈下间距）',
+    opc.length === 3 && opc.every((o) => o.h >= 40 && Math.abs(o.top - o.bottom) <= 2),
+    opCenters)
   await s.evaluate("document.querySelector('[data-test=note-edit-btn]').click()")
   await s.waitFor(`location.hash === '#/edit/' + ${JSON.stringify(noteId)}`, '跳到编辑页', 20000)
   s.check('点「编辑」跳到 #/edit/{id}', true, await s.evaluate('location.hash'))
@@ -630,7 +731,9 @@ await s.evaluate("document.querySelector('[data-test=img-next]').click()")
   await s.waitFor("location.hash === '#/publish'", '跳发布页', 20000)
   await s.waitFor("document.querySelector('[data-test=note-title]')", '标题输入框')
   // 12 段 × 约 30 字 ≈ 360 字：手机 8 行（约 176 字）必然截断，桌面 12 行也截断
-  const longText = Array.from({ length: 12 }, (_, i) => `第${i + 1}段` + '长正文折叠测试内容。'.repeat(2)).join('\n')
+  // 20 段：桌面折叠阈值是 12 行，正文必须**在桌面也溢出**，否则展开按钮
+  // 不会出现（12 段刚好被 12 行装下，按钮合理地不渲染）
+  const longText = Array.from({ length: 20 }, (_, i) => `第${i + 1}段` + '长正文折叠测试内容。'.repeat(2)).join('\n')
   await s.evaluate(`
     (() => {
       const set = (el, v) => {
@@ -718,6 +821,30 @@ await s.evaluate("document.querySelector('[data-test=img-next]').click()")
     "getComputedStyle(document.querySelector('[data-test=note-detail-content]')).webkitLineClamp",
   )
   s.check('桌面折叠阈值放宽到 12 行', deskClamp === '12', `clamp=${deskClamp}`)
+
+  // 长正文笔记 + 桌面：展开正文不能让评论往下移（评论在照片下方那一栏）
+  const stableTop = await s.evaluate("Math.round(document.querySelector('[data-test=comment-section]').getBoundingClientRect().top)")
+  await s.waitFor("!!document.querySelector('[data-test=note-expand]')", '展开按钮（桌面仍溢出）', 5000)
+    .catch(() => false)
+  await s.evaluate("document.querySelector('[data-test=note-expand]')?.click()")
+  await sleep(600)
+  const movedTop = await s.evaluate(`(() => {
+    const sec = document.querySelector('[data-test=comment-section]').getBoundingClientRect()
+    const img = document.querySelector('[data-test=note-detail-images]').getBoundingClientRect()
+    return JSON.stringify({
+      top: Math.round(sec.top),
+      gapBelowPhoto: Math.round(sec.top - img.bottom),
+      sameLeft: Math.round(sec.left - img.left),
+    })
+  })()`)
+  const mt = JSON.parse(movedTop)
+  s.check('展开长文后评论区仍在照片正下方且位置不动（桌面）',
+    Math.abs(mt.top - stableTop) <= 2 && mt.gapBelowPhoto >= -4 && mt.gapBelowPhoto < 24
+      && Math.abs(mt.sameLeft) <= 2,
+    `展开前=${stableTop} 展开后=${JSON.stringify(mt)}`)
+  await s.evaluate("document.querySelector('[data-test=note-expand]').click()")
+  await sleep(300)
+
   await s.send('Emulation.clearDeviceMetricsOverride')
   await sleep(300)
 

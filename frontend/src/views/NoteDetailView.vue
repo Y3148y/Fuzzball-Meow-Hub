@@ -522,77 +522,22 @@ onBeforeUnmount(() => {
       data-test="note-detail"
       :style="{ '--img-ratio': String(activeRatio) }"
     >
-      <!--
-        桌面端（≥1024px）两栏：图片轮播绝对定位挂左栏（--media-h 撑高），
-        标题/作者/正文/计数是右栏的普通网格单元 —— 图片列再高也不会把
-        右栏行高撑开、在标题和作者之间顶出一大片空白（截图反馈过的 bug：
-        旧 grid-row:1/-1 在隐式网格退化成单行，整摞图片高度灌进第一行）。
-        移动端这里 display:contents，顺序（标题→作者→正文→图片→计数）与
-        改造前完全一致；--img-ratio 是当前图的真实宽高比。
+<!--
+        两个栏容器：.col-media（图片 + 评论 + 操作栏）与 .col-text（标题/作者/正文）。
 
-        桌面端这个 div 不再是网格容器（全程 display:contents）：网格容器
-        升格成了 .card 本身，这样**评论区**（.comments）能作为同一个网格的
-        直接子元素进右栏 —— 用户反馈"吸底区 1120px 通栏、正文栏才 648px"
-        时位置不对。移动端 .card 仍是普通块级流，DOM 顺序一字未动。
+        为什么必须是两个容器而不是"一个网格 + 逐个 grid-column"：
+        网格的**行是跨栏共享的**。若把评论放进第 1 栏第 2 行，这一行的起点
+        会是「图片高度」与「标题+作者高度」的较大值 —— 评论就被推下去了，
+        而用户要的正是「评论**紧贴照片下方**、展开长文不被推动」。所以两栏
+        必须是各自独立堆叠的网格项（各占一列），行高互不影响。
+
+        桌面（≥1024）：.card 是两栏网格，两容器各占一列 →
+          左 = 图片 → 评论 → 操作栏；右 = 标题 → 作者 → 正文
+        移动（<1024）：两个容器 display:contents，.card 变 flex 列，
+          靠 order 把图片提到全文之前（见样式里的 order 注释）→
+          图片 → 标题 → 作者 → 正文 → 评论
       -->
-      <div class="detail-grid">
-        <h1 class="title" data-test="note-detail-title">{{ note.title }}</h1>
-
-        <div class="who">
-          <img class="avatar" src="/mascot/m02.webp" alt="" width="34" height="34" />
-          <div class="names">
-            <p class="nickname" data-test="note-detail-author">{{ note.authorNickname }}</p>
-            <p class="time">{{ formatDateTime(note.createTime) }}</p>
-          </div>
-          <button
-            v-if="!isMyNote"
-            class="follow"
-            :class="{ on: isFollowingAuthor }"
-            type="button"
-            :disabled="followingAuthor"
-            data-test="note-follow"
-            @click="toggleFollowAuthor"
-          >
-            {{ isFollowingAuthor ? '已关注' : '关注' }}
-          </button>
-
-          <div v-else class="mine-ops" data-test="note-author-ops">
-            <RouterLink class="op" :to="`/edit/${note!.id}`" data-test="note-edit-btn">编辑</RouterLink>
-            <button
-              type="button"
-              class="op"
-              :disabled="mutating"
-              @click="toggleStatus"
-              data-test="note-status-btn"
-            >
-              {{ note!.status === 2 ? '上架' : '下架' }}
-            </button>
-            <button type="button" class="op danger" :disabled="mutating" @click="removeNote" data-test="note-delete-btn">
-              删除
-            </button>
-          </div>
-        </div>
-
-        <p
-          ref="contentEl"
-          class="content"
-          :class="{ clamped: contentClamped }"
-          data-test="note-detail-content"
-        >
-          {{ note.content }}
-        </p>
-
-        <button
-          v-if="contentOverflows"
-          class="expand"
-          type="button"
-          :aria-expanded="contentExpanded"
-          data-test="note-expand"
-          @click="toggleContent"
-        >
-          {{ contentExpanded ? '收起' : '展开全文' }}
-        </button>
-
+      <div class="col-media">
         <div v-if="note.images.length" class="grid" data-test="note-detail-images">
           <van-swipe
             ref="swipeRef"
@@ -609,8 +554,8 @@ onBeforeUnmount(() => {
 
                 刻意不写 width/height 属性：轮播图的宽高比每张都不同，
                 写死任何一对都会和 CSS 的 aspect-ratio 打架。占位由
-                .grid 的 aspect-ratio + 绝对定位高度完全确定（真实尺寸在
-                onImgLoad 里量），布局不会因为图片到达而跳动，不构成 CLS。
+                .grid 的 aspect-ratio 完全确定（真实尺寸在 onImgLoad 里量），
+                布局不会因为图片到达而跳动，不构成 CLS。
                 对比：.avatar / .c-avatar 尺寸固定，已经补上 width/height。
               -->
               <img :src="src" :alt="note.title" @load="onImgLoad(i, $event)" />
@@ -625,23 +570,22 @@ onBeforeUnmount(() => {
         </div>
 
         <p v-if="notFound" class="gone">内容已不可见</p>
-      </div>
 
-      <!-- ================= 评论 ================= -->
-      <section class="comments" data-test="comment-section">
-        <h2 class="c-title">
-          评论
-          <span class="c-total" data-test="comment-total">{{ commentTotal }}</span>
-        </h2>
+        <!-- ================= 评论 ================= -->
+        <section class="comments" data-test="comment-section">
+          <h2 class="c-title">
+            评论
+            <span class="c-total" data-test="comment-total">{{ commentTotal }}</span>
+          </h2>
 
-        <p v-if="loadingComments" class="c-hint">评论加载中…</p>
+          <p v-if="loadingComments" class="c-hint">评论加载中…</p>
 
-        <p v-else-if="!comments.length" class="c-hint" data-test="comment-empty">还没有评论，来说两句吧</p>
+          <p v-else-if="!comments.length" class="c-hint" data-test="comment-empty">还没有评论，来说两句吧</p>
 
-        <ul v-else class="c-list" data-test="comment-list">
-          <li v-for="c in comments" :key="c.id" class="c-item" data-test="comment-item">
-            <img class="c-avatar" src="/mascot/m02.webp" alt="" width="28" height="28" />
-            <div class="c-main">
+          <ul v-else class="c-list" data-test="comment-list">
+            <li v-for="c in comments" :key="c.id" class="c-item" data-test="comment-item">
+              <img class="c-avatar" src="/mascot/m02.webp" alt="" width="28" height="28" />
+              <div class="c-main">
               <p class="c-nick">{{ c.nickname }}</p>
               <p class="c-content" data-test="comment-content">{{ c.content }}</p>
               <p class="c-meta">{{ formatDateTime(c.createTime) }}</p>
@@ -838,6 +782,73 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </div>
+        </div>
+        <!-- /.col-media -->
+
+        <!-- ================= 右栏：作者 / 标题+正文 ================= -->
+        <!--
+          作者区在标题**上方**、标题与正文紧挨着（用户要求：用户信息在最上面，
+          标题应该和文章一起）。别再把 .who 塞回标题和正文中间。
+        -->
+        <div class="col-text">
+          <div class="who">
+            <img class="avatar" src="/mascot/m02.webp" alt="" width="34" height="34" />
+            <div class="names">
+              <p class="nickname" data-test="note-detail-author">{{ note.authorNickname }}</p>
+              <p class="time">{{ formatDateTime(note.createTime) }}</p>
+            </div>
+            <button
+              v-if="!isMyNote"
+              class="follow"
+              :class="{ on: isFollowingAuthor }"
+              type="button"
+              :disabled="followingAuthor"
+              data-test="note-follow"
+              @click="toggleFollowAuthor"
+            >
+              {{ isFollowingAuthor ? '已关注' : '关注' }}
+            </button>
+
+            <div v-else class="mine-ops" data-test="note-author-ops">
+              <RouterLink class="op" :to="`/edit/${note!.id}`" data-test="note-edit-btn">编辑</RouterLink>
+              <button
+                type="button"
+                class="op"
+                :disabled="mutating"
+                data-test="note-status-btn"
+                @click="toggleStatus"
+              >
+                {{ note!.status === 2 ? '上架' : '下架' }}
+              </button>
+              <button type="button" class="op danger" :disabled="mutating" data-test="note-delete-btn" @click="removeNote">
+                删除
+              </button>
+            </div>
+          </div>
+
+          <h1 class="title" data-test="note-detail-title">{{ note.title }}</h1>
+
+          <p
+            ref="contentEl"
+            class="content"
+            :class="{ clamped: contentClamped }"
+            data-test="note-detail-content"
+          >
+            {{ note.content }}
+          </p>
+
+          <button
+            v-if="contentOverflows"
+            class="expand"
+            type="button"
+            :aria-expanded="contentExpanded"
+            data-test="note-expand"
+            @click="toggleContent"
+          >
+            {{ contentExpanded ? '收起' : '展开全文' }}
+          </button>
+        </div>
+        <!-- /.col-text -->
     </article>
   </main>
 </template>
@@ -957,6 +968,12 @@ onBeforeUnmount(() => {
 }
 
 .op {
+  /* 三个按钮里「编辑」是 RouterLink 的 <a>，另两个是真 <button>：Chrome 只给
+     <button> 做内容居中，<a> 会把 16px 高的行盒贴在 40px 盒子顶部（实测上 2px /
+     下 22px，字看着往上飘）。显式 inline-flex + align-items 让三者一致。 */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   min-height: 40px;
   padding: 0 12px;
   border: var(--xk-stroke-w) solid var(--xk-border);
@@ -1016,22 +1033,64 @@ onBeforeUnmount(() => {
   text-decoration: underline;
 }
 
-/**
- * 移动端相当于透明：display:contents 让子元素照旧参与父级 .card 的平铺流，
- * 顺序（标题→作者→正文→图片→计数）与改造前完全一致。
+/*
+ * 移动端（<1024）：单列，顺序 = **图片 → 标题 → 作者 → 正文 → 评论**。
+ *
+ * 实现要点：两个栏容器都是 display:contents，所以它们的子元素会**提升**成
+ * .card 的 flex 子项；.card 因此改成 flex 列，再用 `order` 排出想要的顺序。
+ * 为什么不能靠 DOM 顺序：桌面要的顺序（图片/评论/操作栏 在左，标题/作者/正文
+ * 在右）与移动端要的顺序**互不相同**，单一 DOM 顺序满足不了两者 ——
+ * display:contents + order 才能让一套 DOM 出两种排布。
  */
-.detail-grid {
+.card {
+  display: flex;
+  flex-direction: column;
+  /* 间距仍由各块自己的 margin 管，这里不能加 gap，否则全部块之间多出一截 */
+  gap: 0;
+}
+
+.col-media,
+.col-text {
   display: contents;
 }
 
+/* order 只影响 flex 子项的视觉顺序，不影响 tab 顺序（DOM 顺序不变） */
+.grid {
+  order: 1;
+}
+/* 作者在标题上方（与右栏一致）：图片 → 作者 → 标题 → 正文 */
+.who {
+  order: 2;
+}
+.title {
+  order: 3;
+}
+.content {
+  order: 4;
+}
+.expand {
+  order: 5;
+}
+.gone {
+  order: 6;
+}
+.comments {
+  order: 7;
+}
+/* 移动端操作栏是 position:fixed，order 无视觉影响；给 8 是为了 DOM 读起来一致 */
+.actionbar {
+  order: 8;
+}
+
 /*
- * 图片轮播（截图反馈）：容器按当前图的真实宽高比定高（--img-ratio 从
- * .detail-grid 继承），圆角裁住内层滑轨。桌面端这块改绝对定位，规则在
- * 下面的 @media 里。
+ * 图片轮播：容器按当前图的真实宽高比定高（--img-ratio 从 <article> 继承），
+ * 圆角裁住内层滑轨。桌面端它就是左栏的第一块，靠 aspect-ratio 定高，
+ * 不再需要绝对定位 —— 绝对定位那套（--media-h / min-height / align-content）
+ * 是为了「评论进右栏」才加的，现在两栏各自独立堆叠，那套可以整个拆掉。
  */
 .grid {
   position: relative;
-  margin: 16px 0 0;
+  margin: 0 0 16px;
   border-radius: var(--xk-radius-blob);
   overflow: hidden;
   background: var(--xk-surface-2);
@@ -1113,25 +1172,37 @@ onBeforeUnmount(() => {
     --xk-col1-narrow: 620px; /* 无图笔记退回单栏时的带宽 */
 
     /*
-     * 图列固定 440、右栏吃掉剩余。之前是 1fr + 420 —— 图列被撑到 704px，
-     * 高 1420px，而右栏正文只有几十 px，右侧空一大片。
-     * 440 配合图片原比例，一条正文笔记的高度才对得上。
+     * 桌面两栏（用户明确要求：评论**放在照片下面**，展开长文不会推动评论）：
+     *   左栏 = 图片 → 评论 → 操作栏；右栏 = 标题 → 作者 → 正文
      *
-     * 网格容器是 .card 而不是 .detail-grid（后者全程 display:contents）：
-     * 只有让 .comments 成为同一个网格的直接子元素，评论区才能进右栏。
-     * .card 的内容盒与原来的 .detail-grid 盒子同宽同 padding，列宽与
-     * 图框定位因此不受影响。移动端 .card 不进这条媒体查询，仍是块级流。
+     * 两个栏容器各自是一个网格项、各占一列，因此**行高互不影响** ——
+     * 正文展开变长只会让右栏变高，左栏的评论停在原地。
+     * （早先那版把评论放进右栏、用 grid-row 逐个摆位，行的起点是跨栏共享的，
+     * 评论会被右栏高度推下去，正好是用户不要的那个行为。）
      */
     display: grid;
     grid-template-columns: minmax(0, var(--xk-col1)) minmax(0, 1fr);
     column-gap: var(--xk-colgap);
-    row-gap: 4px;
-    align-items: start;
+    align-items: start; /* 两栏各自贴顶堆叠，不互相拉伸 */
+  }
+
+  /* 桌面下两个容器恢复成真正的栏（不再是 display:contents） */
+  .col-media,
+  .col-text {
+    display: block;
+    min-width: 0; /* flex/grid 子项默认 min-width:auto，长英文会顶破栏宽 */
+  }
+
+  .col-media {
+    grid-column: 1;
+  }
+
+  .col-text {
+    grid-column: 2;
   }
 
   /*
-   * 右栏 684px 放 15px 字符就是 45 个汉字/行，读长文太累。
-   * 限到 40em（600px ≈ 40 字），剩下的留白在左边反而舒服。
+   * 右栏 40em ≈ 600px 放 17px 字符约 35 字/行，读长文比整栏宽舒服。
    * 截图反馈「注意力回到正文」：桌面正文 16→17px、行高 1.7→1.75、
    * 标题 22→24px（都在字阶 token 内）—— 正文成为页面上最大最密的文本块。
    */
@@ -1147,36 +1218,14 @@ onBeforeUnmount(() => {
   }
 
   /*
-   * 图片轮播绝对定位挂左栏：容器 min-height 与图框同源（--media-h），
-   * 卡片高度仍由图片决定；右栏四块的行高只由它们自己决定 —— 图片列
-   * 再高也不会把标题和作者之间顶出一大片空白。
-   * 高度上限取 660 / 72vh / 原比例高度三者最小：竖长图封顶留 letterbox，
-   * 横图方图按自己比例占满，不白撑。
+   * 图片在左栏就是普通流里的第一块，高度由 aspect-ratio 与栏宽决定 ——
+   * 不再需要绝对定位 / --media-h / min-height / align-content 那一整套。
+   * 竖长图想封顶时用 max-height，多余部分留白而不是拉伸。
    */
-  .card:has(.grid) {
-    --media-h: min(660px, 72vh, calc(var(--xk-col1) / var(--img-ratio, 0.75)));
-    position: relative;
-    min-height: var(--media-h);
-    /*
-     * min-height 高出右栏内容总和时，默认 align-content:stretch 会把
-     * 剩余高度平均摊进每个自动行 —— 标题↔作者、作者↔正文之间各顶出
-     * 上百 px 空隙（实测 106px，正是用户截图说的「一大片空白」）。
-     * start 让右栏从顶部贴紧堆叠，多余空间留在 stats 下方，与左图底部
-     * 之间的落差是正常的两栏高度差。
-     */
-    align-content: start;
-    transition: min-height 0.25s ease;
-  }
-
   .grid {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: var(--xk-col1);
-    height: var(--media-h);
-    aspect-ratio: auto;
-    margin: 0;
-    transition: height 0.25s ease;
+    width: 100%;
+    max-height: 72vh;
+    margin: 0 0 16px;
   }
 
   /* 没有图片的笔记（改图后清空等）退回单栏居中，不留一整片空白左栏 */
@@ -1186,24 +1235,9 @@ onBeforeUnmount(() => {
     margin: 0 auto;
   }
 
-  .card:not(:has(.grid)) .title,
-  .card:not(:has(.grid)) .who,
-  .card:not(:has(.grid)) .content,
-  .card:not(:has(.grid)) .expand,
-  .card:not(:has(.grid)) .gone,
-  .card:not(:has(.grid)) .comments,
-  .card:not(:has(.grid)) .actionbar {
+  .card:not(:has(.grid)) .col-media,
+  .card:not(:has(.grid)) .col-text {
     grid-column: 1;
-  }
-
-  .title,
-  .who,
-  .content,
-  .expand,
-  .gone,
-  .comments,
-  .actionbar {
-    grid-column: 2;
   }
 
   .title {
@@ -1540,13 +1574,24 @@ onBeforeUnmount(() => {
 .c-ops {
   margin-top: 5px;
   display: flex;
-  gap: 12px;
+  align-items: center;
+  gap: 4px;
 }
 
+/*
+  评论操作钮是「视觉降权」的（无边框无底色、text-3 灰），但**热区不能降权**：
+  原来 padding:0 + 无最小高度，按钮盒子就等于文字（实测 19×16 / 24×16），
+  手指根本点不准。补 min-height 40 + 横向 padding，再靠 gap 收紧视觉密度。
+*/
 .c-op {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 40px;
+  min-height: 40px;
+  padding: 0 4px;
   border: 0;
   background: none;
-  padding: 0;
   font-size: var(--xk-fs-12);
   color: var(--xk-text-3);
   cursor: pointer;
@@ -1573,7 +1618,7 @@ onBeforeUnmount(() => {
 }
 
 .reply-ops {
-  margin-top: 3px;
+  margin-top: 0;
 }
 
 .c-op:disabled {

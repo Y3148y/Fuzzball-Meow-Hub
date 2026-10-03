@@ -146,7 +146,7 @@ export const AUDIT_EXPR = `(() => {
       spec.homeColGap = d.length > 1 ? d[1] - d[0] : 0
     }
   } else if (h.startsWith('#/note/')) {
-    const g = document.querySelector('.detail-grid .grid')
+    const g = document.querySelector('.col-media .grid')
     if (g) {
       spec.detailCol1 = Math.round(g.getBoundingClientRect().width)
       const im = g.querySelector('img')
@@ -216,8 +216,8 @@ export const AUDIT_EXPR = `(() => {
         }
       })
       .filter(x => (x.w > 0 && x.w < 40) || (x.h > 0 && x.h < 40))
-    const ti = document.querySelector('.detail-grid .title')
-    const ct = document.querySelector('.detail-grid .content')
+    const ti = document.querySelector('.col-text .title')
+    const ct = document.querySelector('.col-text .content')
     const cs2 = document.querySelector('[data-test=comment-section]')
     spec.commentsBottom = cs2 ? Math.round(cs2.getBoundingClientRect().bottom) : -9999
     spec.commentsLeft = cs2 ? Math.round(cs2.getBoundingClientRect().left) : -9999
@@ -510,10 +510,10 @@ function specChecks(s, label, w, r) {
       s.check('详情图 object-fit=contain（不裁 3:4）', sp.detailImgFit === 'contain', `fit=${sp.detailImgFit}`)
       s.check('详情卡内边距 >0（P13：文字不贴描边）', sp.cardPad > 0, `pad=${sp.cardPad}px`)
       s.check('桌面操作栏回到流内（不再吸底）', sp.barPos === 'static', `pos=${sp.barPos}`)
-      s.check('桌面评论区与操作栏都在右栏（不再是整卡通栏）',
+      s.check('桌面评论区与操作栏都在**照片那一栏**（评论在照片下方，展开长文不被推动）',
         sp.commentsWidth > 400 && sp.commentsWidth < 700
-          && Math.abs(sp.commentsLeft - sp.titleLeft) <= 2 && sp.barWidth < 700,
-        `commentsW=${sp.commentsWidth} commentsLeft=${sp.commentsLeft} titleLeft=${sp.titleLeft} barW=${sp.barWidth}`)
+          && sp.commentsLeft < sp.titleLeft - 100 && sp.barLeft === sp.commentsLeft,
+        `commentsW=${sp.commentsWidth} commentsLeft=${sp.commentsLeft} titleLeft=${sp.titleLeft} barW=${sp.barWidth} barLeft=${sp.barLeft}`)
       s.check('桌面操作栏在评论区之下、与评论区同宽同左缘（评论区的页脚）',
         sp.barTop >= sp.commentsBottom - 4 && Math.abs(sp.barLeft - sp.commentsLeft) <= 2
           && Math.abs(sp.barWidth - sp.commentsWidth) <= 2,

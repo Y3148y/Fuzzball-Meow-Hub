@@ -136,7 +136,7 @@ cd backend && node scripts/contract-test.mjs
 # 换地址：XK_API_BASE=http://ip:8088 node scripts/contract-test.mjs
 
 # 前端（需前端 5180 + 后端 8088 同时在跑）
-# → 26 + 8 + 77 + 26 + 51 + 25 + 19 + 9 + 108 = 349 条
+# → 24 + 8 + 82 + 26 + 52 + 25 + 19 + 9 + 108 = 353 条
 cd frontend && npm run test:ui
 
 # 单跑某一组：:smoke / :refresh / :note / :profile / :interaction / :follow / :search / :idempotent / :layout
@@ -623,6 +623,10 @@ get('/comment/list', { params: { noteId, page } })    // ❌ 发出 ?params[note
     - 验收：1280/430 三张截图（竖图帧 440×587、横图缩帧、手机单列顺序
       不变）读图核对；临时诊断脚本 `_diag-detail.mjs` 用完即删，
       它发的临时笔记已走 DELETE API 清掉。
+    - ⚠️ **本段描述的整套机制（绝对定位图框 / `--media-h` / `align-content:start`）
+      已在第六轮整体删除** —— 它是为了「评论进右栏」才存在的，而用户要的是评论
+      在照片下方。留着这段是为了说明**为什么不能**再用那套：一个跨栏共享行的
+      网格不管怎么摆，右栏内容一变长，左栏的评论都会被顶下去。
   - **v1.2 之后的截图反馈修复（三）—— 点赞/收藏/评论吸底操作栏 + 三键降权**，
     CDP 244 → **269**（ui-note 50→60 +10、layout 31→46 +15），契约仍 355
     （纯前端，后端零改动）：
@@ -695,13 +699,25 @@ get('/comment/list', { params: { noteId, page } })    // ❌ 发出 ?params[note
     `src/composables/useKeyboardInset.ts` 读 `visualViewport` 的
     `resize/scroll` 写 `--kb-inset` 兜底。**headless Chrome 没有软键盘，这条
     只能让用户在真机验**。
-  - **网格容器升格 `.card`**：要让评论区进右栏，它必须是同一个网格的直接子元素。
-    所以桌面 `@media (min-width:1024px)` 里把两栏规则从 `.detail-grid` 挪到
-    `.card`，`.detail-grid` 全程 `display: contents`（移动端本来就是），
-    `:style="{'--img-ratio': ...}"` 也从内层 div **挪到 `<article>`**（卡片要靠
-    它算 `--media-h`）。`.comments` / `.actionbar` / `.expand` 一起 `grid-column: 2`，
-    无图单栏分支也要一起改。卡片的内容盒与原来的 `.detail-grid` 盒子同宽同
-    padding，所以列宽与图框绝对定位不受影响。
+  - **两个栏容器 `.col-media` / `.col-text`（第六轮，用户明确要求后才改对）**：
+    - **用户原话**：「网页端的评论放到照片下面，不然展开长文就会移动评论。移动端的
+      照片放到全文上面。」—— 之前那版把评论塞进右栏正文下面，**行为正好相反**
+      （正文一变长评论就被推下去），这一版才落实。
+    - 桌面（≥1024）：`.card` 是两栏网格，**两个容器各占一列、各自独立堆叠** →
+      左 = 图片 → 评论 → 操作栏；右 = 作者 → 标题 + 正文（作者在最上面、标题与正文相邻）。
+    - **为什么必须是两个容器、不能一个网格逐个 `grid-column`**：网格的**行是跨栏
+      共享的**。评论若放第 1 栏第 2 行，这一行的起点是「图片高」与「标题+作者高」
+      的较大值，评论就被推下去了。分成两栏容器后行高互不影响 —— 实测
+      **展开长文前后评论 `top` 都是 769，Δ=0**（ui-note 有断言钉住）。
+    - 移动（<1024）：两个容器 `display:contents`，`.card` 改 `flex column`，
+      靠 `order` 排出 `图片1 → 标题2 → 作者3 → 正文4 → 展开5 → 评论6`。
+      **一套 DOM 出两种排布**，因为桌面要的顺序与移动端**互不相同**，单一 DOM
+      顺序满足不了两者。
+    - 顺带**拆掉了整套图片绝对定位机制**（`--media-h` / `min-height` /
+      `align-content: start` / 图框 `position:absolute`）：那套是 P12-C 为了
+      「评论进右栏、图片列不撑高」才加的，现在图片只是左栏普通流里的一块，
+      高度由 `aspect-ratio` + `max-height:72vh` 决定就够了。
+    - `:style="{'--img-ratio': ...}"` 仍留在 `<article>` 上（两栏都要继承它）。
   - **长正文折叠**（不做内嵌滚动框：滚动链、Ctrl+F 搜不到、手机像 App 套 App）：
     `.content.clamped` 用 `-webkit-line-clamp`，移动 8 行 / 桌面 12 行，
     配「展开全文」按钮（`aria-expanded`）。**溢出检测必须在折叠态量**
@@ -709,6 +725,8 @@ get('/comment/list', { params: { noteId, page } })    // ❌ 发出 ?params[note
     按钮自己消失 —— 用 `measuring` 标志临时强制折叠一次，量完恢复。
     断 `display` 值是错的：Chrome 把 `display: -webkit-box` 归一成 `flow-root`，
     断言要断 `webkitLineClamp`。
+    ⚠️ **测「展开后评论不动」的长正文必须是 20 段**：桌面阈值 12 行，12 段刚好
+    被装下 → 不溢出 → 展开按钮**合理地不渲染**，断言会拿到 null。
   - **评论字数 500 → 1000**（对齐小红书真机，用户嫌 500 太短）：
     `comment.content` 是 **VARCHAR 不是 TEXT**，改上限必须四处同步 ——
     `sql/schema.sql` 列宽、`CommentCreateDTO` 的 `@Size`、前端 `COMMENT_MAX`、
@@ -731,7 +749,7 @@ get('/comment/list', { params: { noteId, page } })    // ❌ 发出 ?params[note
   - **验收**：430 / 1280 各两张截图读图核对（移动吸底两行、桌面右栏评论区+
     两行操作栏、主题钮有字形）；4 个临时诊断脚本（`_shot` / `_diag-theme` /
     `_diag-icon` / `_check-icons`）用完即删。
-- **v1.2 之后的第五轮 —— 移动端导航缺失 + a11y/交互审计整改**，CDP 300 → **349**
+- **v1.2 之后的第五轮 —— 移动端导航缺失 + a11y/交互审计整改**，CDP 300 → **353**
   （smoke 26 / refresh 8 / note 77 / profile 26 / interaction 51 / follow 25 /
   search 19 / idempotent 9 / layout 108），契约仍 **355**（本轮后端只改了评论
   字数上限那一处，已单独验过）：

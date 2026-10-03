@@ -50,3 +50,6 @@ desktop.ini
 .env.*.local
 !.env.prod.example
 backend/src/main/resources/application-local.yml
+
+# mvnw 重定向的 stderr（后端本地启动日志）
+*.log.err

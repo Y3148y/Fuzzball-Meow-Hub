@@ -34,7 +34,10 @@
   /* 文字 */
   --xk-text: #1a1e35;
   --xk-text-2: #596080;
-  --xk-text-3: #8b91ae;
+  /* text-3 是 meta/label/计数这类 12~13px 的小字，WCAG 要求 4.5:1。
+     旧值 #8b91ae 只有 3.11（白底）/ 2.92（surface-2），压深到 #666c8c
+     后是 5.14 / 4.83，两档底都达标，且与 text-2（6.16）仍拉得开。 */
+  --xk-text-3: #666c8c;
 
   /* 线条 */
   --xk-border: #dbe1f0;
@@ -134,24 +137,36 @@
 :root[data-theme='dark'] {
   color-scheme: dark;
 
-  /* 直接沿用插画背景色，暗色模式不是「另配一套灰」，而是参考图本身 */
-  --xk-bg: #444a71;
-  --xk-bg-soft: #3c4266;
-  --xk-surface: #4e5478;
-  --xk-surface-2: #575e85;
+  /*
+    对比度整改（2026-10-04）：三级文字原来全部**不达WCAG AA**（正文要 4.5:1）。
+    实测旧值：text-2 压 surface-2 只有 3.37、text-3 只有 2.11 —— 而且调文字
+    调不动：把三档都提亮到 4.5 会让层次全平（都变成接近白色）。
+    **根因是底色**：中灰蓝底（#4e5478/#575e85）配暗字，天生低对比。
+    所以这次压深底色、再把文字提到刚好过线，三档仍可辨（层差 2.39 / 1.26）。
+
+    实测（最差底 surface-2 #3d446b / bg-soft #242945）：
+      text   #eef2ff → 8.39 / 12.71
+      text-2 #c8cee6 → 6.00 /  9.08
+      text-3 #b0b7d8 → 4.74 /  7.18
+    琥珀 text #f5cd7a → 6.21（也顺带重新核过，仍达标）
+  */
+  --xk-bg: #2b3153;
+  --xk-bg-soft: #242945;
+  --xk-surface: #333a5e;
+  --xk-surface-2: #3d446b;
 
   --xk-text: #eef2ff;
-  --xk-text-2: #b6bdda;
-  --xk-text-3: #8d94b8;
+  --xk-text-2: #c8cee6;
+  --xk-text-3: #b0b7d8;
 
-  --xk-border: #666d99;
+  --xk-border: #848cb6;
   --xk-stroke: #c9d2f2;
   --xk-shadow-hard: 4px 4px 0 rgba(12, 14, 28, 0.55);
   --xk-shadow-hard-sm: 3px 3px 0 rgba(12, 14, 28, 0.55);
 
   --xk-amber-press: #e6ae4a;
   --xk-amber-ink: #1a1e35;
-  /* 压 #4e5478 = 4.86:1（浅色主题那份 #8a5a00 在这个底上只有 2.9:1） */
+  /* 压 surface-2 #3d446b = 6.21:1（浅色主题那份 #8a5a00 在这个底上只有 2.9:1） */
   --xk-amber-text: #f5cd7a;
   --xk-sand: #d8c090;
   --xk-steel: #a8b2ce;

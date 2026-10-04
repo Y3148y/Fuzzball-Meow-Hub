@@ -941,10 +941,41 @@ get('/comment/list', { params: { noteId, page } })    // ❌ 发出 ?params[note
 - **`ORDER BY` 全靠 filesort，没有索引支撑**：`pageDiscover` 的排序键是
   `EXISTS(子查询) DESC, (like_count+collect_count+comment_count) DESC,
   create_time DESC, id DESC`。前一个键是子查询结果、第二个是三列之和，
-  **都无法进索引**，所以数据量上来后必然临时表 + filesort。现在库里 153 篇
-  无所谓，但「发现流」这个页面的分页深度会成为真实瓶颈。要治只有两条路：
-  加一个物化的 `hot_score` 列（异步刷），或者把 `EXISTS` 换成预join 出的
-  布尔列。**动手前先量**：现在就该加个压测场景，别凭想象优化。
+  **都无法进索引**。prod 库上 EXPLAIN 实测：
+  `Using filesort` + `DEPENDENT SUBQUERY`（每个候选行跑一次 EXISTS，
+  走 `uk_user_follow` 的 eq_ref，单次便宜但逐行执行）。
+  **形状不对 ≠ 现在就有问题**，所以配了两个可复用脚本量过（见下）。
+
+- **发现流 vs 关注流 实测（2026-10-04，600 篇数据集 / 8 并发 / 每目标 400 请求 /
+  0 失败，`deploy/loadtest/feed-bench.mjs`）**：
+
+  | 目标 | p50 | p95 | p99 | max |
+  |---|---|---|---|---|
+  | discover p1 | 24.6 | 80.5 | 245.0 | 349.7 |
+  | discover p5 | 26.6 | 97.1 | 285.2 | 366.1 |
+  | discover p25 | 27.8 | 97.0 | 266.0 | 396.4 |
+  | follow p1 | 14.0 | 48.3 | 151.1 | 313.1 |
+  | follow p5 | 13.4 | 52.5 | 136.8 | 255.3 |
+
+  **判读**：discover 是 follow 的 1.7~1.9×，但绝对值 80~97ms 远低于项目自己的
+  p95 预算 600ms（k6 thresholds）。深页几乎不额外变贵（p5→p25 的 p95 基本持平），
+  因为 filesort 的开销主要在**行数**而不是 OFFSET。**所以现在不上 `hot_score`
+  物化列** —— 那要付出「异步刷列 + 漂移」的确定成本，换一个当下量不出来的收益。
+  **重测的触发条件**：笔记数 > 5000，或 discover p95 > 200ms。届时再跑
+  `node deploy/loadtest/seed-big.mjs --authors=20 --notes=60` 加量后重测。
+
+- **压测脚本两个坑（都踩过，别重复）**：
+  - **固定顺序量目标 = 废数据**：每个 VU 按同一顺序打 5 个目标时，排第一的那个
+    独吞了 JIT/连接池/查询缓存冷启动的全部成本。实测量出 `discover p1` 68.6ms
+    比 `discover p25` 36.2ms 还慢的荒谬结果。`feed-bench.mjs` 现在先预热 15 轮
+    再按 VU 轮转起点。
+  - **页码超出数据集 = 假深页**：数据只有 119 篇时 `page=25`（offset 480）直接返回
+    空集，耗时天然更低，看着像"深页更省"。脚本现在统计空集率，超过一半就打警告。
+  - `seed-big.mjs` **必须做限流退避**：publish 是 20/min/用户，不退避时
+    `--notes=60` 会静默丢掉 2/3 数据（480 篇里失败 320）而脚本只打印一行「失败=N」。
+  - 造出来的 `xk_big_*` 账号/笔记与 prod 库里的残留清理见第 5 节的 SQL 模式，
+    正则换成 `'^xk_big_'`。**prod 是给人看界面的，别留着 `xkbigA8N60_1_1` 这种
+    标题当演示数据**，量完就清，要量再跑 seed。
 - **互动量排序读的是 note 表的三个计数列，而它们是 Redis 权威值的异步落库产物**
   （P8 `NoteCounterFlushJob` 每 30s 刷一次）。所以**刚发的笔记会有最长 30s
   排在比它热度低的老笔记后面**，随后自动纠正。这里刻意不逐条 `ZCARD`：一页 20 条

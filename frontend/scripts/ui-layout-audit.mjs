@@ -689,6 +689,58 @@ async function auditTokens(s) {
   const mob = JSON.parse(await read())
   s.check('移动 token：粗描边 2px + 手绘圆角', mob.strokeW === '2px' && mob.radius !== '16px',
     `strokeW=${mob.strokeW} radius=${mob.radius.slice(0, 24)}`)
+
+  await auditContrast(s)
+}
+
+/**
+ * 三级文字的 WCAG 对比度（正文要 4.5:1）
+ *
+ * <p>2026-10-04 之前 text-3 在两套主题都不达标（浅色 3.11、深色 2.47），
+ * 深色连 text-2 都只有 3.94。这里**逐主题逐档断言**，钉的是 token 值算出来的
+ * 对比度，不是某个元素的实际渲染色 —— 元素级对比度会随页面背景变化，
+ * token 级才是根因（改错了这里就红）。
+ *
+ * <p>量法：读三档文字与两档底色的 token，算 WCAG 相对亮度比；**取最差组合**
+ * （每档文字对 surface 与 surface-2 里更低的那个）。
+ */
+async function auditContrast(s) {
+  const EXPR = `(() => {
+    const cs = getComputedStyle(document.documentElement)
+    const v = (n) => cs.getPropertyValue(n).trim()
+    const lin = (c) => { c /= 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4) }
+    const L = (h) => {
+      const n = parseInt(h.slice(1), 16)
+      return 0.2126 * lin(n >> 16 & 255) + 0.7152 * lin(n >> 8 & 255) + 0.0722 * lin(n & 255)
+    }
+    const cr = (a, b) => {
+      const l1 = L(a), l2 = L(b)
+      return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05)
+    }
+    const bgs = [v('--xk-surface'), v('--xk-surface-2')]
+    const tiers = [['text', v('--xk-text')], ['text-2', v('--xk-text-2')], ['text-3', v('--xk-text-3')]]
+    const amber = v('--xk-amber-text')
+    return JSON.stringify({
+      bgs,
+      tiers: tiers.map(([n, c]) => [n, c, +Math.min(...bgs.map((b) => cr(c, b))).toFixed(2)]),
+      amber: +Math.min(...bgs.map((b) => cr(amber, b))).toFixed(2),
+    })
+  })()`
+
+  await s.send('Emulation.clearDeviceMetricsOverride')
+  for (const theme of ['light', 'dark']) {
+    await s.evaluate(`document.documentElement.dataset.theme = ${JSON.stringify(theme)}`)
+    await new Promise((r) => setTimeout(r, 200))
+    const m = JSON.parse(await s.evaluate(EXPR))
+    for (const [name, color, ratio] of m.tiers) {
+      s.check(`${theme} 主题 --xk-${name} 对底色 ≥4.5:1（WCAG AA 正文）`,
+        ratio >= 4.5, `${color}  最差底组合=${ratio}:1`)
+    }
+    s.check(`${theme} 主题 --xk-amber-text 对底色 ≥4.5:1`,
+      m.amber >= 4.5, `${m.amber}:1`)
+  }
+  // 量完还原成浅色，别把主题状态留给后面的用例
+  await s.evaluate("document.documentElement.dataset.theme = 'light'")
 }
 
 const PAGE_LIST = (noteId) => [

@@ -136,7 +136,7 @@ cd backend && node scripts/contract-test.mjs
 # 换地址：XK_API_BASE=http://ip:8088 node scripts/contract-test.mjs
 
 # 前端（需前端 5180 + 后端 8088 同时在跑）
-# → 29 + 8 + 82 + 26 + 52 + 26 + 19 + 9 + 117 = 368 条
+# → 31 + 8 + 87 + 26 + 57 + 26 + 19 + 9 + 125 = 388 条
 cd frontend && npm run test:ui
 
 # 单跑某一组：:smoke / :refresh / :note / :profile / :interaction / :follow / :search / :idempotent / :layout
@@ -702,6 +702,26 @@ get('/comment/list', { params: { noteId, page } })    // ❌ 发出 ?params[note
     `src/composables/useKeyboardInset.ts` 读 `visualViewport` 的
     `resize/scroll` 写 `--kb-inset` 兜底。**headless Chrome 没有软键盘，这条
     只能让用户在真机验**。
+  - ⚠️ **「吸底栏只 padding 不抬升」是个真缺陷，2026-10-04 已修**：原来
+    `--kb-inset` 被当吸底栏的**内边距**（`padding-bottom: calc(8px + var(--kb-inset))`），
+    于是 ① `--bar-h` 是 ResizeObserver 量 `offsetHeight` 得到的，**已经含键盘高度**，
+    而 `.page` 的 `padding-bottom: calc(var(--bar-h) + var(--kb-inset))` 又加一遍
+    → 键盘一开页面末尾就有**约 2 倍键盘高度**的死空白；② 栏本身被撑成
+    「键盘高 + 112px」，靠那截空白把内容顶到键盘上方，位置碰巧对、机制是错的。
+    现在改成 `bottom: var(--kb-inset, 0px)`（**只用来抬栏**），`padding-bottom`
+    换成 `calc(var(--xk-space-2) + env(safe-area-inset-bottom, 0px))` —— 顺带补上
+    safe-area，TabBar 与 `.page` 一直有、吸底栏漏了，刘海屏上键盘收起时按钮会压到
+    Home 指示条。两条路径互不干扰：Android 收缩 viewport → inset=0 → `bottom:0`
+    正好在键盘上方；iOS 不缩 → inset=键盘高 → 抬到键盘上方。
+  - **headless 验不了「触发」，但能验「消费机制」**：往 `main.page` 上注入
+    `--kb-inset: 300px` 就能验算术与 CSS，5 条断言钉死（ui-note 3 条 + ui-interaction
+    4 条）：栏底边升 300px 到视口底之上、**栏自身高度与 `--bar-h` 不变**（← 双算
+    回归钉子）、`.page` 底 padding = 栏高 + 300、滚到底最后一条评论完全露在栏之上、
+    键盘收起后归位。另有 2 条静态断言读 `index.html` 的 viewport meta
+    （必须有 `interactive-widget=resizes-content`，且不许锁缩放）。
+    **唯一仍需真机的**：`useKeyboardInset` 的触发 —— iOS Safari 弹键盘时
+    `visualViewport.height` 是否真的变小。那是浏览器行为，代码只能响应；
+    修完之后即使触发时序有偏差，最坏也只是栏位置差一点，不会再出现 600px 死空白。
   - **两个栏容器 `.col-media` / `.col-text`（第六轮，用户明确要求后才改对）**：
     - **用户原话**：「网页端的评论放到照片下面，不然展开长文就会移动评论。移动端的
       照片放到全文上面。」—— 之前那版把评论塞进右栏正文下面，**行为正好相反**
@@ -752,7 +772,7 @@ get('/comment/list', { params: { noteId, page } })    // ❌ 发出 ?params[note
   - **验收**：430 / 1280 各两张截图读图核对（移动吸底两行、桌面右栏评论区+
     两行操作栏、主题钮有字形）；4 个临时诊断脚本（`_shot` / `_diag-theme` /
     `_diag-icon` / `_check-icons`）用完即删。
-- **v1.2 之后的第五轮 —— 移动端导航缺失 + a11y/交互审计整改**，CDP 300 → **358**
+- **v1.2 之后的第五轮 —— 移动端导航缺失 + a11y/交互审计整改**，CDP 300 → **388**
   （smoke 26 / refresh 8 / note 77 / profile 26 / interaction 51 / follow 25 /
   search 19 / idempotent 9 / layout 108），契约仍 **355**（本轮后端只改了评论
   字数上限那一处，已单独验过）：

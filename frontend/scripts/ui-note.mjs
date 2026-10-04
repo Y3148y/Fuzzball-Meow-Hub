@@ -305,6 +305,74 @@ try {
     Math.abs(tr.barH - tr.barVar) <= 2 && Math.abs(tr.pagePad - tr.barH) <= 2,
     `barH=${tr.barH} --bar-h=${tr.barVar} pagePad=${tr.pagePad}`)
 
+  /*
+    ---- 8.45 软键盘：headless 没有键盘，但可以**注入 --kb-inset** 验机制
+    ----
+    iOS Safari 弹键盘时 layout viewport 不收缩，所以 `useKeyboardInset` 读
+    `innerHeight - visualViewport.height - offsetTop` 算出键盘高度写进 --kb-inset。
+    「触发」验不了（那是浏览器行为），但**消费这个变量的机制必须验** ——
+    2026-10-04 发现实现是错的：--kb-inset 原来被当吸底栏的**内边距**，
+    于是 --bar-h（ResizeObserver 量的 offsetHeight）里已经含了键盘高度，
+    .page 的 `calc(--bar-h + --kb-inset)` 又加一遍 → 末尾约 2 倍键盘高的死空白。
+    下面几条把「键盘高度只用来抬栏、不进栏高、不双算」钉死。
+  */
+  const readKb = `(() => {
+    const bar = document.querySelector('[data-test=action-bar]')
+    const page = document.querySelector('main.page')
+    const cs = getComputedStyle(bar)
+    const r = bar.getBoundingClientRect()
+    return JSON.stringify({
+      bottom: Math.round(r.bottom), h: Math.round(r.height),
+      padBottom: cs.paddingBottom, vh: innerHeight,
+      barVar: parseFloat(getComputedStyle(page).getPropertyValue('--bar-h')) || 0,
+      pagePad: Math.round(parseFloat(getComputedStyle(page).paddingBottom)),
+    })
+  })()`
+  const kb0 = JSON.parse(await s.evaluate(readKb))
+  const INSET = 300
+  await s.evaluate(`document.querySelector('main.page').style.setProperty('--kb-inset', '${INSET}px')`)
+  await sleep(400)
+  const kb1 = JSON.parse(await s.evaluate(readKb))
+  s.check(`软键盘抬起吸底栏（--kb-inset ${INSET}px 时底边升到视口底之上）`,
+    Math.abs((kb0.vh - kb1.bottom) - INSET) <= 4,
+    `键盘前 bottom=${kb0.bottom}（视口底 ${kb0.vh}）→ 键盘后 bottom=${kb1.bottom}`)
+  s.check('键盘高度**不进栏高**（栏不因键盘变高，双算回归钉子）',
+    Math.abs(kb1.h - kb0.h) <= 2 && Math.abs(kb1.barVar - kb0.barVar) <= 2,
+    `栏高 ${kb0.h}→${kb1.h}  --bar-h ${kb0.barVar}→${kb1.barVar}`)
+  s.check('.page 底 padding = 栏高 + 键盘高度（末尾让位，两处不重复）',
+    Math.abs(kb1.pagePad - (kb1.barVar + INSET)) <= 4,
+    `pagePad=${kb1.pagePad} barVar=${kb1.barVar} inset=${INSET}`)
+  const kbTail = await s.evaluate(`(() => {
+    // 这一节看的笔记还没有评论（「最后一条评论不被盖住」在 ui-interaction 里验，
+    // 那里真的发了评论）—— 这里只确认键盘抬起后页面末尾还有让位空间。
+    const page = document.querySelector('main.page')
+    const bar = document.querySelector('[data-test=action-bar]')
+    const b = bar.getBoundingClientRect()
+    window.scrollTo(0, document.body.scrollHeight)
+    const gap = Math.round(parseFloat(getComputedStyle(page).paddingBottom) - b.height)
+    return JSON.stringify({ gap })
+  })()`)
+  s.check('键盘抬起后页面末尾的让位 = 栏高 + 键盘高度（滚到底不顶到栏下面）',
+    JSON.parse(kbTail).gap >= INSET - 4, kbTail)
+  await s.evaluate("document.querySelector('main.page').style.removeProperty('--kb-inset')")
+  await sleep(300)
+  // env() 在 computed style 里会被解析成实际值（headless 是 0px），所以必须读**规则文本**
+  const barRule = await s.evaluate(`(() => {
+    for (const sheet of document.styleSheets) {
+      let rules
+      try { rules = sheet.cssRules } catch { continue }
+      for (const r of rules) {
+        if (r.selectorText && r.selectorText.includes('.actionbar') &&
+            /env\\(safe-area-inset-bottom/.test(r.style.padding || r.cssText)) {
+          return r.cssText.replace(/\\s+/g, ' ').slice(0, 200)
+        }
+      }
+    }
+    return 'not-found'
+  })()`)
+  s.check('吸底栏 padding-bottom 带 env(safe-area-inset-bottom)（刘海屏 Home 条让位）',
+    barRule !== 'not-found', barRule)
+
   // ---- 8.5 桌面两栏（用户要求：评论**放在照片下面**，展开长文不推动评论）
   await s.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
   await sleep(600)

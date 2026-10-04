@@ -122,6 +122,16 @@ try {
   s.check('手机视口下内容区仍是 480px 贴边',
     (await s.evaluate("getComputedStyle(document.querySelector('.page')).maxWidth")) === '480px')
 
+  // 软键盘那条链路的**静态半环**：Android Chrome 靠这个 meta 让 layout viewport
+  // 收缩，fixed 吸底栏才会自动落到键盘上方。meta 被谁删掉都不会有测试报错，
+  // 只会变成「Android 上输入框被键盘盖住」这种真机才看得见的症状 —— 钉在这里。
+  const vp = await s.evaluate(
+    "document.querySelector('meta[name=viewport]')?.getAttribute('content') || ''")
+  s.check('viewport meta 带 interactive-widget=resizes-content（Android 键盘不遮吸底栏的前提）',
+    vp.includes('interactive-widget=resizes-content'), vp)
+  s.check('viewport meta 不锁缩放（无 user-scalable=no / maximum-scale，a11y 硬要求）',
+    !/user-scalable\s*=\s*no/.test(vp) && !/maximum-scale/.test(vp), vp)
+
   // 6.6 首页两个 tab：发现（默认）/ 关注
   //
   // 默认停在「发现」是有意的：关注流对「一条关注都没有的新用户」永远是空的，

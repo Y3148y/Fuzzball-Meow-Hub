@@ -274,6 +274,64 @@ try {
   await setValue('[data-test=comment-input]', '   ')
   s.check('只有空白时「发表」按钮禁用', (await disabled('comment-submit')) === true)
 
+  /*
+    软键盘（这里才是「最后一条评论」真正存在的地方，所以这条断言放在本组）。
+    headless 没有软键盘，但**注入 --kb-inset** 就能验消费机制：键盘高度只用来把
+    吸底栏抬到键盘上方，**不进栏高**、也**不被 .page 重复累加**。
+    2026-10-04 的实现是错的（--kb-inset 被当内边距 → --bar-h 里已含键盘高度 →
+    .page 又加一遍 → 末尾约 2 倍键盘高的死空白），下面几条就是钉死那个回归。
+  */
+  {
+    const readKb = `(() => {
+      const bar = document.querySelector('[data-test=action-bar]')
+      const page = document.querySelector('main.page')
+      const r = bar.getBoundingClientRect()
+      return JSON.stringify({
+        bottom: Math.round(r.bottom), h: Math.round(r.height), vh: innerHeight,
+        barVar: parseFloat(getComputedStyle(page).getPropertyValue('--bar-h')) || 0,
+        pagePad: Math.round(parseFloat(getComputedStyle(page).paddingBottom)),
+      })
+    })()`
+    const kb0 = JSON.parse(await s.evaluate(readKb))
+    const INSET = 300
+    await s.evaluate(`document.querySelector('main.page').style.setProperty('--kb-inset', '${INSET}px')`)
+    await sleep(400)
+    const kb1 = JSON.parse(await s.evaluate(readKb))
+    s.check(`软键盘抬起吸底栏（--kb-inset ${INSET}px 时底边升到视口底之上）`,
+      Math.abs((kb0.vh - kb1.bottom) - INSET) <= 4,
+      `键盘前 bottom=${kb0.bottom}（视口底 ${kb0.vh}）→ 键盘后 bottom=${kb1.bottom}`)
+    s.check('键盘高度不进栏高（--bar-h 不含键盘，双算回归钉子）',
+      Math.abs(kb1.h - kb0.h) <= 2 && Math.abs(kb1.barVar - kb0.barVar) <= 2,
+      `栏高 ${kb0.h}→${kb1.h}  --bar-h ${kb0.barVar}→${kb1.barVar}`)
+    s.check('.page 底 padding = 栏高 + 键盘高度（两处不重复）',
+      Math.abs(kb1.pagePad - (kb1.barVar + INSET)) <= 4,
+      `pagePad=${kb1.pagePad} barVar=${kb1.barVar} inset=${INSET}`)
+    // 键盘抬起 + 滚到底：最后一条评论必须完全露在吸底栏之上
+    const tail = await s.evaluate(`(() => {
+      window.scrollTo(0, document.body.scrollHeight)
+      const items = document.querySelectorAll('[data-test=comment-item]')
+      const last = items[items.length - 1]
+      const bar = document.querySelector('[data-test=action-bar]')
+      if (!last) return JSON.stringify({ none: true, count: items.length })
+      const a = last.getBoundingClientRect(), b = bar.getBoundingClientRect()
+      return JSON.stringify({
+        count: items.length,
+        covered: Math.round(a.bottom - b.top), h: Math.round(a.height),
+        inputBottom: Math.round(b.top),
+      })
+    })()`)
+    const tl = JSON.parse(tail)
+    s.check('键盘抬起时滚到底，最后一条评论完全露在吸底栏之上（不被盖住）',
+      tl.none === true || tl.covered <= -2,
+      `comments=${tl.count} covered=${tl.covered}px（负数=评论底边在栏顶之上，即完全露出）`)
+    await s.evaluate("document.querySelector('main.page').style.removeProperty('--kb-inset')")
+    await sleep(300)
+    const kbBack = JSON.parse(await s.evaluate(readKb))
+    s.check('键盘收起后吸底栏回到视口底、--kb-inset 归零',
+      Math.abs(kbBack.bottom - kb0.vh) <= 2 && kbBack.h === kb0.h,
+      `bottom=${kbBack.bottom}（视口底 ${kb0.vh}）栏高=${kbBack.h}`)
+  }
+
   // 回复
   await s.evaluate("document.querySelector('[data-test=comment-reply-btn]').click()")
   await s.waitFor("document.querySelector('[data-test=comment-replying]')", '进入回复态')

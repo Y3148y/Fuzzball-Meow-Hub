@@ -1283,13 +1283,30 @@ onBeforeUnmount(() => {
   position: fixed;
   left: 0;
   right: 0;
-  bottom: 0;
+  /*
+    `bottom: var(--kb-inset)` 而不是把键盘高度塞进 padding —— 2026-10-04 改。
+    原来 padding-bottom 吃掉了 --kb-inset，于是：
+      ① `--bar-h` 是 ResizeObserver 量 offsetHeight 得到的，**已经包含键盘高度**，
+         而 .page 的 `padding-bottom: calc(var(--bar-h) + var(--kb-inset))` 又加一遍
+         → 键盘一开页面末尾就有约 2 倍键盘高度的死空白；
+      ② 栏本身被撑成「键盘高 + 112px」，靠那截空白把内容顶到键盘上方 ——
+         位置碰巧对，机制是错的。
+    现在键盘高度只用来**抬栏**，两条路径自然不重复：
+      Android（viewport meta 的 interactive-widget=resizes-content）layout viewport
+        自己收缩 → `visualViewport.height ≈ innerHeight` → inset 算出来是 0
+        → bottom:0 正好落在视口底 = 键盘上方；
+      iOS Safari 不缩 → inset = 键盘高度 → bottom 抬到键盘上方。
+    桌面（≥1024）本规则被 `position: static` 覆盖，bottom 不生效。
+    env(safe-area-inset-bottom) 是补上的：TabBar 与 .page 一直有，吸底栏漏了，
+    刘海屏上键盘收起时按钮会压到 Home 指示条。
+  */
+  bottom: var(--kb-inset, 0px);
   z-index: 60;
   display: flex;
   flex-direction: column;
   gap: var(--xk-space-2);
   padding: var(--xk-space-2) var(--xk-space-3)
-    calc(var(--xk-space-2) + var(--kb-inset, 0px));
+    calc(var(--xk-space-2) + env(safe-area-inset-bottom, 0px));
   border-top: var(--xk-stroke-w) solid var(--xk-border);
   background: var(--xk-surface);
   box-shadow: 0 -6px 20px rgb(18 18 18 / 6%);

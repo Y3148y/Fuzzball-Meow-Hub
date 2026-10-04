@@ -947,6 +947,27 @@ async function main() {
     codeIs('完全无关的关键词返回成功（不报错）', json, 0)
     eq('搜不到时 total=0 且 list 为空', json?.data?.total, 0)
   }
+  // ---- 16.x 召回收紧：minimumShouldMatch("50%")
+  //
+  // 钉两件事，一件防「太松」、一件防「太紧」。**都不钉具体数字**：库里还有种子号、
+  // 演示号、压测残留，每加一次数据总数就会变，写死必然要回来改。
+  {
+    // 防太松：OR 语义下 ik_smart 拆出的单字会让任何含「在/的/不」的笔记命中。
+    // 实测（库里 163 篇时）：OR=28 篇 → msm50=1 篇。所以判据是「很少」。
+    const junk = `绝不存在${stamp}${Math.random().toString(36).slice(2, 6)}`
+    const { json } = await get(`/api/search/note?keyword=${encodeURIComponent(junk)}`, { token: auth })
+    codeIs('搜中文乱词返回成功', json, 0)
+    check('中文乱词几乎搜不到（≤3 篇；OR 语义下会命中几十篇）',
+      (json?.data?.total ?? 999) <= 3, `keyword=${junk} total=${json?.data?.total}`)
+  }
+  {
+    // 防太紧：改AND 语义会把正常中文词一起杀掉（实测「毛球喵社」OR=2 / AND=0）。
+    // 用本文件早前发布过的中文标题短语当锚点，搜不到就说明收紧过头了。
+    const { json } = await get(`/api/search/note?keyword=${encodeURIComponent('契约测试')}`, { token: auth })
+    codeIs('搜中文实词返回成功', json, 0)
+    check('正常中文词仍能召回（收紧没把好词一起杀掉）',
+      (json?.data?.total ?? 0) > 0, `total=${json?.data?.total}`)
+  }
   {
     const { json } = await get(`/api/search/note?keyword=${encodeURIComponent(searchUnique)}&page=1&size=1`, { token: auth })
     codeIs('分页搜索成功', json, 0)

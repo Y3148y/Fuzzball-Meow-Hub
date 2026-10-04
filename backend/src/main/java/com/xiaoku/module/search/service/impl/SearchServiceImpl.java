@@ -87,7 +87,29 @@ public class SearchServiceImpl implements SearchService {
                 .bool(b -> b
                         .must(m -> m.multiMatch(mm -> mm
                                 .query(keyword.trim())
-                                .fields(List.of("title^2", "content"))))
+                                .fields(List.of("title^2", "content"))
+                                /*
+                                 * OR（ES 默认）在这里是**误召来源**：ik_smart 会把中文
+                                 * 拆成单字，于是搜「绝对不存在的词zzq998」会因为命中
+                                 * 「在」「的」而返回 28 篇（库里 163 篇时实测）。
+                                 *
+                                 * 但直接改 {@code operator: AND} 更糟 —— 它要求**全部**
+                                 * token 都命中，而 ik_smart 切出的 token 数与命中数经常
+                                 * 对不上：实测「毛球喵社」OR=2 / AND=**0**，好词被杀掉。
+                                 *
+                                 * 所以用 minimumShouldMatch：一半 token 命中即可。
+                                 * 同一份数据实测（OR → AND → 本方案）：
+                                 *   绝对不存在的词zzq998  28 → 0  → 1
+                                 *   书桌上的三盏灯        31 → 1  → 9
+                                 *   通勤穿搭               3 → 1  → 1
+                                 *   点赞                  33 → 27 → 27
+                                 *   毛球喵社               2 → 0  → 2   ← AND 在这里翻车
+                                 *   TCC 典型应用场景/折叠/发现  三档一致
+                                 *
+                                 * 用 "50%" 而不是固定整数 2：token 数少（单字词）时
+                                 * 50% 会向下取整到 0，等于放行全部，短词不会被误杀。
+                                 */
+                                .minimumShouldMatch("50%")))
                         .filter(f -> f.term(t -> t.field("status").value(FieldValue.of(1L)))))
                 .build();
 

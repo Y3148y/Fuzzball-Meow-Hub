@@ -1501,6 +1501,86 @@ async function main() {
     check('删除后经 Kafka 从搜索索引移除（25s 内搜不到）', gone)
   }
 
+  // ---- 17.5 P14 发现流：GET /api/feed/discover（关注优先 → 互动量 → 最新补位）
+  //
+  // 断言刻意**不钉 total 的具体数字**：库里还有种子号（xk_seed_*）、演示号、
+  // 压测残留等一堆别人的笔记，写死数字每加一次种子数据就得重写这条断言。
+  // 钉的是「集合关系 + 排序规则」这两件真正会回归的事。
+  {
+    const { json } = await get('/api/feed/discover?page=1&size=100', { token: auth })
+    codeIs('发现流查询成功', json, 0)
+    const list = json?.data?.list ?? []
+    eq('发现流 total 是 JSON number', typeof json?.data?.total, 'number')
+    check('发现流 list 长度 = min(total, size)',
+      list.length === Math.min(json?.data?.total ?? 0, 100),
+      `total=${json?.data?.total} size=100 list=${list.length}`)
+
+    const ids = list.map((n) => n.id)
+    check('发现流不含自己的笔记', !ids.includes(noteId), `ids含自己=${ids.includes(noteId)}`)
+    check('发现流全部是已发布（status=1）', list.every((n) => n.status === 1),
+      `status=${[...new Set(list.map((n) => n.status))].join(',')}`)
+    check('发现流 authorFollowed 是布尔（不是字符串/数字）',
+      list.every((n) => typeof n.authorFollowed === 'boolean'),
+      `${list.find((n) => typeof n.authorFollowed !== 'boolean')?.authorFollowed}`)
+    check('发现流行没有漏 password', !Object.keys(list[0] ?? {}).includes('password'))
+
+    // 排序第一级：关注过的作者必须**连成前缀**排在未关注之前
+    const followedFlags = list.map((n) => (n.authorFollowed ? 1 : 0))
+    const firstUnfollowed = followedFlags.indexOf(0)
+    check('已关注作者的笔记连成前缀、排在未关注之前（关注优先）',
+      firstUnfollowed === -1 || followedFlags.slice(firstUnfollowed).every((x) => x === 0),
+      `flags=${followedFlags.join('')}`)
+    check('已关注作者的笔记确实出现（对照：本次造过 ct2/ct3 的关注）',
+      followedFlags.some((x) => x === 1), `flags=${followedFlags.join('')}`)
+
+    // 排序第二级：同一档内按互动量（赞+藏+评）非递增；第三级是时间，交给列表本身
+    const score = (n) => (n.likeCount ?? 0) + (n.collectCount ?? 0) + (n.commentCount ?? 0)
+    const scoreOf = (n) => score(n)
+    for (const seg of [list.filter((n) => n.authorFollowed), list.filter((n) => !n.authorFollowed)]) {
+      const scores = seg.map(scoreOf)
+      check('同一档内互动量非递增（互动量排序）',
+        scores.every((v, i) => i === 0 || scores[i - 1] >= v), `${scores.join(',')}`)
+    }
+  }
+  {
+    // 这一条是这个流存在的**全部理由**：没关注任何人时关注流是空的，发现流必须仍有内容
+    const { json } = await get('/api/feed/discover?page=1&size=10', { token: actorAuth })
+    codeIs('没关注任何人时发现流照样查询成功', json, 0)
+    check('没关注任何人时发现流不为空（冷启动不再空白首页）',
+      (json?.data?.list?.length ?? 0) > 0, `list=${json?.data?.list?.length}`)
+    const ids = (json?.data?.list ?? []).map((n) => n.id)
+    check('没关注任何人时发现流不含自己的笔记',
+      !(json?.data?.list ?? []).some((n) => n.authorId === actorId),
+      `ids=${ids.join(',')} actorId=${actorId}`)
+    check('没关注任何人时这些笔记的 authorFollowed 全为 false',
+      (json?.data?.list ?? []).every((n) => n.authorFollowed === false),
+      `${(json?.data?.list ?? []).filter((n) => n.authorFollowed !== false).length} 条异常`)
+  }
+  {
+    // 分页与入参夹取
+    const { json } = await get('/api/feed/discover?page=1&size=1', { token: auth })
+    codeIs('发现流分页 size=1 查询成功', json, 0)
+    eq('发现流 size=1 只回 1 条', json?.data?.list?.length, 1)
+    const big = await get('/api/feed/discover?page=1&size=1000', { token: auth })
+    check('发现流 size 上限被夹到 100', (big?.json?.data?.list?.length ?? 0) <= 100,
+      `len=${big?.json?.data?.list?.length}`)
+    const zero = await get('/api/feed/discover?page=0&size=0', { token: auth })
+    codeIs('发现流 page/size 非法值被夹住而不是报错', zero?.json, 0)
+  }
+  {
+    const { json } = await get('/api/feed/discover')
+    codeIs('未登录访问发现流 10005', json, 10005)
+  }
+  {
+    // 回归：assemble 改成「authorFollowed 实时判断」后，关注流不能被带坏
+    const { json } = await get('/api/feed/follow', { token: auth })
+    codeIs('改造后关注流仍查询成功', json, 0)
+    check('改造后关注流仍只含已关注作者的笔记',
+      (json?.data?.list ?? []).every((n) => n.authorFollowed === true),
+      `${(json?.data?.list ?? []).filter((n) => n.authorFollowed !== true).length} 条异常`)
+    check('发现流改造没有影响关注流的 total', json?.data?.total >= 1, `total=${json?.data?.total}`)
+  }
+
   // ---- 18. 不支持的方法
   {
     const { json } = await call('DELETE', '/api/user/login')

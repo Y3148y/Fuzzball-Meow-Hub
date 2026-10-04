@@ -148,6 +148,16 @@ export const AUDIT_EXPR = `(() => {
     /* 个人信息卡片：只在桌面作左栏，移动端整块 display:none */
     const wc = document.querySelector('.who-card')
     spec.whoCard = wc ? getComputedStyle(wc).display : 'absent'
+    /* tab 条几何：两项各 ≥40 热区，且与瀑布列表不相交 */
+    const tabEls = [...document.querySelectorAll('.feed-tab')]
+    spec.tabs = tabEls.map((el) => {
+      const r = el.getBoundingClientRect()
+      return { t: el.textContent.trim(), w: Math.round(r.width), h: Math.round(r.height), bottom: Math.round(r.bottom) }
+    })
+    const firstItem = document.querySelector('.items .item')
+    spec.tabsBottom = tabEls.length && firstItem
+      ? Math.round(tabEls[0].getBoundingClientRect().bottom - firstItem.getBoundingClientRect().top)
+      : null
     /*
       封面「自适应」：卡片高度按图片**真实**宽高比，所以计算出的 aspect-ratio
       必须等于 naturalWidth/naturalHeight（不是写死的 3/4）。
@@ -533,6 +543,14 @@ function specChecks(s, label, w, r) {
       s.check('首页封面高度按图片真实宽高比自适应（不是写死 3/4）',
         sp.coverRatio === want || sp.coverRatio === sp.coverNat,
         `computed=${sp.coverRatio} natural=${sp.coverNat}`)
+    }
+    // tab 条：两项各 ≥40 高，且不压到下面的瀑布卡片
+    s.check('首页两个 tab 的热区都 ≥40px 高（发现/关注）',
+      (sp.tabs ?? []).length === 2 && sp.tabs.every((t) => t.h >= 40 && t.w >= 60),
+      JSON.stringify(sp.tabs))
+    if (sp.tabsBottom !== null) {
+      s.check('tab 条不与瀑布卡片重叠（tab 在列表上方）',
+        sp.tabsBottom <= 0, `tabs.bottom- item.top=${sp.tabsBottom}`)
     }
   }
   if (label === '详情页') {

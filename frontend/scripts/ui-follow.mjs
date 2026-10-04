@@ -170,7 +170,16 @@ try {
 
   /* ============ 首页关注流：出现 ============ */
 
+  // 首页现在默认停在「发现」tab，这一组要验的是关注流，所以**先切过去**再等列表。
+  // 少了这一步就会挂在「feed 出现测试笔记」上 —— 素材笔记根本不在发现流里。
   await s.goto(`${BASE}/#/`)
+  await s.evaluate("document.querySelector('[data-test=feed-tab-follow]').click()")
+  await s.waitFor(
+    "document.querySelector('[data-test=feed-tab-follow]').getAttribute('aria-selected') === 'true'",
+    '切到关注 tab',
+    10000,
+  )
+  s.check('首页可切到「关注」tab（aria-selected 跟着变）', true)
   await s.waitFor(
     "document.querySelector('[data-test=feed-empty]') || document.querySelectorAll('[data-test=feed-item]').length",
     '关注流回到首页',
@@ -229,6 +238,12 @@ try {
   // 详情页的作者区还有一条揪着不放的路：作者名本身不是按钮（进主页要点一点点），
   // 我们直接回头验证「取关后关注流里笔记消失」
   await s.goto(`${BASE}/#/`)
+  await s.evaluate("document.querySelector('[data-test=feed-tab-follow]').click()")
+  await s.waitFor(
+    "document.querySelector('[data-test=feed-tab-follow]').getAttribute('aria-selected') === 'true'",
+    '回到关注 tab',
+    10000,
+  )
   await s.waitFor(
     "document.querySelector('[data-test=feed-empty]') || document.querySelectorAll('[data-test=feed-item]').length",
     '关注流回到首页',

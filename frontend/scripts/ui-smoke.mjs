@@ -68,16 +68,20 @@ try {
   )
   s.check('access + refresh 双 token 都已写入 localStorage', tokens === '{"a":true,"r":true}', tokens)
 
-  // 5. 首页展示昵称
-  await s.waitFor("document.querySelector('.nickname')?.textContent?.trim() === '小哭猫'", '昵称渲染')
-  s.check('首页展示后端返回的昵称', true, '昵称=小哭猫')
+  // 5. 昵称渲染
+  // 走「我的」页的 me-nickname：首页那张资料卡在移动端已 display:none，
+  // 在那儿 querySelector('.nickname') 照样找得到（display:none 不出 DOM），
+  // 断言会「通过」但验的是用户根本看不到的东西
+  await s.goto(`${BASE}/#/profile`)
+  await s.waitFor("document.querySelector('[data-test=me-nickname]')?.textContent?.trim() === '小哭猫'", '昵称渲染')
+  s.check('「我的」页展示后端返回的昵称', true, '昵称=小哭猫')
 
   // 6. 刷新保持登录（走 App.vue 的 restore → /me）
   await s.goto(`${BASE}/#/`)
-  await s.waitFor("document.querySelector('.nickname')?.textContent?.trim() === '小哭猫'", '刷新后昵称', 20000)
+  await s.waitFor("document.querySelector('[data-test=tab-profile]')", '登录后底部导航出现', 20000)
     .catch(() => false)
-  s.check('刷新页面后仍是登录态（store.restore 拉 /me）',
-    await s.evaluate("document.querySelector('.nickname')?.textContent?.trim() === '小哭猫'"))
+  s.check('刷新页面后仍是登录态（底部导航在，且 store.restore 拉过 /me）',
+    await s.evaluate("!!document.querySelector('[data-test=tab-bar]')"))
 
   // 6.5 桌面端响应式：1280 宽下切桌面构图，430 宽下切回手机构图
   await s.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
@@ -117,6 +121,52 @@ try {
       && (await s.evaluate("getComputedStyle(document.querySelector('.top')).display")) !== 'none')
   s.check('手机视口下内容区仍是 480px 贴边',
     (await s.evaluate("getComputedStyle(document.querySelector('.page')).maxWidth")) === '480px')
+
+  // 6.6 首页两个 tab：发现（默认）/ 关注
+  //
+  // 默认停在「发现」是有意的：关注流对「一条关注都没有的新用户」永远是空的，
+  // 首页会一片空白。所以这里钉住默认值 + aria-selected + 两个 tab 都能切。
+  await s.goto(`${BASE}/#/`)
+  await s.waitFor("!document.querySelector('[data-test=feed-loading]')", '首页信息流进入终态', 20000)
+  const tabs = await s.evaluate(`(() => {
+    const arr = [...document.querySelectorAll('.feed-tab')].map((el) => ({
+      text: el.textContent.trim(),
+      test: el.dataset.test,
+      sel: el.getAttribute('aria-selected'),
+      role: el.getAttribute('role'),
+      h: Math.round(el.getBoundingClientRect().height),
+    }))
+    return JSON.stringify(arr)
+  })()`)
+  const tabArr = JSON.parse(tabs)
+  s.check('首页有「发现」「关注」两个 tab，且都是 button+role=tab（切 tab 是动作不是导航）',
+    tabArr.length === 2 && tabArr.every((t) => t.role === 'tab')
+      && tabArr.map((t) => t.text).join('/') === '发现/关注',
+    tabs)
+  s.check('首页默认激活「发现」（关注流对新用户是空的）',
+    tabArr[0]?.test === 'feed-tab-discover' && tabArr[0]?.sel === 'true'
+      && tabArr[1]?.sel === 'false',
+    tabs)
+  s.check('两个 tab 热区都 ≥40px 高', tabArr.every((t) => t.h >= 40), tabs)
+  const discItems = await s.evaluate("document.querySelectorAll('[data-test=feed-item]').length")
+  s.check('「发现」tab 直接有内容（不是空态，冷启动不再空白首页）',
+    discItems > 0 || (await s.evaluate("!!document.querySelector('[data-test=feed-empty]')")),
+    `items=${discItems}`)
+  await s.evaluate("document.querySelector('[data-test=feed-tab-follow]').click()")
+  await s.waitFor(
+    "document.querySelector('[data-test=feed-tab-follow]').getAttribute('aria-selected') === 'true'",
+    '切到关注 tab',
+    10000,
+  )
+  s.check('点「关注」能切过去且 aria-selected 互换',
+    (await s.evaluate("document.querySelector('[data-test=feed-tab-discover]').getAttribute('aria-selected')")) === 'false')
+  // 切回发现，避免给后面第 8 节（刷新看主题）留下非默认状态
+  await s.evaluate("document.querySelector('[data-test=feed-tab-discover]').click()")
+  await s.waitFor(
+    "document.querySelector('[data-test=feed-tab-discover]').getAttribute('aria-selected') === 'true'",
+    '切回发现 tab',
+    10000,
+  )
 
   // 7. 深浅双模式
   const before = await s.evaluate("document.documentElement.dataset.theme")

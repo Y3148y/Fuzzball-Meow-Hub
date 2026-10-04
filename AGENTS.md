@@ -131,12 +131,12 @@ $env:XK_MYSQL_PASSWORD = "<.env 里的 MYSQL_ROOT_PASSWORD>"   # 不设就起不
 改后端接口 → 必须跑契约测试；改前端 → 必须跑 CDP 测试。**别攒到最后一起跑。**
 
 ```bash
-# 后端（需后端已在 8088 运行）→ 355 条
+# 后端（需后端已在 8088 运行）→ 378 条
 cd backend && node scripts/contract-test.mjs
 # 换地址：XK_API_BASE=http://ip:8088 node scripts/contract-test.mjs
 
 # 前端（需前端 5180 + 后端 8088 同时在跑）
-# → 24 + 8 + 82 + 26 + 52 + 25 + 19 + 9 + 113 = 358 条
+# → 29 + 8 + 82 + 26 + 52 + 26 + 19 + 9 + 117 = 368 条
 cd frontend && npm run test:ui
 
 # 单跑某一组：:smoke / :refresh / :note / :profile / :interaction / :follow / :search / :idempotent / :layout
@@ -890,3 +890,49 @@ get('/comment/list', { params: { noteId, page } })    // ❌ 发出 ?params[note
   真正要做的是 P8 的 Redis 计数 + 异步落库。
 - **reindex 是全量重建**：删索引 + 从 MySQL 回灌，10 篇就 10 篇，量大了会慢，
   且期间检索会短暂失败。没做增量/双写，别在生产直接调。
+
+### P14 发现流已知缺口
+
+- **P14 发现流已完工**（本 commit）：`GET /api/feed/discover` + 首页两个 tab，
+  契约 **378 条**（355 + 23，17.5 段）+ CDP **368 条**（358 + 10）
+  - **排序三级**（`FeedMapper.pageDiscover`）：`EXISTS(我关注了作者) DESC`
+    → `(like_count+collect_count+comment_count) DESC` → `create_time DESC,
+    id DESC`。发现流**排除自己发的**（`n.user_id <> ?`）。
+  - `authorFollowed` **不再写死 true**：`FeedServiceImpl` 抽出公共
+    `assemble(notes, total, page, size, viewerId)`，两个流都用
+    `UserFollowQueryService.batchFollowingIds` 实时判断。关注流原来靠
+    「能出现在关注流里 = 已关注」推断，作者被逻辑删除时 `findUserVOMap`
+    会缺条目；发现流更是混着已关注与未关注两种作者，必须实时算。
+  - 前端：`activeTab` 默认 **`discover`**、`switchTab()` 换接口，
+    tab 是 `<button role=tab>` + `aria-selected`（切 tab 是**动作**不是 URL
+    导航，规则：导航归 a、动作归 button）；两个空态文案分开。
+  - **连带必须改的测试**：`ui-follow` 进首页后要**先点「关注」tab**再等
+    `feed-item`，否则整组挂在「feed 出现测试笔记」上（素材笔记不在发现流里）；
+    `ui-smoke` 的昵称断言从首页 `.nickname` 改到「我的」页 `[data-test=me-nickname]`
+    —— 首页资料卡 `display:none` 后 `querySelector('.nickname')` **照样找得到**
+    （display:none 不出 DOM），断言会「通过」但验的是用户看不到的东西。
+  - CDP 17.5 段刻意**不钉 total 的具体数字**（库里还有种子号/演示号/压测残留，
+    写死数字每加一次种子数据就得重写断言），钉的是「集合关系 + 排序规则」：
+    不含自己、全 `status=1`、`authorFollowed` 是布尔、已关注连成前缀、
+    同档内互动量非递增、`size` 夹取、关注流回归。
+
+### P14 发现流已知缺口
+
+- **`ORDER BY` 全靠 filesort，没有索引支撑**：`pageDiscover` 的排序键是
+  `EXISTS(子查询) DESC, (like_count+collect_count+comment_count) DESC,
+  create_time DESC, id DESC`。前一个键是子查询结果、第二个是三列之和，
+  **都无法进索引**，所以数据量上来后必然临时表 + filesort。现在库里 153 篇
+  无所谓，但「发现流」这个页面的分页深度会成为真实瓶颈。要治只有两条路：
+  加一个物化的 `hot_score` 列（异步刷），或者把 `EXISTS` 换成预join 出的
+  布尔列。**动手前先量**：现在就该加个压测场景，别凭想象优化。
+- **互动量排序读的是 note 表的三个计数列，而它们是 Redis 权威值的异步落库产物**
+  （P8 `NoteCounterFlushJob` 每 30s 刷一次）。所以**刚发的笔记会有最长 30s
+  排在比它热度低的老笔记后面**，随后自动纠正。这里刻意不逐条 `ZCARD`：一页 20 条
+  要读 3 个 ZSet 的全部成员，代价远大于排序本身。这条取舍写进了
+  `FeedMapper.pageDiscover` 的注释，别当 bug 反复"修"。
+- **只出首页 20 条，没有翻页**：发现流与关注流都只请求 `page=1&size=20`，
+  没有「上拉加载更多」。真要加得引入页码状态 + `IntersectionObserver`，
+  且注意 `OFFSET` 深分页会越来越慢（同一根因）。
+- **默认 tab 是「发现」**：因为关注流对一条关注都没有的新用户永远是空的。
+  代价是已关注的老用户进首页第一眼看到的是全站流而不是关注流，得多点一下。
+  这是产品取舍，不是 bug。

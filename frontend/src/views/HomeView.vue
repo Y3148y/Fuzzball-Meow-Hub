@@ -3,7 +3,7 @@ import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { BizError } from '@/api/request'
 import { followUser, unfollowUser } from '@/api/follow'
-import { getFollowFeed } from '@/api/feed'
+import { getDiscoverFeed, getFollowFeed } from '@/api/feed'
 import { ErrorCode } from '@/api/types'
 import type { NoteListItemVO } from '@/api/types'
 import { useUserStore } from '@/stores/user'
@@ -22,7 +22,17 @@ function goSearch() {
   void router.push({ name: 'search', query: { keyword: kw } })
 }
 
-/* ---------------- 关注流 ---------------- */
+/* ---------------- 关注流 / 发现流 ---------------- */
+
+/**
+ * 首页两个 tab：**默认「发现」**。
+ *
+ * <p>默认发现而不是关注，理由是关注流对「一条关注都没有的新用户」永远是空的，
+ * 首页会一片空白（这正是加发现流要解决的问题）。
+ */
+type FeedTab = 'discover' | 'follow'
+
+const activeTab = ref<FeedTab>('discover')
 
 const feed = ref<NoteListItemVO[]>([])
 const feedLoading = ref(true)
@@ -38,7 +48,9 @@ async function loadFeed() {
   feedLoading.value = true
   feedError.value = ''
   try {
-    const page = await getFollowFeed(1, 20)
+    const page = activeTab.value === 'discover'
+      ? await getDiscoverFeed(1, 20)
+      : await getFollowFeed(1, 20)
     feed.value = page.list
   } catch (e) {
     if (e instanceof BizError) {
@@ -49,6 +61,12 @@ async function loadFeed() {
   } finally {
     feedLoading.value = false
   }
+}
+
+function switchTab(tab: FeedTab) {
+  if (activeTab.value === tab) return
+  activeTab.value = tab
+  void loadFeed()
 }
 
 /**
@@ -199,12 +217,44 @@ type="search"
       桌面这里只保留 grid-area 定位。
     -->
     <section class="feed" data-test="feed">
-      <h2 class="feed-title">关注的人刚发的笔记</h2>
+      <!--
+        两个 tab 用 <button>：切 tab 是**动作**（要打接口、换数据），
+        不是 URL 导航，所以不能是 RouterLink（规则：导航归 a，动作归 button）。
+        role="tablist"/"tab" 是为了让读屏知道这是一组可切换的视图。
+      -->
+      <div class="feed-tabs" role="tablist" aria-label="首页信息流">
+        <button
+          class="feed-tab"
+          :class="{ on: activeTab === 'discover' }"
+          type="button"
+          role="tab"
+          :aria-selected="activeTab === 'discover'"
+          data-test="feed-tab-discover"
+          @click="switchTab('discover')"
+        >
+          发现
+        </button>
+        <button
+          class="feed-tab"
+          :class="{ on: activeTab === 'follow' }"
+          type="button"
+          role="tab"
+          :aria-selected="activeTab === 'follow'"
+          data-test="feed-tab-follow"
+          @click="switchTab('follow')"
+        >
+          关注
+        </button>
+      </div>
 
       <p v-if="feedLoading" class="hint" data-test="feed-loading">加载中…</p>
       <p v-else-if="feedError" class="hint err" data-test="feed-error">{{ feedError }}</p>
       <p v-else-if="!feed.length" class="hint" data-test="feed-empty">
-        你还没有关注任何人，去别人主页逛逛吧
+        {{
+          activeTab === 'discover'
+            ? '还没有人发布笔记，去发第一条吧'
+            : '你还没有关注任何人，去别人主页逛逛吧'
+        }}
       </p>
 
       <ul v-else class="items">
@@ -420,9 +470,35 @@ type="search"
   gap: 12px;
 }
 
-.feed-title {
-  margin: 0;
+/*
+  tab 条：两个按钮各 ≥40px 热区（P13 起全站标准），激活态只变字色。
+  这不是导航（切 tab 不改 URL，只换接口与列表），所以是 <button> 不是 RouterLink。
+*/
+.feed-tabs {
+  display: flex;
+  gap: 8px;
+}
+
+.feed-tab {
+  flex: 1;
+  min-height: 40px;
+  padding: 0 12px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--xk-text-3);
   font-size: var(--xk-fs-15);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.feed-tab.on {
+  color: var(--xk-amber-text);
+  border-bottom-color: var(--xk-amber);
+}
+
+.feed-tab:hover {
+  color: var(--xk-text);
 }
 
 .hint {

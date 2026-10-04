@@ -17,7 +17,12 @@ FROM ${BASE_IMAGE}
 # 装完把产物还给 elasticsearch，运行时才不会因磁盘权限起不来
 USER root
 COPY ik/elasticsearch-analysis-ik-8.17.6.zip /tmp/ik.zip
-RUN elasticsearch-plugin install --batch file:///tmp/ik.zip \
+# 先 remove 再 install：这一步必须**可重入**。BuildKit 按命令字符串缓存，改过
+# 这条 RUN 之后缓存会 miss，于是它在「已经装过插件」的旧层上重跑，于是报
+# `plugin directory [analysis-ik] already exists`（2026-10-04 撞过）。
+# remove 对没装过的镜像会失败，所以 || true 吃掉它。
+RUN elasticsearch-plugin remove analysis-ik || true \
+    && elasticsearch-plugin install --batch file:///tmp/ik.zip \
     && rm -f /tmp/ik.zip \
     && chown -R elasticsearch:elasticsearch /usr/share/elasticsearch/plugins
 USER elasticsearch

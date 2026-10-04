@@ -423,6 +423,9 @@ get('/comment/list', { params: { noteId, page } })    // ❌ 发出 ?params[note
     prod ES 容器；下次部署重新 `docker compose -f deploy/docker-compose.prod.yml
     --env-file .env.prod up -d --build` 时自然带上 IK。dev 已生效并回归（契约 332
     + 搜索 CDP 19 条全绿）
+    ⚠️ **这条已于「prod ES 装 IK」一轮修掉，2026-10-04**：prod ES 现在
+    `analysis-ik 8.17.6` 已装、`xk_note` mapping 已是 `ik_max_word`/`ik_smart`。
+    过程中踩了三个坑，见下面「prod 栈运维」段。
 - P11 小红书对齐已完工（本 commit）：作者自评放开 + 图文必带图 + 删除笔记
   + 契约 **355 条**（+P11 23 条）+ CDP **184 条**（174 → 184，ui-note 17→27）
   - **A 作者可评论自己笔记**：`CANNOT_COMMENT_SELF_NOTE`(30007) 枚举保留不删，
@@ -953,3 +956,86 @@ get('/comment/list', { params: { noteId, page } })    // ❌ 发出 ?params[note
 - **默认 tab 是「发现」**：因为关注流对一条关注都没有的新用户永远是空的。
   代价是已关注的老用户进首页第一眼看到的是全站流而不是关注流，得多点一下。
   这是产品取舍，不是 bug。
+
+## 8. prod 栈运维（2026-10-04 踩出来的，都是环境问题不是代码问题）
+
+### 8.1 prod 后端镜像曾经落后三个阶段（已修）
+
+**现象**：前端已带「发现」tab 部署到 `18080`，但 `GET /api/feed/discover` 返回
+`100404 接口不存在`；`DELETE /api/note/{id}` 返回 `100002 方法不支持`
+（而 `@DeleteMapping("/{id}")` 明明在代码里）。
+
+**根因**：prod backend 镜像构建于 **2026-09-29**，而删除接口是 **09-30**（P11）
+加的、发现流是 10-04（P14）加的 —— 也就是说**镜像比仓库落后 P11/P12/P14 三个阶段**。
+前端一直在重建、后端一直没重建，这个组合是坏的。
+
+**判据**（下次怀疑时先查这两条，别猜）：
+
+```powershell
+docker inspect xiaoku-backend:latest --format "{{.Created}}"     # 本地镜像构建时间
+docker inspect xiaoku-prod-backend-1 --format "{{.Image}}"      # prod 容器用的镜像
+git log -1 --format="%ad" --date=iso -S'DeleteMapping' -- backend/src/main/java/com/xiaoku/module/note/controller/NoteController.java
+```
+
+**教训**：改前端就只重建前端，这个习惯在「后端也有改动」时会静默留下
+「新前端 + 旧后端」。**每次部署前先确认后端镜像日期晚于最后一次后端提交。**
+
+### 8.2 本机构建后端镜像走不通的三道墙与绕法
+
+`docker compose ... build backend` 在这台机上**当前跑不通**，三道墙依次是：
+
+1. **Docker Desktop 守护进程级镜像源拉不动 blob**：
+   `image-mirror.r2.daocloud.vip` 连续 3 次 `EOF`，清空 `REGISTRY_PREFIX`
+   也无效（那是 compose 变量，镜像源在 daemon 侧）。
+   **绕法**：`$env:DOCKER_BUILDKIT="0"` 用 classic builder —— 两个基础镜像
+   （`maven:3.9.9-eclipse-temurin-17`、`eclipse-temurin:17-jre`）本地都有缓存，
+   classic builder 不回源校验 tag。
+2. **容器内 Maven 连不上 Maven Central**：`UnresolvableModelException`。
+   **绕法**：先在主机上 `.\mvnw.cmd -DskipTests package`（**不要加 `-o`**：
+   本地 `~/.m2` 从没下过 surefire 的依赖，离线模式必然
+   `PluginResolutionException`），再用一份**临时** Dockerfile 只复刻
+   `backend/Dockerfile` 的运行时阶段，把 `target/xiaoku-backend.jar` 拷进去。
+3. **`archive.ubuntu.com` 502**（运行时阶段 `apt-get install curl`）：
+   **绕法**：临时 Dockerfile 里先 `sed` 把 apt 源换成清华镜像。
+
+配套的两处临时改动，用完必须还原/删除：
+- `.dockerignore` 里有 `target/`，要让 JAR 进构建上下文得临时放行
+  （`target/*` + `!target/xiaoku-backend.jar`）
+- 临时 Dockerfile 放 `backend/Dockerfile.localtemp`，**别提交**
+
+**仓库里的 `backend/Dockerfile` 与 `.dockerignore` 一个字都没改** —— 上面三条
+全是本机网络环境的问题，把镜像源写进仓库 Dockerfile 会污染所有人的构建。
+
+### 8.3 换 analyzer 必须删索引重建（prod 也踩了一次）
+
+给 prod ES 装上 IK 插件后，我用旧后端发一篇「图书漂流」搜「图书漂流」→ **命中了**，
+看起来 IK 生效了。**这是假阳性**：那次跑的是 9-29 的旧后端，索引/查询两端都是
+`standard`，靠单字匹配碰巧命中；而 `xk_note` 的 mapping 当时仍是
+`"analyzer": "standard"`。
+
+**ES 永远不会升级已有索引的 mapping**（AGENTS 第 7 节 P10 段已记过一次，
+这次在 prod 又踩了一次）。判据只有一条 —— 直接查：
+
+```powershell
+docker exec xiaoku-prod-elasticsearch-1 sh -c "curl -s 'localhost:9200/xk_note/_mapping?pretty'"
+```
+
+看到 `"analyzer": "standard"` 就是没生效。正确顺序：
+**先装插件 → 删索引 → 调 `/api/search/reindex` 让新后端按注解重建**，
+再验证。验证要用**双字词**（「图书漂流」这种）：单字词在 standard 下也能命中，
+区分不出 IK 与不 IK。
+
+### 8.4 prod 库里没有演示账号，探针账号要自己注册
+
+`application-prod.yml` 的 `init-demo-data` 默认 **false**，所以 prod 没有
+`xiaoku_demo`（`Xk@123456` 在 prod 登不进去，别再试）。要在 prod 验证就得注册
+临时账号。**后端没有「删账号」接口**，探针账号会留在库里：
+
+| 账号 | 用途 | 笔记 |
+|---|---|---|
+| `prod_iktl8t38` | 搜索对照（读者视角） | 无 |
+| `prod_iktlbmxk` | IK 验证作者 | 已删 |
+| `prod_iktmli1d` | IK 复验作者 | 已删 |
+
+笔记都走 `DELETE /api/note/{id}` 清掉了，ES 索引 `xk_note` 现在 0 篇
+（`docs.deleted` 计数会留着历史，属正常）。要彻底清账号得进 prod MySQL 手删。

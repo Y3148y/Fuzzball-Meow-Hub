@@ -45,21 +45,29 @@ function isToggling(id: string) {
 }
 
 async function loadFeed() {
+  // 记下这次请求是给哪个 tab 发的：请求在飞的时候用户可能又切了 tab，
+  // 过期响应**不能**写进列表，否则「关注」tab 下会显示发现流的内容
+  // （这机器冷启动首个请求能到 9s，很容易撞上慢响应）
+  const tab = activeTab.value
   feedLoading.value = true
   feedError.value = ''
   try {
-    const page = activeTab.value === 'discover'
+    const page = tab === 'discover'
       ? await getDiscoverFeed(1, 20)
       : await getFollowFeed(1, 20)
+    if (tab !== activeTab.value) return
     feed.value = page.list
   } catch (e) {
+    if (tab !== activeTab.value) return
     if (e instanceof BizError) {
       feedError.value = e.message
     } else {
       feedError.value = '加载失败，请稍后重试'
     }
   } finally {
-    feedLoading.value = false
+    // 同理：过期的请求不能把「加载中」提前关掉，那会让新请求还在飞的时候
+    // 露出上一份数据的空档
+    if (tab === activeTab.value) feedLoading.value = false
   }
 }
 

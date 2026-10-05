@@ -15,13 +15,26 @@ import type { Ref } from 'vue'
 
 const READ_FN = 'visualViewport' in window ? window.visualViewport : null
 
+/**
+ * 键盘高度的**下限阈值**（px）。
+ *
+ * <p>为什么需要：视觉视口比布局视口小**不一定**是键盘造成的 —— 桌面浏览器把窗口
+ * 拖出屏幕、页面缩放、某些浏览器的默认工具栏收放，都会让
+ * `visualViewport.height < innerHeight`，于是一个 20~80px 的差值被当成键盘，
+ * 吸底栏会无缘无故抬起、页面末尾多出一截空白。
+ *
+ * <p>手机上没有一种软键盘比 150px 还矮（最小的高度行/数字键盘都远大于此），
+ * 所以这个阈值不会漏掉真键盘，却能滤掉全部这类假阳性。
+ */
+const MIN_KEYBOARD_PX = 150
+
 function currentInset(): number {
   if (!READ_FN) return 0
-  // innerHeight 是 layout viewport，height/offsetTop 是 visual viewport 的
-  // 可见区；键盘弹起时后者变小，差额就是键盘盖住的高度
+  // innerHeight 是 layout viewport；height/offsetTop 是 visual viewport 的
+  // 差值就是「被键盘盖住的那一截」，负值说明键盘往下探
   const inset = window.innerHeight - READ_FN.height - READ_FN.offsetTop
-  // 负值（地址栏收缩等）按 0 处理，否则吸底栏会被顶上去
-  return inset > 0 ? Math.round(inset) : 0
+  // 噪声与符号抖动直接吃掉；低于阈值的当没有键盘
+  return inset >= MIN_KEYBOARD_PX ? Math.round(inset) : 0
 }
 
 /** target 传元素 ref：值可能还没挂上，所以每次读 .value 而不是闭包捕获 */

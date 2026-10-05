@@ -53,8 +53,23 @@ git -c http.proxy=http://127.0.0.1:7897 -c https.proxy=http://127.0.0.1:7897 pus
 其他固定前提：
 
 - MySQL 容器绑定 **`127.0.0.1:3309`**（只对回环开放，刻意不对局域网暴露）
+- Redis 容器绑定 **`127.0.0.1:6379`**（2026-10-05 补进 dev compose，理由见下面那条）
 - Elasticsearch `9250`、Kafka `9092`、后端 `8088`、前端 dev `5180`
 - 仓库根目录 `.env` 提供 `MYSQL_ROOT_PASSWORD`（**永不提交**）
+
+⚠️ **dev 的 Redis 曾经是「借」来的**：dev compose 原来只有 mysql/kafka/es，
+而 `application.yml` 的 Redis 默认指向 `127.0.0.1:6379` —— 开发期实际由**另一个
+项目**（compose project `community`）的 redis 容器提供。那个容器一停，本项目后端
+就起不来，而报错**藏在** `spring-boot-maven-plugin` 那句
+`Process terminated with exit code: 1` 后面：
+
+```
+Caused by: RedisConnectionException: Unable to connect to Redis server: 127.0.0.1/6379
+```
+
+不往上翻日志会以为是代码问题。2026-10-05 已把 `redis` 服务正式加进
+`docker-compose.yml`（只绑回环、`appendonly no`、带 healthcheck），
+`docker compose up -d redis` 即可。以后**先看 `xiaoku-redis` 在不在**再排后端。
 
 **连 MySQL 只能这么写（2026-09-29 实测，其他写法全部失败）**：
 

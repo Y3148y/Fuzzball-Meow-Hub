@@ -129,10 +129,43 @@ services:
     networks:
       - xiaoku-net
 
+# ---------------------------------------------------------
+  # Redis 7 —— 计数权威 / 限流 / 幂等 / 布隆 / 分布式锁 / 登录会话
+  #
+  #   这个服务是**后补的**（2026-10-05）：dev compose 原来只有 mysql/kafka/es，
+  #   而 application.yml 的 Redis 默认就指向 127.0.0.1:6379 —— 也就是说开发期
+  #   一直在借用**另一个项目**（compose project `community`）的 redis 容器。
+  #   那个容器一停，本项目后端就起不来，报错长这样：
+  #     RedisConnectionException: Unable to connect to Redis server: 127.0.0.1/6379
+  #   （藏在 spring-boot-maven-plugin 的 "Process terminated with exit code: 1" 后面，
+  #     不往上翻日志会以为是代码问题）
+  #
+  #   只绑回环，不对局域网暴露 —— 与 MySQL 同一个理由（见上面 ports 注释）
+  # ---------------------------------------------------------
+  redis:
+    image: ${REGISTRY_PREFIX}redis:7-alpine
+    container_name: xiaoku-redis
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
+    # 开发期不设口令（application.yml 的 XK_REDIS_PASSWORD 默认为空）。
+    # 要设口令的写法见 deploy/docker-compose.prod.yml 的 redis 段
+    command: ["redis-server", "--appendonly", "no"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - xiaoku-net
+
 volumes:
   mysql-data:
   kafka-data:
   es-data:
+  redis-data:
 
 networks:
   xiaoku-net:

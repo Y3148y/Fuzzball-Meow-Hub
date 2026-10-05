@@ -68,7 +68,7 @@ function chunk(type, data) {
   return Buffer.concat([len, body, c])
 }
 
-function makePng(r, g, b) {
+function makePngBlob(r, g, b) {
   const ihdr = Buffer.alloc(13)
   ihdr.writeUInt32BE(8, 0)
   ihdr.writeUInt32BE(8, 4)
@@ -79,12 +79,20 @@ function makePng(r, g, b) {
     raw.push(Buffer.from([0, r, g, b]))
     for (let x = 0; x < 7; x++) raw.push(Buffer.from([r, g, b]))
   }
-  return new File([Buffer.concat([
+  const buf = Buffer.concat([
     Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
     chunk('IHDR', ihdr),
     chunk('IDAT', zlib.deflateSync(Buffer.concat(raw))),
     chunk('IEND', Buffer.alloc(0)),
-  ])], 'seed.png', { type: 'image/png' })
+  ])
+  /*
+    用 Blob + FormData.append(文件名, blob) 而不是 `new File(...)`：
+    `File` 作为全局是 Node 20 才有的，这个脚本头部承诺的是 Node 18+，
+    写 new File 会在 18 上直接 ReferenceError。seed.mjs / contract-test.mjs
+    也是 Blob + 文件名，跟它们保持一致（顺带：Blob 必须显式给 type，
+    缺了会被内容类型白名单 100001 拒掉）。
+  */
+  return new Blob([buf], { type: 'image/png' })
 }
 
 const tag = `A${AUTHORS}N${NOTES}`
@@ -115,7 +123,7 @@ async function main() {
 
     // 每个作者只上传一次图，之后复用同一个 URL
     const fd = new FormData()
-    fd.append('file', makePng(40 * a, 90, 200 - 10 * a))
+    fd.append('file', makePngBlob(40 * a, 90, 200 - 10 * a), 'seed.png')
     r = await call('/note/image', { method: 'POST', token, raw: fd })
     const imgUrl = typeof r?.data === 'string' ? r.data : (r?.data?.url ?? r?.data?.path)
     if (!imgUrl) { console.log(`  ${user} 上传图失败 ${JSON.stringify(r)}`); continue }

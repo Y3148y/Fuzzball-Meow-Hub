@@ -50,6 +50,53 @@ git ls-remote --heads origin           # 通 → 直接 git push origin main
 git -c http.proxy=http://127.0.0.1:7897 -c https.proxy=http://127.0.0.1:7897 push origin main
 ```
 
+⚠️ **代理记录已作废（2026-10-06）**：上面那段说"经代理 TLS 握手失败、直连反而通"
+在本机**不再成立**。10-05 推送连续失败（`Recv failure: Connection was reset`、
+`Failed to connect to github.com port 443`），直连 ls-remote 也失败，带代理才推成功；
+但 10-06 又出现直连成功的情况。**结论：这个网络到 GitHub 的连通性会漂移**，
+所以每次都按上面顺序实测判断，不要照抄结论。
+
+### 2.1 git 署名邮箱必须与 remote 域名对得上（2026-10-06 踩过）
+
+**GitHub 判定贡献归属看的是提交里记录的 author/committer 邮箱**，
+跟「你在网站账号设置里绑的邮箱」是**两套互不相通的东西** —— 后者 GitHub 不会
+主动拿去匹配历史提交。所以本地署名邮箱写错，代码照样推得上去、远端 SHA 照样对，
+**但贡献图永远是空的**，而且不会有任何报错。
+
+⚠️ **这个项目就中过 30 次**：全局 `~/.gitconfig` 里是
+`14971050+y3148y@user.noreply.gitee.com`（**Gitee** 的隐匿邮箱，
+`user.noreply.gitee.com`），而 remote 是 `github.com/Y3148y/...`。
+GitHub 完全不认识 gitee.com 这个隐匿邮箱域名，于是 09-27 到 10-05 的
+30 个提交一天不落，**全部归属不到任何账号**。
+已改成 `3148555328@qq.com`（2026-10-06），并用空提交推上去验证：
+`api.github.com/repos/Y3148y/Fuzzball-Meow-Hub/commits/<sha>` 返回
+`author.login = Y3148y` —— 归属确认成功。
+
+**为什么没早发现**：noreply 邮箱**不含真实邮箱**，所以既不泄露隐私、
+也不触发任何安全告警，看起来完全无害。而且这台机器上 `ai` /
+`springai-demo` / `InterviewGuide` 三个仓库都用了同一个全局邮箱，
+问题不止一个项目（InterviewGuide 那个还是别人的仓库）。
+
+**规矩**：
+
+1. **新建仓库后、第一次 commit 之前**就核对一遍：
+   ```powershell
+   git config --get user.email; git remote get-url origin
+   # 邮箱域名与 remote 域名对不上（github.com 配 gitee.com 邮箱之类）→ 先改
+   git config user.email <该平台已验证的邮箱>
+   ```
+2. **换平台用不同的隐匿邮箱**是正常需求（隐私考虑），但**绝不能放在全局** ——
+   全局是所有项目共用的，一个项目的身份会污染全部仓库。正确做法是
+   **仓库级**：`git config user.email <隐匿邮箱>` 只作用于当前仓库。
+3. **不确定归属是否生效时，用公开 API 自己验**，别靠"推成功了"就当完事：
+   ```powershell
+   $c = Invoke-RestMethod "https://api.github.com/repos/<owner>/<repo>/commits/<sha>" -Headers @{ "User-Agent"="chk" }
+   $c.author.login      # 有值 = 已归属；null = 没归属
+   ```
+4. 历史提交要一起归属回来只能改写历史（`git filter-repo`）+ force-push，
+   **代价是所有 SHA 变 + 所有 tag 失效要重打**。仅为贡献图不值得，
+   除非用户明确要求。
+
 其他固定前提：
 
 - MySQL 容器绑定 **`127.0.0.1:3309`**（只对回环开放，刻意不对局域网暴露）

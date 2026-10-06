@@ -10,7 +10,9 @@
  */
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { showToast } from 'vant'
 import { getMyCollections } from '@/api/feed'
+import { uncollectNote } from '@/api/note'
 import type { NoteListItemVO } from '@/api/types'
 
 const router = useRouter()
@@ -42,9 +44,34 @@ function onCoverLoad(item: NoteListItemVO, ev: Event) {
   ratios.value = { ...ratios.value, [item.id]: `${w} / ${h}` }
 }
 
-/** 取消收藏后顺手把这条从列表里去掉（后端没有「收藏列表里直接取消」的接口） */
+/** 正在取消中的笔记 id，防止连点两次发两次请求 */
+const removing = ref<Record<string, boolean>>({})
+
+/**
+ * 取消收藏：先打后端再改本地
+ *
+ * <p>不能只 `list.filter` 就完事 —— 那样只是把这一条从当前页面上抹掉，
+ * 收藏关系还在，下次进页面它又回来了，而用户以为已经取消了。
+ * 顺序同理不能反：先改本地再调接口，接口失败时列表与后端就对不上了，
+ * 而且用户看不到任何提示。
+ */
 async function remove(item: NoteListItemVO) {
-  list.value = list.value.filter((n) => n.id !== item.id)
+  if (removing.value[item.id]) return
+  removing.value = { ...removing.value, [item.id]: true }
+  try {
+    await uncollectNote(item.id)
+    list.value = list.value.filter((n) => n.id !== item.id)
+    ratios.value = { ...ratios.value, [item.id]: '' }
+    showToast('已取消收藏')
+  } catch (e) {
+    // 保留这一条并给出原因，不做乐观更新 —— 乐观更新失败要回滚，
+    // 这里的回滚就是「什么都不改」，比维护一份快照简单也更不容易出错
+    showToast(e instanceof Error ? e.message : '取消收藏失败，请稍后重试')
+  } finally {
+    const next = { ...removing.value }
+    delete next[item.id]
+    removing.value = next
+  }
 }
 
 onMounted(load)
@@ -88,9 +115,16 @@ onMounted(load)
           <RouterLink class="author" :to="`/user/${item.authorId}`">
             {{ item.authorNickname }}
           </RouterLink>
-          <button class="uncollect" type="button" data-test="collection-remove" @click="remove(item)">
-            取消收藏
-          </button>
+<button
+              class="uncollect"
+              type="button"
+              data-test="collection-remove"
+              :disabled="removing[item.id]"
+              :aria-label="`取消收藏《${item.title}》`"
+              @click="remove(item)"
+            >
+              {{ removing[item.id] ? '取消中' : '取消收藏' }}
+            </button>
         </div>
       </li>
     </ul>
@@ -216,9 +250,15 @@ onMounted(load)
   border-radius: 999px;
   background: var(--xk-surface-2);
   color: var(--xk-text-2);
-  font-size: var(--xk-fs-12);
-  cursor: pointer;
-}
+font-size: var(--xk-fs-12);
+    cursor: pointer;
+  }
+
+  /* 请求在飞：光标与不透明度都要变，否则连点看不出来在忙 */
+  .uncollect:disabled {
+    cursor: progress;
+    opacity: 0.6;
+  }
 
 @media (min-width: 1024px) {
   .items {

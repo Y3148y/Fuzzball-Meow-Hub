@@ -198,7 +198,7 @@ cd backend && node scripts/contract-test.mjs
 # 换地址：XK_API_BASE=http://ip:8088 node scripts/contract-test.mjs
 
 # 前端（需前端 5180 + 后端 8088 同时在跑）
-# → 31 + 8 + 87 + 26 + 57 + 26 + 19 + 9 + 19 + 125 = 407 条
+# → 31 + 8 + 87 + 26 + 57 + 26 + 19 + 9 + 26 + 125 = 414 条
 cd frontend && npm run test:ui
 
 # 单跑某一组：:smoke / :refresh / :note / :profile / :interaction / :follow /
@@ -1081,8 +1081,8 @@ get('/comment/list', { params: { noteId, page } })    // ❌ 发出 ?params[note
 
 ### P15 通知 + 收藏 + 内容审核（本 commit）
 
-契约 **436 条**（382 + 通知 27 + 收藏夹 12 + 内容审核 15），CDP **407 条**
-（388 + `ui-notification` 19）。
+契约 **436 条**（382 + 通知 27 + 收藏夹 12 + 内容审核 15），CDP **414 条**
+（388 + `ui-notification` 26）。
 
 - **通知中心**：新 `module/notification/`（实体 / 类型枚举 / Mapper / VO /
   Service / Controller）。接口 `GET /api/notification/list?onlyUnread=`、
@@ -1159,13 +1159,44 @@ get('/comment/list', { params: { noteId, page } })    // ❌ 发出 ?params[note
 - **通知列表没有分页**：`GET /api/notification/list` 默认 `size=20`，
   前端只取第一页，没有「加载更多」。
 - **收藏夹没有分页 UI**：`/collections` 只取 `size=50` 一次。
-- **「取消收藏」目前只从列表移除**（`CollectionsView.vue` 的 `remove()`），
-  **没有调 `DELETE /api/note/{id}/collect`** —— 关系行还在，下次进页面又出现。
-  这是已知待修，不是设计。
+- ~~「取消收藏」只从列表移除~~ **已修**：`CollectionsView.remove()` 现在先
+  打 `DELETE /api/note/{id}/collect` 再改本地，失败时保留该条并 toast 原因
+  （不做乐观更新 —— 这里的回滚就是「什么都不改」，比维护快照更不容易出错）；
+  按钮在请求在飞时 `disabled` 并改文案，防连点发两次。
+  CDP 那条钉住它的断言是**「刷新后仍然不在」**：只 `list.filter` 的实现当场
+  看着是对的，断言也拦不住，只有重新进页面才拦得住。
 - **审核词库是占位表**（见上），且只审文本：昵称 / 个人简介（`PROFILE` 场景
   已在枚举里）尚未接入 `ProfileView` 的更新路径。
 - **没有语义审核**：词表命中挡不住「换个说法」的违规内容，真实平台需要
   模型或第三方内容安全 API。当前实现刻意只做词表，不做假的语义判断。
+
+### P15 测试基建：两个「报绿但其实没跑完」的坑
+
+这两个都是本轮真的踩到、且症状都是**「结果看起来是绿的」**，值得单列：
+
+1. **`finally` 里 `process.exit()` 会把异常变成「通过」**
+   （`ui-layout-audit` 已犯过一次，`ui-notification` 又犯了一次）。
+   写成 `catch (e) { /* 忘了 */ } finally { const allOk = await s.close();
+   process.exit(allOk ? 0 : 1) }` 时：异常穿过去 → `close()` 把已跑过的断言
+   正常汇总 → **打印「13/13 通过」、退出码 0**。实际只跑到一半。
+   本轮的具体触发点是 `s.check(` 误写成 `check(`（ReferenceError），
+   顺带把末尾的清理也跳过了，于是库里攒出 3 条 `colprobe*` 垃圾笔记。
+   **规矩**：入口必须是 `try { … } catch (e) { crashed = e } finally {
+   if (crashed) console.error(…); … process.exit(crashed ? 1 : …) }`，
+   临时数据（探针笔记之类）的清理要放在 `finally` 里、且不能只写在 happy path。
+   看到断言数明显少于预期，先查这个，别信全绿。
+2. **自造的用例不能假设「库是干净的」，也不能假设「第一行就是我造的那条」**
+   `ui-notification` 最初是「读-all → 造一条通知 → 点第一行跳转」。两处都脆：
+   通知**跨轮累积**（`xiaoku_demo` 已有 50 条历史通知），第一行未必是这次点赞
+   产生的那条，点它会跳到别的笔记，然后 `waitFor` 永远超时；
+   而点赞如果上一轮崩在清理之前就一直是「已赞」状态，PUT 返回 30001、
+   **本次根本没有新通知**（当时那条断言写成 `code===0 || code===30001`
+   判通过，把这个问题盖住了）。
+   修法：① 用例开头 `DELETE /like` 复位（幂等，返回码不用管）；
+   ② 点赞必须断言 `code===0`，别把 30001 当通过；
+   ③ 定位那一行用**笔记标题**匹配，不用 `:first-child`。
+   **断言里写「A 或错误码 B 也算过」要非常小心 —— 那往往是在给自己的
+   测试不稳定性开口子。**
 
 ## 8. prod 栈运维（2026-10-04 踩出来的，都是环境问题不是代码问题）
 

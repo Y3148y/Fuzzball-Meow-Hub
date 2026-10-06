@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import ThemeToggle from '@/components/ThemeToggle.vue'
+import NotificationBell from '@/components/NotificationBell.vue'
 import { useUserStore } from '@/stores/user'
 
 const router = useRouter()
@@ -50,6 +51,7 @@ async function logout() {
           :to="`/follow/${userStore.userInfo.id}`"
           >关注</RouterLink
         >
+        <NotificationBell />
         <ThemeToggle />
         <button class="link logout" type="button" @click="logout">退出</button>
       </nav>

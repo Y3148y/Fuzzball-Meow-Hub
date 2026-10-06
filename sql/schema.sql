@@ -194,3 +194,44 @@ CREATE TABLE `user_follow`
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
   COLLATE = utf8mb4_general_ci COMMENT ='用户关注关系表';
+
+-- ---------------------------------------------------------------------
+-- 通知表（2026-10-05 新增）
+--   一行 = 「有人对我做了一件事」。这是社交闭环最短的那条链：没有它，
+--   别人赞了我/评论了我我完全不知道，注册量会卡在「看客」阶段。
+--
+--   type 语义（枚举在 NotificationType.java，改这里要同步改那个）：
+--     1 NOTE_LIKE      赞了我的笔记
+--     2 COMMENT        评论了我的笔记
+--     3 COMMENT_LIKE   赞了我的评论
+--     4 FOLLOW         关注了我
+--     5 COMMENT_REPLY  回复了我的评论
+--
+--   actor_id = 谁做的；target_id = 被作用的对象（笔记ID或评论ID）；
+--   note_id 冗余一份笔记ID，让「通知列表」可以不做 JOIN 就知道每条属于哪篇笔记
+--   （回复/评论点赞都要落到具体某篇笔记上）。物理删除，不做逻辑删除。
+--
+--   read_flag 为什么不加 UNIQUE：同一个人可以多次赞同一篇笔记，但只保留
+--   **最早那一条**（UNIQUE(receiver_id, actor_id, type, target_id)），
+--   重复点赞时用 UPDATE 改时间而不是插新行 —— 通知列表不该被同一个人刷屏。
+-- ---------------------------------------------------------------------
+DROP TABLE IF EXISTS `notification`;
+CREATE TABLE `notification`
+(
+    `id`           BIGINT UNSIGNED NOT NULL COMMENT '雪花算法生成的通知ID',
+    `receiver_id`  BIGINT UNSIGNED NOT NULL COMMENT '收到通知的人（当前用户）',
+    `actor_id`     BIGINT UNSIGNED NOT NULL COMMENT '触发通知的人',
+    `type`         TINYINT         NOT NULL COMMENT '1赞笔记 2评论 3赞评论 4关注 5回复',
+    `target_id`    BIGINT UNSIGNED NOT NULL COMMENT '被作用的笔记ID或评论ID（关注类=被关注者userId）',
+    `note_id`      BIGINT UNSIGNED DEFAULT NULL COMMENT '所属笔记ID（冗余，免 JOIN）；**关注类通知为 NULL** —— 不要拿userId 冒充笔记ID',
+    `content`      VARCHAR(200)    DEFAULT NULL COMMENT '冗余的评论/回复内容摘要，便于列表直接展示',
+    `is_read`      TINYINT         NOT NULL DEFAULT 0 COMMENT '0未读 1已读',
+    `create_time`  DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `update_time`  DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_notify_once` (`receiver_id`, `actor_id`, `type`, `target_id`),
+    KEY `idx_receiver_time` (`receiver_id`, `is_read`, `create_time`, `id`),
+    KEY `idx_receiver_unread` (`receiver_id`, `is_read`)
+) ENGINE = InnoDB
+  DEFAULT CHARSET = utf8mb4
+  COLLATE = utf8mb4_general_ci COMMENT ='用户通知表';

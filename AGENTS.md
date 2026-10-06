@@ -193,25 +193,28 @@ $env:XK_MYSQL_PASSWORD = "<.env 里的 MYSQL_ROOT_PASSWORD>"   # 不设就起不
 改后端接口 → 必须跑契约测试；改前端 → 必须跑 CDP 测试。**别攒到最后一起跑。**
 
 ```bash
-# 后端（需后端已在 8088 运行）→ 382 条
+# 后端（需后端已在 8088 运行）→ 436 条
 cd backend && node scripts/contract-test.mjs
 # 换地址：XK_API_BASE=http://ip:8088 node scripts/contract-test.mjs
 
 # 前端（需前端 5180 + 后端 8088 同时在跑）
-# → 31 + 8 + 87 + 26 + 57 + 26 + 19 + 9 + 125 = 388 条
+# → 31 + 8 + 87 + 26 + 57 + 26 + 19 + 9 + 19 + 125 = 407 条
 cd frontend && npm run test:ui
 
-# 单跑某一组：:smoke / :refresh / :note / :profile / :interaction / :follow / :search / :idempotent / :layout
+# 单跑某一组：:smoke / :refresh / :note / :profile / :interaction / :follow /
+#            :search / :idempotent / :notification / :layout
 cd frontend && npm run test:ui:interaction
 
 # 前端类型 / 构建
 cd frontend && npm run typecheck && npm run build
 ```
 
-契约测试每次跑会新建 `ct_/ct2_/ct3_/ct4_/ct5_<时间戳>` 等账号
+契约测试每次跑会新建 `ct_/ct2_/ct3_/ct4_/ct5_/ct_mod<时间戳>` 等账号
 （必须随机，固定账号会撞 `10003` 就测不到注册成功分支），**并留下它们的笔记和图片**。
 `ct5_` 是 P7 搜索轮询的专用账号——搜索接口 60/min 限流，轮询用自己的额度
 才不把断言账号的桶打空（50 次 × 500ms ≈ 25s 预算）。
+`ct_mod<时间戳>` 是 P15 内容审核段的专用账号——发布 20/min/USER，
+全文件 `note/publish` 出现 26 次，共用主账号必撞桶（详见 P15 段）。
 
 清理有**两个**坑，第二个比第一个危险得多：
 
@@ -262,6 +265,12 @@ DELETE FROM xiaoku_db.user WHERE username REGEXP '^ct[0-9]?_[a-z0-9]+$';
    执行完了**（半截清理），别以为整段没生效。要么拆成两条语句，要么把子查询
    包一层派生表 `SELECT id FROM (SELECT id FROM ... ) k`（派生表会物化，不受此限）。
    这条 2026-10-01 实测踩过。
+5. ⚠️ **SQL 里带中文条件字面量时，只能用 `--execute=`，不能走管道 stdin**
+   （2026-10-06 实测）：`"… WHERE title IN ('正常的咖啡探店记录')" --execute="…"`
+   能匹配到行，改成 `$sql | mysql` 之后同一条语句 `target=0` —— 管道进来时连接
+   字符集与 `--execute` 不同，中文字面量被按别的编码解释，于是**静默匹配不到任何行**。
+   症状和「SQL 写错了」一模一样，但反过来：没有 ERROR，只有 0 行。要清中文命名的
+   行，先用 `--execute` 查出 **id**，再用纯 ASCII 的 id 列表去删。
 
 删库不会删文件，图片还在 `backend/uploads/`（已 gitignore），要清就整个删掉。
 
@@ -1069,6 +1078,94 @@ get('/comment/list', { params: { noteId, page } })    // ❌ 发出 ?params[note
 - **默认 tab 是「发现」**：因为关注流对一条关注都没有的新用户永远是空的。
   代价是已关注的老用户进首页第一眼看到的是全站流而不是关注流，得多点一下。
   这是产品取舍，不是 bug。
+
+### P15 通知 + 收藏 + 内容审核（本 commit）
+
+契约 **436 条**（382 + 通知 27 + 收藏夹 12 + 内容审核 15），CDP **407 条**
+（388 + `ui-notification` 19）。
+
+- **通知中心**：新 `module/notification/`（实体 / 类型枚举 / Mapper / VO /
+  Service / Controller）。接口 `GET /api/notification/list?onlyUnread=`、
+  `GET /api/notification/unread-count`、`POST /api/notification/{id}/read`、
+  `POST /api/notification/read-all`。类型 `1` 赞笔记 / `2` 评论 / `3` 赞评论 /
+  `4` 关注 / `5` 回复。
+  - **写入一律 afterCommit + try/catch 吞异常**：通知失败不该把点赞、评论、
+    关注一起回滚（用户已经看到「已点赞」了，再撤销才是真的坏体验）。
+  - 去重靠 `uk_notify_once(receiver_id, actor_id, type, target_id)`：同一接收者 +
+    同一操作者 + 类型 + 对象只有一条；重复互动走 `UPDATE` 把 `is_read` 改回 0、
+    `content` 刷新，**不动 `create_time`**（它仍是首次发生的时间，列表排序稳定）。
+  - 不给自己发通知（发起点就是操作者本人）。
+  - ⚠️ **`note_id` 必须允许 NULL**：关注通知没有笔记，被 `target_id`（此时是
+    receiver 的 userId）填进去的话，前端「去这条笔记」会跳到一篇不存在的笔记。
+    `sql/schema.sql` 改成 `note_id BIGINT NULL`，**存量库要手动 ALTER**。
+  - ⚠️ **`unread-count` 返回 `Result<Integer>`，不是 `Result<Long>`**：`Long` 会被
+    第 6 节的 `ToStringSerializer` 序列化成 `"0"`，而前端要的是数字。
+  - ⚠️ 前端铃铛**只挂在 `SiteNav`（≥1024px）里**，移动端入口放在「我」页一行。
+    最初做成全局固定铃铛，430px 下直接压住顶栏的主题切换与返回键（实测重叠）。
+  - `useUnreadCount.ts` 是**模块级单例**：`App.vue` 在路由变化时刷新，
+    `NotificationBell` / `ProfileView` 共用同一个 ref，否则两处各请求一次还会
+    各自维护一份数字。
+  - CDP 断言里有一条**不能只判「元素在不在 DOM 里」**：
+    `notification-bell` 挂在 `display:none` 的 `SiteNav` 内，子元素的
+    `getComputedStyle().display` 仍是 `flex`（父级隐藏不改变子级计算值）。
+    判「用户看不看得见」要看**盒子面积**（`getBoundingClientRect()` 宽高为 0）。
+
+- **我的收藏夹**：`GET /api/note/collections?page=&size=`（**不收 userId** ——
+  收藏夹是私有数据，能传 id 就等于可越权查别人的收藏）。实现落在
+  `NoteCollectMapper.pageCollectedNotes` + `NoteQueryService.pageMyCollections`。
+  - 只返回 `status=1`：下架的笔记点进去会撞 20002，给一条点不开的条目没意义。
+    契约里有一条专门钉「下架 → 从收藏夹消失 → 上架 → 回来」。
+  - 排序 `collect.create_time DESC, c.id DESC`；`authorFollowed` **实时算**，
+    不能用「能出现在收藏夹里 = 已关注」推断（收藏夹里全是别人）。
+  - 前端 `/collections`，移动 2 列 / 桌面 4 列瀑布。
+
+- **内容审核**：新 `module/moderation/`（`TextModeration` 接口 +
+  `DefaultTextModeration` 词库实现 / `ImageModeration` 接口 + `NoopImageModeration`）。
+  错误码 `CONTENT_SENSITIVE(60001)`，接在**发布、编辑、评论三个入口**
+  （`NoteServiceImpl.validatePublishParams` 是 publish/update 共用的，
+  挂在里面 = 编辑改标题同样过审，否则「发的时候干净、编辑时塞进去」是后门）。
+  - **词库是占位表**（`backend/src/main/resources/moderation/words.txt`，5 条），
+    上线前必须换完整词表 —— 仓库里这份只用来让链路有真实数据流过。
+  - 匹配前做 **NFKC 归一 + 转小写 + 压缩连续重复字符**：全角大写变体
+    （`ＸＫ－ＳＰＡＭ－ＭＡＩＬ`）与填充重复（`地下地下地下钱庄`）都要同样命中。
+    契约里有两条分别钉这两种绕过。
+  - **长度 <2 的词条在读取时丢弃**：中文单字词（`钱`、`赌`）误伤率极高，
+    宁可漏拦也不要把正常笔记全拦下来。
+  - ⚠️ **读词库必须先 `strip()` 再判 `#` 注释**，否则满缩进的注释行会被当成词条
+    收进去（首次实现把 4 条词库读成了 14 条，等于在拦正常内容）。启动日志里
+    `敏感词库已加载：N` 的 N 就是词条数，**数字不对先查注释过滤**。
+  - ⚠️ **词库读失败 / 缺失是 fail-open + WARN**：审核服务挂了不该让全站发不了笔记。
+  - ⚠️ **60001 的 message 绝不回显命中的词**：告诉用户「你哪个词被禁」等于给了
+    绕过办法（换个同义词就行）。命中的词只进服务端日志。
+  - ⚠️ **评论审核最初是假绿的**：`textModeration.check(comment.getContent(), ...)`
+    被写在 `comment.setContent(...)` **之前**，那一刻实体字段还是 null，
+    而 `check` 对 null 直接放行。必须审 `dto.getContent()`。
+    这条只有**真实调用**才发现 —— 契约 17.7 是照着「发布能拦」的直觉写的，
+    先写断言就会绿。
+  - **图片审核默认关闭且仓库里没有真实实现**：`NoopImageModeration` 只做一件事 ——
+    在日志里说清「图片未审核」，避免有人以为这条链路已经过了风控。
+    把 `xiaoku.moderation.image.enabled` 置 true 只会多打一条 ERROR 日志。
+  - 契约 17.7 **用独立账号 `ct_mod<stamp>`**：发布是 20/min/USER，而
+    `contract-test.mjs` 全文件 `note/publish` 出现 26 次，挂在主账号上会撞桶，
+    症状是某次 publish 莫名其妙返回非 0、后面整段连锁假红
+    （踩过：第一次跑 427/432，5 条假红全是这一个原因）。`ct_mod` 前缀仍匹配
+    第 5 节的清理正则 `^ct[0-9]?_[a-z0-9]+$`。
+
+### P15 已知缺口
+
+- **通知只增不清理**：没有「保留最近 N 条」的定时清理，`notification` 会无限增长。
+  用户明确说了本轮不做（先有功能再补运维）。每跑一次 `ui-notification.mjs`
+  会给 `xiaoku_demo` 留 1~2 条通知，属预期。
+- **通知列表没有分页**：`GET /api/notification/list` 默认 `size=20`，
+  前端只取第一页，没有「加载更多」。
+- **收藏夹没有分页 UI**：`/collections` 只取 `size=50` 一次。
+- **「取消收藏」目前只从列表移除**（`CollectionsView.vue` 的 `remove()`），
+  **没有调 `DELETE /api/note/{id}/collect`** —— 关系行还在，下次进页面又出现。
+  这是已知待修，不是设计。
+- **审核词库是占位表**（见上），且只审文本：昵称 / 个人简介（`PROFILE` 场景
+  已在枚举里）尚未接入 `ProfileView` 的更新路径。
+- **没有语义审核**：词表命中挡不住「换个说法」的违规内容，真实平台需要
+  模型或第三方内容安全 API。当前实现刻意只做词表，不做假的语义判断。
 
 ## 8. prod 栈运维（2026-10-04 踩出来的，都是环境问题不是代码问题）
 

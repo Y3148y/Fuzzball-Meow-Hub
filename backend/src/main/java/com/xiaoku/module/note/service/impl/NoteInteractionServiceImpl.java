@@ -14,6 +14,7 @@ import com.xiaoku.module.note.service.NoteInteractionService;
 import com.xiaoku.module.note.service.NoteQueryService;
 import com.xiaoku.module.note.support.NoteCounterStore;
 import com.xiaoku.module.note.vo.NoteVO;
+import com.xiaoku.module.notification.service.NotificationService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DuplicateKeyException;
@@ -32,6 +33,7 @@ public class NoteInteractionServiceImpl implements NoteInteractionService {
     private final NoteCollectMapper noteCollectMapper;
     private final NoteQueryService noteQueryService;
     private final NoteCounterStore counterStore;
+    private final NotificationService notificationService;
 
     /**
      * <b>防重为什么不写成「先 select 查一下再 insert」？</b>
@@ -49,7 +51,7 @@ public class NoteInteractionServiceImpl implements NoteInteractionService {
     @Transactional(rollbackFor = Exception.class)
     public NoteVO like(Long noteId) {
         Long userId = UserContextHolder.requireUserId();
-        requireLikeableNote(noteId);
+        NoteEntity note = requireLikeableNote(noteId);
 
         NoteLikeEntity like = new NoteLikeEntity();
         like.setUserId(userId);
@@ -65,6 +67,8 @@ public class NoteInteractionServiceImpl implements NoteInteractionService {
         // 计数写入走 Redis（ZSET 置位 + 打脏），不再逐次 update DB 计数列，
         // 由 NoteCounterFlushJob 每 30s 按绝对值对账落库。
         counterStore.like(noteId, userId, () -> noteLikeMapper.selectUserIds(noteId));
+        // 通知作者（afterCommit 才落库，写失败也不影响点赞结果）
+        notificationService.notifyNoteLike(note.getUserId(), userId, noteId);
         return noteQueryService.getDetail(noteId);
     }
 
@@ -142,7 +146,7 @@ public class NoteInteractionServiceImpl implements NoteInteractionService {
      * <p>没有外键约束，note 不存在时 insert 会成功留下一条指向虚空的脏关系，
      * 所以必须先查。而且状态也要查：给一篇已下架的笔记加赞没有意义。
      */
-    private void requireLikeableNote(Long noteId) {
+    private NoteEntity requireLikeableNote(Long noteId) {
         NoteEntity note = noteMapper.selectById(noteId);
         if (note == null) {
             throw new BizException(ErrorCodeEnum.NOTE_NOT_FOUND);
@@ -150,5 +154,7 @@ public class NoteInteractionServiceImpl implements NoteInteractionService {
         if (note.getStatus() == null || note.getStatus() != STATUS_PUBLISHED) {
             throw new BizException(ErrorCodeEnum.NOTE_STATUS_ILLEGAL, "该笔记当前状态不支持点赞或收藏");
         }
+        // 返回实体而不只是校验：调用方要拿 userId 去给作者发通知
+        return note;
     }
 }

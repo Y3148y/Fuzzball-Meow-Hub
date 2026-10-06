@@ -263,7 +263,7 @@ red-book/
 | 2 | access token 正常过期时用户被踢下线 | 响应拦截器已解包成 `body.data`，刷新逻辑又读 `res.data` 得 `undefined` → 走失败分支 | 成功路径和失败路径类型都是合法的 |
 | 3 | 填错密码时点登录毫无反应 | `canSubmit` 把「长度不够」也算作按钮 `disabled` | 不是错误，是设计选择 |
 
-**防复发**：登录链路一旦改动，跑 `npm run test:ui`（388 条断言，见下）。第 1、2 条都有对应用例。
+**防复发**：登录链路一旦改动，跑 `npm run test:ui`（407 条断言，见下）。第 1、2 条都有对应用例。
 
 ### 测试基建：`npm run test:ui`
 
@@ -281,7 +281,8 @@ red-book/
 | `npm run test:ui:search` | 首页搜索框跳搜索页、命中素材笔记、卡片作者昵称来自 MySQL 回填、进详情、无结果空态、空关键词不发请求、带 `?keyword=` 直链刷新 |
 | `npm run test:ui:idempotent` | 幂等 key 随请求存活期滚动、坏 access 触发 refresh 时幂等头不丢、手动改坏 token 精确模拟 401 |
 | `npm run test:ui:layout` | **P12-C 起**：6 页 × 2 视口的几何体检（文本宿主与控件矩形相交、`.page` 内横向溢出、文档级 `scrollWidth > innerWidth`）+ 桌面/移动两套 token 各一条 + 关键尺寸断言（首页 4 列瀑布列距、详情图列 440±8 与 `object-fit:contain`、发布页填满 64 字后计数不压输入 + 文字卡预览限高、首页真封面 `naturalWidth≥1080` 钉死 8×8 回归）+ **P13 起：详情卡内边距 >0、发布页标题输入 ≥16px（各双视口）** + **双视口三键降权（无边框/无底色/仅数字/热区≥44）、移动端吸底两行（fixed + 贴底 + 发丝线 + 输入通栏 + 发表钮 44×44 贴左缘）、桌面评论区与操作栏同在**照片那一栏**（评论在照片正下方、展开长文不被推动）+ 操作栏两行几何** + **全站热区 ≥40 扫描、`van-icon` 字形非空扫描、`touch-action=manipulation` 扫描（各 6 页 × 2 视口）+ 移动端底部 tab 栏 24 条（存在性/贴底/5 项/每项 ≥40/不横向溢出、桌面不显示、任务页不挂）+ 每页一条「进入加载终态」** + **首页双 tab：双视口列数（移动 2 列 / 桌面 4 列）、个人信息卡片显隐（桌面显示、移动隐藏）、封面计算出的 aspect-ratio == naturalWidth/Height（真按图片比例自适应）、tab 条两项 ≥40px 且不压列表** + **三级文字与琥珀 text 对底色 ≥4.5:1（逐主题逐档，取每档对 surface/surface-2 里更差的组合；量的是 token 不是元素渲染色）**；`-- --report` 另出量化体检表（行长/占用/字号/对比度/热区/宽高比，只打印不断言） |
-| `npm run test:ui` | 九者全跑（388 条） |
+| `npm run test:ui:notification` | **P15 新增**：桌面铃铛角标 + 移动端「我」页入口 + 通知列表内容与跳转 +「全部已读」后角标归零 + 收藏夹页终态。19 条 |
+| `npm run test:ui` | 十者全跑（407 条） |
 
 **验证 refresh 链路的做法**：把 `localStorage` 里的 `xk_token` 改成垃圾串后**整页重载**。
 冷启动时 token 的 `ref` 会读到这个坏值，`isLogin` 仍为 `true`，
@@ -789,7 +790,7 @@ dev 栈 6 容器 + prod 栈 7 容器），冷启动后第一个请求能到 **9s
 ### 后端契约测试：`node backend/scripts/contract-test.mjs`
 
 P2 那 7 条断言原本是临时脚本，跑完就丢了，`git log` 里看不出「怎么测的」。
-现在固化成落盘的契约快照，382 条（P2 44 + P3 32 + P5 58 + P6 69 + P7 19 + P8 54 + P10 56 + P11 23 + P14 23 + 搜索收紧 4）：
+现在固化成落盘的契约快照，436 条（P2 44 + P3 32 + P5 58 + P6 69 + P7 19 + P8 54 + P10 56 + P11 23 + P14 23 + 搜索收紧 4 + P15 通知 27 + 收藏夹 12 + 内容审核 15）：
 
 ```bash
 cd backend
@@ -1112,3 +1113,68 @@ curl http://host/api/system/ping
 口令走 `${VAR:?}` 缺一即拒。压测用 k6 三场景混合压 135 req/s，
 p99 25ms 内、零失败 —— 用来证明模块和编排在真机上是能跑起来的，
 不是只过了单元测试。」
+
+### P15 通知中心 / 收藏夹 / 内容审核
+
+补齐与小红书差距最大的三块（本段有后端表结构变更：新增 `notification` 表，
+`notification.note_id` 可空，存量库要手动 `ALTER`）。
+
+#### 通知中心
+
+`module/notification/`，接口挂在 `/api/notification` 下：
+
+| 接口 | 说明 |
+|---|---|
+| `GET /list?onlyUnread=` | 倒序拉取，默认 20 条 |
+| `GET /unread-count` | 未读数（**返回数字，不是字符串**） |
+| `POST /{id}/read` | 单条已读 |
+| `POST /read-all` | 全部已读 |
+
+五种类型：赞笔记 / 评论 / 赞评论 / 关注 / 回复。触发点分布在
+`NoteInteractionServiceImpl`、`CommentServiceImpl`、`UserFollowServiceImpl`。
+
+两个刻意的设计：
+
+- **通知失败不回滚主流程**。写入放在事务提交之后并 try/catch 吞掉异常 ——
+  用户已经看到「已点赞」了，这时把点赞回滚才是真的坏体验。
+- **去重靠数据库唯一索引** `uk_notify_once(receiver, actor, type, target)`：
+  同一接收者对同一对象的同一类型互动只有一条；重复点赞会把它重新标回未读，
+  但不刷新 `create_time`（列表排序因此稳定，不会因为反复点赞而跳动）。
+  关注类通知没有对应笔记，`note_id` 为 NULL —— 用 `target_id`（此时是接收者
+  userId）顶上会让「去这条笔记」跳到一篇不存在的笔记。
+
+前端：桌面端铃铛在 `SiteNav`（≥1024px），移动端入口在「我」页
+（430px 下浮动铃铛会压住顶栏的主题切换和返回键，这是实测踩出来的布局问题）。
+未读数由 `useUnreadCount.ts` 单例持有，路由变化时统一刷新。
+
+#### 我的收藏夹
+
+`GET /api/note/collections`。**接口不收 userId** —— 收藏夹是私有数据，
+能传 id 就等于可越权查别人的收藏。只返回 `status=1` 的笔记（下架的条目点进去
+会撞 20002，给一条点不开的条目没有意义），按收藏时间倒序，
+`authorFollowed` 实时计算（收藏夹里全是别人的笔记，不能靠「能出现在收藏夹里」
+反推关注关系）。前端 `/collections`，移动 2 列、桌面 4 列瀑布。
+
+#### 内容审核
+
+`module/moderation/`：
+
+- `TextModeration` 接口 + `DefaultTextModeration` 词库实现
+- `ImageModeration` 接口 + `NoopImageModeration`（**默认关闭且没有真实实现**）
+
+审核挂在**发布、编辑、评论**三个入口上，命中返回 `60001`。挂进
+`validatePublishParams`（publish 与 update 共用）是刻意的 —— 否则会留下
+「发的时候干净、编辑时塞进去」的后门。
+
+匹配前做 NFKC 归一 + 转小写 + 连续重复字符压缩，全角大写变体
+（`ＸＫ－ＳＰＡＭ－ＭＡＩＬ`）和填充重复（`地下地下地下钱庄`）都会同样命中；
+长度小于 2 的词条在加载时丢弃（中文单字词误伤率极高，宁可漏拦）。
+
+> ⚠️ **仓库里的词库是占位表**（5 条，`backend/src/main/resources/moderation/words.txt`），
+> 上线前必须换成完整词表，否则等于没审。图片审核那侧更彻底：仓库里**没有**
+> 真实检测实现，把 `xiaoku.moderation.image.enabled` 置 true 只会多打一条
+> ERROR 日志提示「实现缺失」，不会真的开始检测。
+
+**这套东西现在的定位是「链路通了」而不是「风控上线」**：词表命中挡不住
+「换个说法」的违规内容，真实平台需要模型或第三方内容安全 API。当前实现刻意只做
+词表，不做一个假的语义判断 —— 假装有风控比没有风控更危险。

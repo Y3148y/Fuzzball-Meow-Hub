@@ -9,9 +9,11 @@ import { getUserNotes } from '@/api/feed'
 import type { NoteListItemVO, ProfilePatch } from '@/api/types'
 import { useUserStore } from '@/stores/user'
 import ThemeToggle from '@/components/ThemeToggle.vue'
+import { useUnreadCount } from '@/composables/useUnreadCount'
 
 const router = useRouter()
 const userStore = useUserStore()
+const { unread } = useUnreadCount()
 
 /*
  * 「我的笔记」——桌面端右侧瀑布用的就是这份数据。
@@ -267,6 +269,17 @@ class="xk-input area"
     </section>
 
     <section v-else class="card xk-card xk-card--flat">
+      <!--
+        通知入口放在「我」页里（小红书移动端就是这个位置），因为移动端页面
+        顶栏右上角已经有主题切换/返回，再塞一个浮动铃铛会压上去（实测布局体检
+        在三页各报 2 处重叠）。桌面端那个铃铛在 SiteNav 里，两处共用
+        useUnreadCount 的未读数，不会出现两个数字不一致。
+      -->
+      <RouterLink class="link notify" to="/notification" data-test="me-notify-link">
+        <span>通知</span>
+        <span v-if="unread > 0" class="notify-badge" data-test="me-notify-unread">{{ unread }}</span>
+      </RouterLink>
+      <RouterLink class="link" to="/collections" data-test="me-collections-link">我的收藏</RouterLink>
       <RouterLink class="link" to="/publish" data-test="go-publish">发布新笔记</RouterLink>
       <button class="link" type="button" data-test="me-logout" @click="logout">退出登录</button>
     </section>
@@ -578,6 +591,28 @@ class="xk-input area"
   font-size: var(--xk-fs-15);
   text-align: left;
   cursor: pointer;
+}
+
+/* 通知行：右侧挂未读角标 */
+.notify {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.notify-badge {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #e5484d;
+  color: #fff;
+  font-size: var(--xk-fs-12);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
 }
 
 .link + .link {

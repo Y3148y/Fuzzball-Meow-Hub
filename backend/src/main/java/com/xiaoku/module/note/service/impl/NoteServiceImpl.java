@@ -3,6 +3,7 @@ package com.xiaoku.module.note.service.impl;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.xiaoku.common.context.UserContextHolder;
 import com.xiaoku.common.exception.BizException;
+import com.xiaoku.module.moderation.TextModeration;
 import com.xiaoku.common.result.ErrorCodeEnum;
 import com.xiaoku.common.storage.ImageStorage;
 import com.xiaoku.common.support.NoteIdBloomFilter;
@@ -68,6 +69,7 @@ public class NoteServiceImpl implements NoteService {
     private final KafkaTemplate<String, Object> kafkaTemplate;
     private final NoteIdBloomFilter bloomFilter;
     private final NoteCounterStore counterStore;
+    private final TextModeration textModeration;
 
     @Value("${xiaoku.kafka.note-topic}")
     private String noteEventTopic;
@@ -311,6 +313,11 @@ public class NoteServiceImpl implements NoteService {
         if (requireGraphicImage && type == TYPE_GRAPHICAL && images.isEmpty()) {
             throw new BizException(ErrorCodeEnum.PARAM_VALIDATION_ERROR, "图文笔记必须至少上传一张图片");
         }
+        // P15 内容审核：标题 + 正文。放在 validatePublishParams 里是刻意的 ——
+        // publish 与 update 共用它，编辑改标题同样要过审，
+        // 免得「发的时候干净、编辑时塞进去」
+        textModeration.check(dto.getTitle(), TextModeration.Scene.NOTE_TITLE);
+        textModeration.check(dto.getContent(), TextModeration.Scene.NOTE_CONTENT);
         images.forEach(NoteServiceImpl::checkImageUrl);
         return new PublishParams(type, images);
     }

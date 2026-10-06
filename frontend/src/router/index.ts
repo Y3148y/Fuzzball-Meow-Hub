@@ -49,6 +49,20 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '搜索', requiresAuth: true },
   },
   {
+    // 我的收藏夹（私有数据，没有「TA 收藏了」这种视图）
+    path: '/collections',
+    name: 'collections',
+    component: () => import('@/views/CollectionsView.vue'),
+    meta: { title: '我的收藏', requiresAuth: true },
+  },
+  {
+    // 通知中心。铃铛在 App.vue 全局挂载（只挂一次），这里是它的落地页
+    path: '/notification',
+    name: 'notification',
+    component: () => import('@/views/NotificationView.vue'),
+    meta: { title: '通知', requiresAuth: true },
+  },
+  {
     // id 是雪花 ID，必须按字符串透传。这里写 :id(\\d+) 只是收窄非法路径，
     // 不要写成 :id(\\d{1,15}) —— 那样真笔记的 17~18 位 ID 反而进不来。
     path: '/note/:id(\\d+)',

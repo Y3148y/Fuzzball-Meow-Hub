@@ -27,4 +27,15 @@ public interface NoteQueryService {
      * @param userId 作者ID
      */
     PageVO<NoteListItemVO> pageUserNotes(Long userId, int page, int size);
+
+    /**
+     * 我的收藏夹：当前登录用户收藏过的、仍处于已发布状态的笔记，按收藏时间倒序
+     *
+     * <p>只查自己的（不传 userId）：收藏夹是私有数据，别人收藏了什么不需要对外可见，
+     * 也就没有「TA 收藏了」这种视图。
+     *
+     * @param page 页码，从 1 开始
+     * @param size 每页条数
+     */
+    PageVO<NoteListItemVO> pageMyCollections(int page, int size);
 }

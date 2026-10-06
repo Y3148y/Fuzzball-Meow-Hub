@@ -501,6 +501,45 @@ async function main() {
     codeIs('没收藏却取消返回 30004', json, 30004)
   }
   {
+    // P15 收藏夹：收藏完要能找回来（以前只有收藏动作、没有查询接口，
+    // 收藏完就「丢了」）。私有数据：只查自己的，不传 userId。
+    const empty = await get('/api/note/collections?page=1&size=20', { token: actorAuth })
+    codeIs('收藏夹查询成功', empty.json, 0)
+    eq('收藏夹 total 是 JSON number', typeof empty.json?.data?.total, 'number')
+    eq('此时收藏夹是空的（刚刚已取消收藏）', empty.json?.data?.list?.length, 0)
+
+    await put(`/api/note/${noteId}/collect`, { token: actorAuth })
+    const { json } = await get('/api/note/collections?page=1&size=20', { token: actorAuth })
+    codeIs('收藏后收藏夹查询成功', json, 0)
+    const ids = (json?.data?.list ?? []).map((n) => n.id)
+    eq('收藏夹里有刚收藏的那篇', ids.includes(noteId), true)
+    eq('收藏夹 total=1', json?.data?.total, 1)
+    const row = json?.data?.list?.[0]
+    check('收藏夹卡片带作者信息（收藏夹里是别人的笔记）',
+      typeof row?.authorId === 'string' && typeof row?.authorNickname === 'string'
+        && row.authorNickname.length > 0,
+      `author=${row?.authorNickname}`)
+    check('收藏夹卡片的 authorFollowed 是布尔（要实时判断，不能拿「在收藏夹里」推断）',
+      typeof row?.authorFollowed === 'boolean', `${row?.authorFollowed}`)
+    check('收藏夹卡片没有漏 password', !Object.keys(row ?? {}).includes('password'))
+
+    // 已下架的笔记不该出现在收藏夹里（点进去会撞 20002）
+    await put(`/api/note/${noteId}/status`, { token: auth, body: { status: 2 } })
+    const down = await get('/api/note/collections?page=1&size=20', { token: actorAuth })
+    check('笔记下架后从收藏夹消失（不给点不开的条目）',
+      !(down.json?.data?.list ?? []).some((n) => n.id === noteId),
+      `ids=${(down.json?.data?.list ?? []).map((n) => n.id).join(',')}`)
+    await put(`/api/note/${noteId}/status`, { token: auth, body: { status: 1 } })
+    const back = await get('/api/note/collections?page=1&size=20', { token: actorAuth })
+    check('重新上架后回到收藏夹',
+      (back.json?.data?.list ?? []).some((n) => n.id === noteId), '')
+
+    // 复原：取消收藏，别把 noteId 留给后面的用例
+    await del(`/api/note/${noteId}/collect`, { token: actorAuth })
+    const anon = await get('/api/note/collections')
+    codeIs('未登录访问收藏夹返回 10005', anon.json, 10005)
+  }
+  {
     // 点赞和收藏是两套独立关系，任何一边都不该动另一边的计数。
     // 先收藏让 collectCount 变成 1，再点赞，回来时 collectCount 必须仍是 1
     // ——如果实现里两边共用了同一个字段或同一个自增语句，这里就会变成 0 或 2
@@ -1600,6 +1639,210 @@ async function main() {
       (json?.data?.list ?? []).every((n) => n.authorFollowed === true),
       `${(json?.data?.list ?? []).filter((n) => n.authorFollowed !== true).length} 条异常`)
     check('发现流改造没有影响关注流的 total', json?.data?.total >= 1, `total=${json?.data?.total}`)
+  }
+
+  // ---- 17.6 P15 通知中心：GET /api/notification/list | unread-count | {id}/read | read-all
+  //
+  // 社交闭环里最短的那条链：没有它，别人赞了我/评论了我我完全不知道。
+  // 断言刻意**不钉通知条数的具体数字** —— 同一个 ct 账号在本文件前面已经被
+  // 关注、点赞、评论过好几次，通知表里本来就有存量。钉的是「集合关系 + 排序规则
+  // + 幂等 + 权限」，这四样才是会回归的地方。
+  //
+  // 参与者：auth（笔记作者）/ actorAuth（互动者，与本文件 P5/P6 用的同一个人）
+  {
+    const { json } = await get('/api/notification/list?page=1&size=50', { token: auth })
+    codeIs('通知列表查询成功', json, 0)
+    const list = json?.data?.list ?? []
+    eq('通知列表 total 是 JSON number', typeof json?.data?.total, 'number')
+    eq('通知列表 list 长度 = min(total, size)', list.length, Math.min(json?.data?.total ?? 0, 50))
+    check('通知行字段齐全（id/type/typeText/actorId/actorNickname/isRead/createTime）',
+      list.every((n) => typeof n.id === 'string' && n.id !== ''
+        && Number.isInteger(n.type) && typeof n.typeText === 'string' && n.typeText.length > 0
+        && typeof n.actorId === 'string' && typeof n.actorNickname === 'string'
+        && (n.isRead === 0 || n.isRead === 1) && !!n.createTime),
+      JSON.stringify(list[0] ?? {}))
+    check('通知的 ID 是字符串且精度未截断（雪花 ID 走 ToStringSerializer）',
+      list.every((n) => BigInt(n.id) > 9007199254740991n),
+      list.map((n) => n.id).join(','))
+    check('通知没有漏 password', !Object.keys(list[0] ?? {}).includes('password'))
+    // 排序：未读优先，再按时间倒序（同档内）
+    const flags = list.map((n) => n.isRead)
+    const firstRead = flags.indexOf(1)
+    check('未读排在已读前面（未读优先）',
+      firstRead === -1 || flags.slice(firstRead).every((x) => x === 1),
+      `flags=${flags.join('')}`)
+    let descOk = true
+    for (let i = 1; i < list.length; i++) {
+      if (list[i - 1].isRead === list[i].isRead && list[i - 1].createTime < list[i].createTime) {
+        descOk = false
+      }
+    }
+    check('同一档内按时间倒序', descOk, list.map((n) => n.createTime).join(' | '))
+    // 笔记类通知必须带得上笔记标题（免 JOIN 的那一列真的填对了）
+    const withNote = list.filter((n) => n.noteId !== undefined)
+    check('笔记类通知带上了笔记标题（note_id 冗余列填对）',
+      withNote.length === 0 || withNote.every((n) => typeof n.noteTitle === 'string' && n.noteTitle.length > 0),
+      withNote.map((n) => `${n.typeText}:${n.noteTitle}`).join(' | '))
+    // 关注类通知**不该**有 noteId：这一列语义是「所属笔记」，
+    // 拿 userId 冒充会让标题回填查不到东西
+    check('关注类通知不带 noteId（不拿 userId 冒充笔记 ID）',
+      list.filter((n) => n.type === 4).every((n) => n.noteId === undefined && n.noteTitle === undefined),
+      JSON.stringify(list.filter((n) => n.type === 4).slice(0, 1)))
+  }
+  {
+    // 未读数必须是 JSON number —— 这里踩过坑：写成 Result<Long> 时 Jackson 会用
+    // ToStringSerializer 把 0 变成 "0"，前端 `unread === 0` 恒为 false
+    // （与 PageVO.total 当年改成 Integer 是同一个坑）
+    const { json } = await get('/api/notification/unread-count', { token: auth })
+    codeIs('未读数查询成功', json, 0)
+    eq('未读数是 JSON number 而不是字符串（前端要能做 === 0）',
+      typeof json?.data, 'number')
+    check('未读数非负', typeof json?.data === 'number' && json.data >= 0, `unread=${json?.data}`)
+  }
+  {
+    const { json } = await get('/api/notification/list?page=1&size=1000', { token: auth })
+    codeIs('通知 size 上限被夹住而不是报错', json, 0)
+    check('通知 size 被夹到 100', (json?.data?.list?.length ?? 0) <= 100, `len=${json?.data?.list?.length}`)
+  }
+  {
+    // 幂等：同一个人对同一个对象重复互动，通知列表只该有一条
+    const before = await get('/api/notification/list?page=1&size=50', { token: auth })
+    const likeN = (before.json?.data?.list ?? []).filter((n) => n.type === 1).length
+    await put(`/api/note/${noteId}/like`, { token: actorAuth })
+    await del(`/api/note/${noteId}/like`, { token: actorAuth })
+    await put(`/api/note/${noteId}/like`, { token: actorAuth })
+    const after = await get('/api/notification/list?page=1&size=50', { token: auth })
+    const likeA = (after.json?.data?.list ?? []).filter((n) => n.type === 1).length
+    eq('重复赞同一篇笔记不会刷出第二条通知（uk_notify_once + touchExisting）', likeA, likeN)
+  }
+  {
+    // 不给自己发通知：自己赞自己的笔记不该收到通知
+    const before = await get('/api/notification/list?page=1&size=50', { token: auth })
+    const totalBefore = before.json?.data?.total ?? 0
+    await put(`/api/note/${noteId}/like`, { token: auth })
+    const after = await get('/api/notification/list?page=1&size=50', { token: auth })
+    eq('自己赞自己的笔记不产生通知（receiver == actor 直接 return）',
+      after.json?.data?.total, totalBefore)
+    // 复原：把自己刚点的赞取消掉，别把 noteId 留给后面的用例
+    await del(`/api/note/${noteId}/like`, { token: auth })
+  }
+  {
+    // 权限：别人通知我不能标已读，且不该报错
+    const mine = await get('/api/notification/list?page=1&size=1', { token: auth })
+    const other = await get('/api/notification/list?page=1&size=1', { token: actorAuth })
+    const otherFirst = other.json?.data?.list?.[0]
+    if (otherFirst) {
+      const { json } = await post(`/api/notification/${otherFirst.id}/read`, { token: auth })
+      codeIs('标读别人的通知不报错', json, 0)
+      eq('标读别人的通知无效（返回 false，越权被 SQL 的 receiver_id 挡住）', json?.data, false)
+    } else {
+      check('（互动者恰好没有通知，跳过越权用例）', true)
+    }
+    const mineFirst = mine.json?.data?.list?.[0]
+    if (mineFirst) {
+      const r1 = await post(`/api/notification/${mineFirst.id}/read`, { token: auth })
+      eq('单条标已读返回 true', r1.json?.data, true)
+      const r2 = await post(`/api/notification/${mineFirst.id}/read`, { token: auth })
+      eq('重复标已读幂等（返回 false，不报错）', r2.json?.data, false)
+      const un = await get('/api/notification/list?page=1&size=50&onlyUnread=true', { token: auth })
+      check('onlyUnread 过滤掉已读',
+        !(un.json?.data?.list ?? []).some((n) => n.id === mineFirst.id),
+        `onlyUnread 里仍有该条`)
+    }
+    const ra = await post('/api/notification/read-all', { token: auth })
+    codeIs('全部已读成功', ra.json, 0)
+    const un = await get('/api/notification/unread-count', { token: auth })
+    eq('全部已读后未读数为 0', un.json?.data, 0)
+  }
+  {
+    // 全站默认需要登录，通知也一样
+    for (const p of ['/api/notification/list', '/api/notification/unread-count']) {
+      const { json } = await get(p)
+      codeIs(`未登录访问 ${p} 返回 10005`, json, 10005)
+    }
+    const { json } = await post('/api/notification/read-all')
+    codeIs('未登录访问 /api/notification/read-all 返回 10005', json, 10005)
+  }
+
+  // ---- 17.7 P15 内容审核：敏感词命中返回 60001（发布 / 编辑 / 评论三个入口）
+  //
+  // 为什么单独一段而不是散进各处：审核是**横切**关注点，一个「漏接入口」就会留下
+  // 后门（发的时候干净、编辑时塞进去、或者评论根本不审）。三条路径各钉一遍。
+  {
+    // 发布是 20/min/USER 的限流，而本文件前面各段已经发掉不少额度
+    // （全文件 note/publish 出现 26 次）。**这一段必须用自己的账号**：
+    // 挂在 auth 上会撞桶，表现为 okPub 莫名其妙返回非 0、后面全段连锁假红。
+    // 账号名用 ct_mod 前缀，仍匹配 AGENTS.md 记录的清理正则 ^ct[0-9]?_[a-z0-9]+$。
+    const modName = `ct_mod${stamp}`
+    const { json: modReg } = await post('/api/user/register', { body: { username: modName, password: P } })
+    codeIs('审核段落专用账号注册成功', modReg, 0)
+    const { json: modLogin } = await post('/api/user/login', { body: { username: modName, password: P } })
+    const modAuth = `Bearer ${modLogin?.data?.accessToken}`
+    check('审核段落专用账号拿到令牌', typeof modAuth === 'string' && modAuth.length > 20, `${modAuth?.slice(0, 12)}…`)
+
+    const IMG = ['/uploads/2026/10/06/xiaoku-demo.png']
+    const pub = (title, content) => post('/api/note/publish', {
+      token: modAuth,
+      body: { type: 1, title, content, imageUrls: IMG },
+    })
+
+    // 词库是**占位词表**（moderation/words.txt），只放几条组合特征明显的短语。
+    // 用词表里的原词入参是刻意的：词表换掉时这几条断言要一起换，
+    // 但「命中即 60001」这个形状不变。
+    const { json: t1 } = await pub('这是测试敏感词哦', '正文完全正常')
+    codeIs('标题命中敏感词返回 60001', t1, 60001)
+    const { json: c1 } = await pub('标题完全正常', '正文里写了地下钱庄')
+    codeIs('正文命中敏感词返回 60001', c1, 60001)
+    check('60001 的提示语不回显命中的词（告诉用户哪个词被禁＝教他怎么绕）',
+      !String(t1?.message ?? '').includes('测试敏感词'), `msg=${t1?.message}`)
+
+    // NFKC 归一 + 转小写：全角大写变体必须同样被拦。
+    // 钉的是 DefaultTextModeration.normalize 这个行为，不是某个词条
+    const { json: full } = await pub('标题完全正常', 'ＸＫ－ＳＰＡＭ－ＭＡＩＬ 加全角')
+    codeIs('全角大写变体归一后同样拦截（绕过失败）', full, 60001)
+
+    // 连续重复字符压缩：「的的的」等价「的的」，防填充绕过
+    const { json: rep } = await pub('标题完全正常', '地下地下地下钱庄钱庄钱庄')
+    codeIs('连续重复字符不影响命中（既不误放行也不误拦）', rep, 60001)
+
+    // 正常内容必须放行 —— 否则这套东西等于「让全站发不出笔记」
+    const clean = await pub('审核段落用的正常标题', '正常正文，讲的是咖啡探店')
+    codeIs('不含敏感词的笔记正常发布', clean.json, 0)
+    const cleanId = clean.json?.data?.id
+    check('正常发布拿得到 noteId（后面编辑/评论用例要用）',
+      typeof cleanId === 'string' && /^\d+$/.test(cleanId), `id=${cleanId}`)
+
+    // 编辑是第二个入口：发布时干净、编辑时才塞敏感词，同样要拦
+    const { json: e1 } = await put(`/api/note/${cleanId}`, {
+      token: modAuth,
+      body: { type: 1, title: '改标题：测试敏感词', content: '正文没动', imageUrls: IMG },
+    })
+    codeIs('编辑时把敏感词塞进标题返回 60001', e1, 60001)
+    const { json: e2 } = await put(`/api/note/${cleanId}`, {
+      token: modAuth,
+      body: { type: 1, title: '标题没动', content: '正文改成：法外之地', imageUrls: IMG },
+    })
+    codeIs('编辑时把敏感词塞进正文返回 60001', e2, 60001)
+    // 被拦的编辑不该有副作用：标题必须还是原来那个
+    const { json: afterEdit } = await get(`/api/note/${cleanId}`, { token: modAuth })
+    eq('审核拦截的编辑没有写库（标题保持原值）', afterEdit?.data?.title, '审核段落用的正常标题')
+
+    // 评论是第三个入口。⚠️ 这条曾经假绿：审核被写在 setContent 之前，
+    // 那一刻 comment.getContent() 还是 null，而 check 对 null 直接放行。
+    const { json: cm1 } = await post('/api/comment', {
+      token: modAuth,
+      body: { noteId: cleanId, content: '这里有测试敏感词' },
+    })
+    codeIs('评论命中敏感词返回 60001', cm1, 60001)
+    const { json: cm2 } = await post('/api/comment', {
+      token: modAuth,
+      body: { noteId: cleanId, content: '正常的评论内容' },
+    })
+    codeIs('正常评论仍然放行（审核不是把评论功能打死）', cm2, 0)
+
+    // 收尾：把这篇笔记删掉，别给后面 18 段之外留垃圾
+    const { json: rm } = await del(`/api/note/${cleanId}`, { token: modAuth })
+    codeIs('审核段落用完的笔记已删除', rm, 0)
   }
 
   // ---- 18. 不支持的方法

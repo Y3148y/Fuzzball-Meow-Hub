@@ -113,6 +113,17 @@ public class NoteController {
         return Result.success(noteQueryService.pageUserNotes(userId, safePage, safeSize));
     }
 
+    @Operation(summary = "我的收藏夹",
+            description = "当前登录用户收藏过的、仍已发布的笔记，按收藏时间倒序；不含已下架")
+    @GetMapping("/collections")
+    public Result<PageVO<NoteListItemVO>> myCollections(
+            @Parameter(description = "页码，从 1 开始") @RequestParam(defaultValue = "1") long page,
+            @Parameter(description = "每页条数") @RequestParam(defaultValue = "20") long size) {
+        int safeSize = (int) Math.min(Math.max(size, 1L), 100L);
+        int safePage = (int) Math.max(page, 1L);
+        return Result.success(noteQueryService.pageMyCollections(safePage, safeSize));
+    }
+
     // ------------------------------------------------------------------
     // 点赞 / 收藏
     //

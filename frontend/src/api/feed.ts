@@ -20,3 +20,7 @@ export function getDiscoverFeed(page = 1, size = 20) {
 export function getUserNotes(userId: SnowflakeId, page = 1, size = 20) {
   return get<PageVO<NoteListItemVO>>(`/note/user/${userId}`, { page, size })
 }
+/** 我的收藏夹：当前登录用户收藏过的、仍已发布的笔记，按收藏时间倒序 */
+export function getMyCollections(page = 1, size = 20) {
+  return get<PageVO<NoteListItemVO>>('/note/collections', { page, size })
+}

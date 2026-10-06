@@ -9,6 +9,7 @@ import com.xiaoku.module.follow.entity.UserFollowEntity;
 import com.xiaoku.module.follow.mapper.UserFollowMapper;
 import com.xiaoku.module.follow.service.UserFollowService;
 import com.xiaoku.module.follow.vo.FollowUserVO;
+import com.xiaoku.module.notification.service.NotificationService;
 import com.xiaoku.module.user.mapper.UserMapper;
 import com.xiaoku.module.user.service.UserQueryService;
 import com.xiaoku.module.user.vo.UserVO;
@@ -24,6 +25,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class UserFollowServiceImpl implements UserFollowService {
 
     private final UserFollowMapper userFollowMapper;
+    private final NotificationService notificationService;
     private final UserMapper userMapper;
     private final UserQueryService userQueryService;
 
@@ -58,6 +60,9 @@ public class UserFollowServiceImpl implements UserFollowService {
         // 用户的关注/粉丝计数进了 Redis 缓存，两边都清，否则自己或对方看到的数字是旧的
         userQueryService.evictUserVO(userId);
         userQueryService.evictUserVO(targetId);
+
+        // 通知被关注方（afterCommit 才落库，写失败也不影响关注结果）
+        notificationService.notifyFollow(targetId, userId);
 
         log.info("关注成功 userId={} targetId={}", userId, targetId);
         return targetVO(targetId, true);

@@ -28,6 +28,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 @Slf4j
 @Service
@@ -167,5 +169,36 @@ public class NoteQueryServiceImpl implements NoteQueryService {
 
         return PageVO.of(voList, result.getTotal(), Math.toIntExact(result.getCurrent()),
                     Math.toIntExact(result.getSize()));
+    }
+
+    /**
+     * 我的收藏夹
+     *
+     * <p>这一页的作者**不固定**（收藏夹里是别人的笔记），所以
+     * {@code authorFollowed} 得逐篇实时判断 —— 与发现流同一个道理，
+     * 不能拿「出现在收藏夹里」推断关注状态。
+     */
+    @Override
+    public PageVO<NoteListItemVO> pageMyCollections(int page, int size) {
+        Long myId = UserContextHolder.requireUserId();
+
+        long total = noteCollectMapper.countCollectedNotes(myId);
+        long offset = (long) (page - 1) * size;
+        List<NoteEntity> notes = noteCollectMapper.pageCollectedNotes(myId, offset, size);
+        if (notes.isEmpty()) {
+            return PageVO.of(List.of(), total, page, size);
+        }
+
+        List<Long> authorIds = notes.stream().map(NoteEntity::getUserId).distinct().toList();
+        Map<Long, UserVO> authors = userQueryService.findUserVOMap(authorIds);
+        Set<Long> mine = userFollowQueryService.batchFollowingIds(myId, authorIds);
+
+        counterStore.applyCounts(notes);
+        List<NoteListItemVO> voList = notes.stream()
+                .map(note -> NoteConverter.toListItemVO(note, authors.get(note.getUserId()),
+                        mine.contains(note.getUserId())))
+                .toList();
+
+        return PageVO.of(voList, total, page, size);
     }
 }

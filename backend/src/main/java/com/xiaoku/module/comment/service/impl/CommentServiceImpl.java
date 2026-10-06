@@ -3,6 +3,7 @@ package com.xiaoku.module.comment.service.impl;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.xiaoku.common.context.UserContextHolder;
 import com.xiaoku.common.exception.BizException;
+import com.xiaoku.module.moderation.TextModeration;
 import com.xiaoku.common.result.ErrorCodeEnum;
 import com.xiaoku.module.comment.converter.CommentConverter;
 import com.xiaoku.module.comment.dto.CommentCreateDTO;
@@ -13,6 +14,7 @@ import com.xiaoku.module.comment.mapper.CommentMapper;
 import com.xiaoku.module.comment.service.CommentQueryService;
 import com.xiaoku.module.comment.service.CommentService;
 import com.xiaoku.module.comment.vo.CommentVO;
+import com.xiaoku.module.notification.service.NotificationService;
 import com.xiaoku.module.note.entity.NoteEntity;
 import com.xiaoku.module.note.mapper.NoteMapper;
 import com.xiaoku.module.user.service.UserQueryService;
@@ -36,8 +38,10 @@ public class CommentServiceImpl implements CommentService {
     private final CommentMapper commentMapper;
     private final CommentLikeMapper commentLikeMapper;
     private final NoteMapper noteMapper;
+    private final TextModeration textModeration;
     private final UserQueryService userQueryService;
     private final CommentQueryService commentQueryService;
+    private final NotificationService notificationService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -62,6 +66,11 @@ public class CommentServiceImpl implements CommentService {
         CommentEntity comment = new CommentEntity();
         comment.setNoteId(noteId);
         comment.setUserId(userId);
+        // P15 内容审核：评论正文（发布前审，别让违规评论先落库再清）
+        // ⚠️ 必须审 dto.getContent()，不能审 comment.getContent() —— 此刻实体上
+        // 还是 null，而 TextModeration 对 null 直接放行，把这行放在 setContent
+        // 之前就会**静默失效**（首次实现就是这么漏掉评论审核的，真实调用才发现）
+        textModeration.check(dto.getContent(), TextModeration.Scene.COMMENT);
         comment.setContent(dto.getContent().trim());
         comment.setLikeCount(0);
 
@@ -83,6 +92,20 @@ public class CommentServiceImpl implements CommentService {
 
         commentMapper.insert(comment);
         noteMapper.increaseCommentCount(noteId);
+
+        /*
+         * 通知：回复要给「被回复的人」，非回复要给「笔记作者」。
+         * 两种可能重叠（回复自己笔记下别人的评论时，被回复者就是作者），此时只发
+         * 「回复」这一条 —— 两条通知指向同一件事，是噪音。
+         */
+        boolean isReply = comment.getParentId() != NO_PARENT;
+        if (isReply) {
+            notificationService.notifyCommentReply(
+                    comment.getReplyUserId(), userId, noteId,
+                    comment.getParentId(), comment.getContent());
+        } else {
+            notificationService.notifyComment(note.getUserId(), userId, noteId, comment.getContent());
+        }
 
         return CommentConverter.toVO(comment,
                 userQueryService.findUserVO(userId),
@@ -130,7 +153,7 @@ public class CommentServiceImpl implements CommentService {
     @Transactional(rollbackFor = Exception.class)
     public CommentVO like(Long commentId) {
         Long userId = UserContextHolder.requireUserId();
-        requireLikeableComment(commentId);
+        CommentEntity comment = requireLikeableComment(commentId);
 
         CommentLikeEntity like = new CommentLikeEntity();
         like.setUserId(userId);
@@ -142,6 +165,8 @@ public class CommentServiceImpl implements CommentService {
         }
         // 评论量级远比笔记小，计数不走 Redis，直接行上 +1（见 CommentMapper 注释）
         commentMapper.increaseLikeCount(commentId);
+        // 通知评论作者（afterCommit 才落库，失败不影响点赞结果）
+        notificationService.notifyCommentLike(comment.getUserId(), userId, comment.getNoteId(), commentId);
         return commentQueryService.getOne(commentId);
     }
 
@@ -175,7 +200,7 @@ public class CommentServiceImpl implements CommentService {
      * <p>和 {@code create} 同一个理由：给已下架笔记的评论点赞没有意义，
      * 而且「评论永远存在只是笔记下架了」这个状态不该被子回复的赞顶上去。
      */
-    private void requireLikeableComment(Long commentId) {
+    private CommentEntity requireLikeableComment(Long commentId) {
         CommentEntity comment = commentMapper.selectById(commentId);
         if (comment == null) {
             throw new BizException(ErrorCodeEnum.COMMENT_NOT_FOUND);
@@ -184,6 +209,8 @@ public class CommentServiceImpl implements CommentService {
         if (note == null || note.getStatus() == null || note.getStatus() != STATUS_PUBLISHED) {
             throw new BizException(ErrorCodeEnum.NOTE_STATUS_ILLEGAL, "该笔记当前状态不支持点赞评论");
         }
+        // 返回实体：调用方要拿 userId / noteId 去给评论作者发通知
+        return comment;
     }
 
     private void requireCommentExists(Long commentId) {

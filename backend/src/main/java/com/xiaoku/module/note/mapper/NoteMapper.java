@@ -4,10 +4,32 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.xiaoku.module.note.entity.NoteEntity;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
+
+import java.util.Collection;
+import java.util.List;
 
 @Mapper
 public interface NoteMapper extends BaseMapper<NoteEntity> {
+
+    /**
+     * 只取 id + title 的轻量批量查询
+     *
+     * <p>通知列表要显示「来自哪篇笔记」，但通知表只冗余了 note_id，没有标题。
+     * 这里刻意**不**用 {@code selectBatchIds}：那会把 content 等大字段全捞出来
+     * （一行几百 KB），而列表页只需要标题两个字。只 SELECT 两列，未选中的字段
+     * 保持 null，调用方只该读 id 与 title。
+     *
+     * @param noteIds 笔记ID集合，调用方保证非空（空集合会拼出非法 IN ()）
+     */
+    @Select("""
+            <script>
+            SELECT id, title FROM note WHERE id IN
+            <foreach collection="noteIds" item="n" open="(" separator="," close=")">#{n}</foreach>
+            </script>
+            """)
+    List<NoteEntity> selectTitlesByIds(@Param("noteIds") Collection<Long> noteIds);
 
     /**
      * 按绝对值覆盖点赞/收藏计数（P8 对账用，取代旧的 ±1 逐次 UPDATE）。

@@ -49,8 +49,10 @@ export const ErrorCode = {
   NOT_FOLLOWED: 40002,
   CANNOT_FOLLOW_SELF: 40003,
   // 50xxx 搜索域
-  SEARCH_SERVICE_ERROR: 50001,
+SEARCH_SERVICE_ERROR: 50001,
   SEARCH_KEYWORD_EMPTY: 50002,
+  // 60xxx 内容审核域（P15）
+  CONTENT_SENSITIVE: 60001,
 } as const
 
 /**
@@ -298,4 +300,27 @@ export interface NoteListItemVO {
   authorNickname: string
   authorAvatar: string | null
   authorFollowed: boolean
+}
+
+/** 通知列表项（铃铛 + 通知页） */
+export interface NotificationVO {
+  id: SnowflakeId
+  /** 1赞笔记 2评论 3赞评论 4关注 5回复 */
+  type: number
+  /** 动作短语，如「赞了你的笔记」 */
+  typeText: string
+  actorId: SnowflakeId
+  actorNickname: string
+  actorAvatar: string | null
+  /** 被作用的笔记ID或评论ID（按 type 决定跳哪里） */
+  targetId: SnowflakeId
+  /** 所属笔记ID；**关注类通知没有这个字段**（后端 non_null 策略会整个省略它） */
+  noteId?: SnowflakeId
+  /** 所属笔记标题；笔记被删或关注类通知时为 null（被 non_null 省略） */
+  noteTitle?: string
+  /** 评论/回复内容摘要 */
+  content?: string
+  /** 0未读 1已读 */
+  isRead: 0 | 1
+  createTime: string
 }

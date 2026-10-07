@@ -1,6 +1,7 @@
 package com.xiaoku.module.note.service;
 
 import com.xiaoku.common.result.PageVO;
+import com.xiaoku.module.follow.vo.FollowUserVO;
 import com.xiaoku.module.note.vo.NoteListItemVO;
 import com.xiaoku.module.note.vo.NoteVO;
 
@@ -38,4 +39,20 @@ public interface NoteQueryService {
      * @param size 每页条数
      */
     PageVO<NoteListItemVO> pageMyCollections(int page, int size);
+
+    /**
+     * 谁赞了这篇笔记（点赞人列表，按点赞时间倒序）
+     *
+     * <p>「谁赞了」和「多少人赞了」是两件事：计数只有数字，社交感来自人名。
+     * 数据本来就在 {@code note_like} 表里，P5 只做了计数方向，没做反向查询。
+     */
+    PageVO<FollowUserVO> pageLikers(Long noteId, int page, int size);
+
+    /**
+     * 谁收藏了这篇笔记（收藏人列表，按收藏时间倒序）
+     *
+     * <p>刻意<b>不做</b>「TA 收藏了哪些笔记」的公开查询：收藏夹是私有数据，
+     * 对外暴露等于允许越权遍历他人收藏（P15 收藏夹的接口因此不收 userId）。
+     */
+    PageVO<FollowUserVO> pageCollectors(Long noteId, int page, int size);
 }

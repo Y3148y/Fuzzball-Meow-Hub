@@ -1845,6 +1845,91 @@ async function main() {
     codeIs('审核段落用完的笔记已删除', rm, 0)
   }
 
+
+  // ---- 17.8 P16「谁赞了/ 谁收藏了」：GET /api/note/{id}/likes | collects
+  //
+  // 为什么值得单独一段：计数与名单是两件事。计数只能给人一个数字，
+  // 名单才带来社交感。数据本来就在 note_like / note_collect 表里，
+  // P5 只做了计数方向。真正要钉的是**两个门禁**：
+  //   ① 与笔记详情同一套可见性（下架的笔记别人拿不到名单）——
+  //      这两条如果各自写一份门禁，迟早漏一处，结果是「正文打不开、
+  //      但点赞人列表能拿到昵称头像」，等于门禁只做了一半
+  //   ② 未登录 / 不存在的笔记
+  {
+    // 造两个明确的人来赞这一篇，好把名单内容钉死
+    const likeName = `ct_liker${stamp}`
+    const { json: lk } = await post('/api/user/register', { body: { username: likeName, password: P } })
+    codeIs('点赞者账号注册成功', lk, 0)
+    const { json: lkLogin } = await post('/api/user/login', { body: { username: likeName, password: P } })
+    const likerAuth = `Bearer ${lkLogin?.data?.accessToken}`
+
+    // 先复位：上一轮崩在清理之前就会一直留着，导致这次 PUT 返回 30001
+    await del(`/api/note/${noteId}/like`, { token: likerAuth })
+    const { json: liked } = await put(`/api/note/${noteId}/like`, { token: likerAuth })
+    codeIs('点赞者点赞成功', liked, 0)
+    await del(`/api/note/${noteId}/collect`, { token: likerAuth })
+    const { json: col } = await put(`/api/note/${noteId}/collect`, { token: likerAuth })
+    codeIs('点赞者收藏成功', col, 0)
+
+    const { json: likes } = await get(`/api/note/${noteId}/likes?page=1&size=20`, { token: auth })
+    codeIs('点赞人列表查询成功', likes, 0)
+    eq('点赞人列表 total 是 JSON number（Long 会被序列化成字符串）',
+      typeof likes?.data?.total, 'number')
+    const likers = likes?.data?.list ?? []
+    check('点赞人列表里能看到刚点赞的那个人',
+      likers.some((u) => u.id === lk.data?.id), `ids=${likers.map((u) => u.id).join(',')}`)
+    check('点赞人卡片带昵称与用户名（列表页要显示这两个）',
+      likers.every((u) => typeof u.nickname === 'string' && u.nickname.length > 0
+        && typeof u.username === 'string'), '')
+    check('点赞人卡片的 followed 是布尔（行内还要放关注按钮）',
+      likers.every((u) => typeof u.followed === 'boolean'),
+      `${likers.map((u) => u.followed).join(',')}`)
+    check('点赞人列表没有泄露 password 字段',
+      likers.every((u) => !Object.keys(u).includes('password')), '')
+
+    const { json: collects } = await get(`/api/note/${noteId}/collects`, { token: auth })
+    codeIs('收藏人列表查询成功', collects, 0)
+    check('收藏人列表里能看到刚收藏的那个人',
+      (collects?.data?.list ?? []).some((u) => u.id === lk.data?.id), '')
+
+    // 分页是这套列表唯一没做的部分，先钉住 page/size 真的生效，别让它悄悄变死循环
+    // get() 返回的是 { json, ... }，不是响应体本身 —— 漏写 .json 的话
+    // p1.data 是 undefined，断言会报「拿到 undefined」而不是「参数没生效」
+    const { json: p1 } = await get(`/api/note/${noteId}/likes?page=1&size=1`, { token: auth })
+    const { json: p2 } = await get(`/api/note/${noteId}/likes?page=2&size=1`, { token: auth })
+    eq('size=1 时第一页只有 1 条', p1?.data?.list?.length, 1)
+    check('第二页与第一页不是同一批（否则 size 参数被忽略了）',
+      p1?.data?.list?.[0]?.id !== p2?.data?.list?.[0]?.id,
+      `p1=${p1?.data?.list?.[0]?.id} p2=${p2?.data?.list?.[0]?.id}`)
+    const { json: p0 } = await get(`/api/note/${noteId}/likes?size=0`, { token: auth })
+    eq('size=0 被夹到 1（不能靠 size=0 一次拿到全部）', p0?.data?.list?.length, 1)
+
+    // 门禁①：下架的笔记，非作者拿不到名单（20002），作者仍可（P10 编辑入口需要）
+    await put(`/api/note/${noteId}/status`, { token: auth, body: { status: 2 } })
+    const downAsOther = await get(`/api/note/${noteId}/likes`, { token: likerAuth })
+    codeIs('非作者看不到下架笔记的点赞人名单（与详情同一门禁）', downAsOther.json, 20002)
+    const downAsAuthor = await get(`/api/note/${noteId}/likes`, { token: auth })
+    codeIs('作者仍能看到自己下架笔记的名单', downAsAuthor.json, 0)
+    await put(`/api/note/${noteId}/status`, { token: auth, body: { status: 1 } })
+
+    // 门禁②：不存在的笔记 20001、未登录 10005
+    const missing = await get('/api/note/999999999999/likes', { token: auth })
+    codeIs('不存在的笔记返回 20001', missing.json, 20001)
+    const missingC = await get('/api/note/999999999999/collects', { token: auth })
+    codeIs('不存在的笔记（收藏人）返回 20001', missingC.json, 20001)
+    const anon = await get(`/api/note/${noteId}/likes`)
+    codeIs('未登录访问点赞人列表返回 10005', anon.json, 10005)
+    const anonC = await get(`/api/note/${noteId}/collects`)
+    codeIs('未登录访问收藏人列表返回 10005', anonC.json, 10005)
+
+    // 复原：清掉这条点赞/收藏关系
+    await del(`/api/note/${noteId}/like`, { token: likerAuth })
+    await del(`/api/note/${noteId}/collect`, { token: likerAuth })
+    const { json: after } = await get(`/api/note/${noteId}/likes`, { token: auth })
+    check('取消点赞后名单里没有他了',
+      !(after?.data?.list ?? []).some((u) => u.id === lk.data?.id), '')
+  }
+
   // ---- 18. 不支持的方法
   {
     const { json } = await call('DELETE', '/api/user/login')

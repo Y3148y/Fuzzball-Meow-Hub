@@ -847,6 +847,33 @@ onBeforeUnmount(() => {
           >
             {{ contentExpanded ? '收起' : '展开全文' }}
           </button>
+
+          <!--
+            「谁赞了 / 谁收藏了」的入口。
+
+            刻意**没有**把它做成吸底三键的一部分：三键是「点了就切换状态」的动作按钮，
+            再塞一个「点了就跳页」的行为进去，同一个控件两种语义，键盘和读屏都讲不清
+            （aria-pressed 和导航互斥）。所以另外起一行文字链接，仍然显示真实计数。
+            计数为 0 时整行不渲染 —— 「0 人赞过」没人想点。
+          -->
+          <p v-if="note.likeCount > 0 || note.collectCount > 0" class="interacts">
+            <RouterLink
+              v-if="note.likeCount > 0"
+              class="ilink"
+              data-test="note-likes-link"
+              :to="`/note/${note.id}/likes`"
+            >
+              {{ note.likeCount }} 人赞过
+            </RouterLink>
+            <RouterLink
+              v-if="note.collectCount > 0"
+              class="ilink"
+              data-test="note-collects-link"
+              :to="`/note/${note.id}/collects`"
+            >
+              {{ note.collectCount }} 人收藏过
+            </RouterLink>
+          </p>
         </div>
         <!-- /.col-text -->
     </article>
@@ -854,6 +881,38 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+
+/*
+ * 「N 人赞过 · N 人收藏过」这一行。
+ *
+ * 排版取舍：走 --xk-text-3（meta 色）而不是正文色 —— 它是次要入口，
+ * 正文色的对比度预算要留给正文；但字号给到 14px 而不是 meta 常用的 12px，
+ * 因为它是要点的（热区 40px，见 web-interface-guidelines）。
+ */
+.interacts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin: 10px 0 0;
+}
+
+.ilink {
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--xk-text-3);
+  font-size: var(--xk-fs-14);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.ilink:hover {
+  color: var(--xk-amber-text);
+}
+
 /* .page 骨架统一在 main.css，这里重复写会用 0,2,0 特异性压掉全局断点 */
 
 .top {

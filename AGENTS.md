@@ -193,12 +193,12 @@ $env:XK_MYSQL_PASSWORD = "<.env 里的 MYSQL_ROOT_PASSWORD>"   # 不设就起不
 改后端接口 → 必须跑契约测试；改前端 → 必须跑 CDP 测试。**别攒到最后一起跑。**
 
 ```bash
-# 后端（需后端已在 8088 运行）→ 436 条
+# 后端（需后端已在 8088 运行）→ 457 条
 cd backend && node scripts/contract-test.mjs
 # 换地址：XK_API_BASE=http://ip:8088 node scripts/contract-test.mjs
 
 # 前端（需前端 5180 + 后端 8088 同时在跑）
-# → 31 + 8 + 87 + 26 + 57 + 26 + 19 + 9 + 26 + 125 = 414 条
+# → 31 + 8 + 87 + 26 + 67 + 26 + 19 + 9 + 26 + 125 = 424 条
 cd frontend && npm run test:ui
 
 # 单跑某一组：:smoke / :refresh / :note / :profile / :interaction / :follow /
@@ -1197,6 +1197,41 @@ get('/comment/list', { params: { noteId, page } })    // ❌ 发出 ?params[note
    ③ 定位那一行用**笔记标题**匹配，不用 `:first-child`。
    **断言里写「A 或错误码 B 也算过」要非常小心 —— 那往往是在给自己的
    测试不稳定性开口子。**
+
+
+### P16 「谁赞了 / 谁收藏了」（本 commit）
+
+契约 **457 条**（436 + 21，17.8 段），CDP **424 条**（414 + 10，ui-interaction）。
+
+- 接口 `GET /api/note/{id}/likes` 与 `GET /api/note/{id}/collects`，都返回
+  `PageVO<FollowUserVO>`。数据本来就在 `note_like` / `note_collect` 表里，
+  P5 只做了计数方向，这次补上反向查询 —— **计数和名单是两件事**：
+  计数只给人一个数字，名单才带来社交感。
+- ⚠️ **可见性门禁抽成了 `NoteQueryServiceImpl.requireVisible(noteId, currentUserId)`**，
+  与 `getDetail` 共用同一份实现。这两个端点也是「这篇笔记的读取入口」，
+  各自写一份门禁迟早漏一处，结果就是「下架的笔记正文打不开、但点赞人列表
+  能拿到昵称头像」，等于门禁只做了一半。契约里两条专门钉这个。
+- 刻意**不提供**「某人的整个收藏夹」查询：收藏夹是私有数据，对外暴露等于
+  允许越权遍历他人收藏（P15 收藏夹的接口因此不收 userId）。
+- 分页在控制器里 `safePage / safeSize` 夹取（controller 已有 4 个分页端点，
+  逐个重复 `Math.min(Math.max(...))` 只会抄错一次）。
+- 前端**复用 `FollowListView`**，靠**路由名**区分四种模式
+  （follow / fans / likes / collects），而不是靠参数名 —— 后两者按笔记查、
+  前两者按用户查，路径参数都叫 `id`，靠参数名区分迟早在某页把 noteId
+  当 userId 传过去。列表与加载态都挂了 `:data-mode`，四条 CDP 断言靠它区分。
+- 入口**没有**做成吸底三键的一部分：三键是「点了就切换状态」的动作按钮，
+  再塞一个「点了就跳页」的行为进去，同一控件两种语义，`aria-pressed` 与
+  导航互斥，键盘和读屏都讲不清。所以另外起一行文字链接 `.interacts`
+  （`note-likes-link` / `note-collects-link`），计数为 0 时整行不渲染。
+- 两个踩过的点：
+  - `get()` 返回的是 `{ json, ... }` 而**不是响应体本身**。契约里漏写
+    `.json` 时 `p1?.data?.list?.length` 拿到 undefined，症状是「分页断言
+    说拿到 undefined」，看不出是参数没生效还是取值写错。
+  - 「1 人赞过」这条断言必须在 like=1 的时刻做（ui-interaction 里就是刚
+    点完赞那两行之间）。写成「发布后立刻断言」会拿到 0，然后断言永远红。
+- **契约注册频率是 10/min/IP**：连着跑两遍契约，第二遍会在第一个注册就
+  100005 失败，然后**整份文件连锁假红**（实测 323/456，几百条全红但没一条
+  与代码有关）。看到大面积失败先确认是不是这个，隔 90 秒重跑。
 
 ## 8. prod 栈运维（2026-10-04 踩出来的，都是环境问题不是代码问题）
 

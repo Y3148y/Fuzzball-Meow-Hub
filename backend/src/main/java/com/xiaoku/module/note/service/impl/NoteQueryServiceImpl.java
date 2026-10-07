@@ -7,15 +7,17 @@ import com.xiaoku.common.exception.BizException;
 import com.xiaoku.common.result.ErrorCodeEnum;
 import com.xiaoku.common.result.PageVO;
 import com.xiaoku.common.support.NoteIdBloomFilter;
+import com.xiaoku.module.follow.converter.FollowConverter;
 import com.xiaoku.module.follow.service.UserFollowQueryService;
+import com.xiaoku.module.follow.vo.FollowUserVO;
 import com.xiaoku.module.note.converter.NoteConverter;
+import com.xiaoku.module.note.entity.NoteCollectEntity;
 import com.xiaoku.module.note.entity.NoteEntity;
 import com.xiaoku.module.note.entity.NoteImageEntity;
 import com.xiaoku.module.note.entity.NoteLikeEntity;
-import com.xiaoku.module.note.entity.NoteCollectEntity;
+import com.xiaoku.module.note.mapper.NoteCollectMapper;
 import com.xiaoku.module.note.mapper.NoteImageMapper;
 import com.xiaoku.module.note.mapper.NoteLikeMapper;
-import com.xiaoku.module.note.mapper.NoteCollectMapper;
 import com.xiaoku.module.note.mapper.NoteMapper;
 import com.xiaoku.module.note.service.NoteQueryService;
 import com.xiaoku.module.note.support.NoteCounterStore;
@@ -27,6 +29,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -71,24 +74,7 @@ public class NoteQueryServiceImpl implements NoteQueryService {
             throw new BizException(ErrorCodeEnum.NOTE_NOT_FOUND);
         }
 
-        NoteEntity note = noteMapper.selectById(noteId);
-        if (note == null) {
-            throw new BizException(ErrorCodeEnum.NOTE_NOT_FOUND);
-        }
-
-        boolean isAuthor = currentUserId.equals(note.getUserId());
-        int status = note.getStatus() == null ? STATUS_PUBLISHED : note.getStatus();
-        if (status == STATUS_DRAFT && !isAuthor) {
-            // 草稿对非作者按「不存在」处理：返回「笔记不存在」而不是「这是草稿」，
-            // 否则就能靠错误码差异探测出某篇草稿是否存在。
-            throw new BizException(ErrorCodeEnum.NOTE_NOT_FOUND);
-        }
-        if (status == STATUS_TAKEN_DOWN && !isAuthor) {
-            // 下架过说明这篇曾经公开过，明确告知「已下架」比装作不存在更准确。
-            // 作者本人可见自己的下架笔记（P10「明明是自己的，却突然 404」的编辑入口
-            // 需要它），这是与 P3 门禁的唯一差异。
-            throw new BizException(ErrorCodeEnum.NOTE_STATUS_ILLEGAL, "该笔记已被下架");
-        }
+        NoteEntity note = requireVisible(noteId, currentUserId);
 
         List<String> images = noteImageMapper.selectList(Wrappers.<NoteImageEntity>lambdaQuery()
                         .eq(NoteImageEntity::getNoteId, noteId)
@@ -200,5 +186,87 @@ public class NoteQueryServiceImpl implements NoteQueryService {
                 .toList();
 
         return PageVO.of(voList, total, page, size);
+    }
+
+    /**
+     * 取笔记并按 P3 门禁校验当前用户能不能看。
+     *
+     * <p><b>为什么抽出来</b>：点赞人/收藏人列表也是「这篇笔记的读取入口」，
+     * 如果它们各自写一份门禁，迟早有一处漏 —— 结果就是「下架的笔记，
+     * 正文打不开，但点赞人列表能拿到昵称头像」，等于门禁只做了一半。
+     * 与 {@link #getDetail} 共用同一份实现，门禁才只有一个修改点。
+     */
+    private NoteEntity requireVisible(Long noteId, Long currentUserId) {
+        NoteEntity note = noteMapper.selectById(noteId);
+        if (note == null) {
+            throw new BizException(ErrorCodeEnum.NOTE_NOT_FOUND);
+        }
+        boolean isAuthor = currentUserId.equals(note.getUserId());
+        int status = note.getStatus() == null ? STATUS_PUBLISHED : note.getStatus();
+        if (status == STATUS_DRAFT && !isAuthor) {
+            // 草稿对非作者按「不存在」处理：返回「笔记不存在」而不是「这是草稿」，
+            // 否则就能靠错误码差异探测出某篇草稿是否存在。
+            throw new BizException(ErrorCodeEnum.NOTE_NOT_FOUND);
+        }
+        if (status == STATUS_TAKEN_DOWN && !isAuthor) {
+            // 下架过说明这篇曾经公开过，明确告知「已下架」比装作不存在更准确。
+            // 作者本人可见自己的下架笔记（P10「明明是自己的，却突然 404」的编辑入口
+            // 需要它），这是与 P3 门禁的唯一差异。
+            throw new BizException(ErrorCodeEnum.NOTE_STATUS_ILLEGAL, "该笔记已被下架");
+        }
+        return note;
+    }
+
+    @Override
+    public PageVO<FollowUserVO> pageLikers(Long noteId, int page, int size) {
+        Long myId = UserContextHolder.requireUserId();
+        requireVisible(noteId, myId);
+        var p = noteLikeMapper.selectPage(new Page<>(page, size), Wrappers.<NoteLikeEntity>lambdaQuery()
+                .eq(NoteLikeEntity::getNoteId, noteId)
+                .orderByDesc(NoteLikeEntity::getCreateTime)
+                .orderByDesc(NoteLikeEntity::getId));
+        return toUserCards(p.getRecords().stream().map(NoteLikeEntity::getUserId).toList(),
+                myId, p.getTotal(), page, size);
+    }
+
+    @Override
+    public PageVO<FollowUserVO> pageCollectors(Long noteId, int page, int size) {
+        Long myId = UserContextHolder.requireUserId();
+        requireVisible(noteId, myId);
+        var p = noteCollectMapper.selectPage(new Page<>(page, size),
+                Wrappers.<NoteCollectEntity>lambdaQuery()
+                        .eq(NoteCollectEntity::getNoteId, noteId)
+                        .orderByDesc(NoteCollectEntity::getCreateTime)
+                        .orderByDesc(NoteCollectEntity::getId));
+        return toUserCards(p.getRecords().stream().map(NoteCollectEntity::getUserId).toList(),
+                myId, p.getTotal(), page, size);
+    }
+
+    /**
+     * 一批 userId → 用户卡 +「我有没有关注 TA」。
+     *
+     * <p>和 {@code UserFollowQueryServiceImpl.toVO} 是同一套逻辑（两个 IN 查询，
+     * 避免 N+1）。这里没有直接复用那个私有方法：它在 follow 模块内且签名绑定了
+     * {@code UserFollowEntity} 的行提取，两处各自 12 行好过让 follow 模块
+     * 为了复用公开一个只为本模块服务的泛型辅助。
+     *
+     * <p>逻辑删除的用户会被 {@code findUserVOMap} 漏掉，这里直接跳过而不是塞 null：
+     * 给一行只有头像空白的卡片比不显示更糟。
+     */
+    private PageVO<FollowUserVO> toUserCards(List<Long> userIds, Long viewerId,
+                                            long total, int page, int size) {
+        if (userIds.isEmpty()) {
+            return PageVO.of(List.of(), total, page, size);
+        }
+        Map<Long, UserVO> users = userQueryService.findUserVOMap(userIds);
+        Set<Long> following = userFollowQueryService.batchFollowingIds(viewerId, userIds);
+        List<FollowUserVO> cards = new ArrayList<>();
+        for (Long id : userIds) {
+            UserVO user = users.get(id);
+            if (user != null) {
+                cards.add(FollowConverter.toVO(user, following.contains(id)));
+            }
+        }
+        return PageVO.of(cards, total, page, size);
     }
 }

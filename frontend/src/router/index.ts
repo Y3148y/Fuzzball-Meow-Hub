@@ -78,12 +78,26 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/FollowListView.vue'),
     meta: { title: '关注', requiresAuth: true },
   },
-  {
-    path: '/fans/:id(\\d+)',
-    name: 'fans',
-    component: () => import('@/views/FollowListView.vue'),
-    meta: { title: '粉丝', requiresAuth: true },
-  },
+{
+      path: '/fans/:id(\\d+)',
+      name: 'fans',
+      component: () => import('@/views/FollowListView.vue'),
+      meta: { title: '粉丝', requiresAuth: true },
+    },
+    {
+      // 「谁赞了这篇」—— 路径参数是 noteId，不是 userId
+      path: '/note/:id(\\d+)/likes',
+      name: 'note-likes',
+      component: () => import('@/views/FollowListView.vue'),
+      meta: { title: '点赞的人', requiresAuth: true },
+    },
+    {
+      // 「谁收藏了这篇」
+      path: '/note/:id(\\d+)/collects',
+      name: 'note-collects',
+      component: () => import('@/views/FollowListView.vue'),
+      meta: { title: '收藏的人', requiresAuth: true },
+    },
   {
     path: '/user/:id(\\d+)',
     name: 'user',

@@ -9,6 +9,7 @@ import com.xiaoku.module.note.dto.NoteStatusDTO;
 import com.xiaoku.module.note.service.NoteInteractionService;
 import com.xiaoku.module.note.service.NoteQueryService;
 import com.xiaoku.module.note.service.NoteService;
+import com.xiaoku.module.follow.vo.FollowUserVO;
 import com.xiaoku.module.note.vo.NoteListItemVO;
 import com.xiaoku.module.note.vo.NoteVO;
 import io.swagger.v3.oas.annotations.Operation;
@@ -108,8 +109,8 @@ public class NoteController {
             @Parameter(description = "作者ID") @PathVariable Long userId,
             @Parameter(description = "页码，从 1 开始") @RequestParam(defaultValue = "1") long page,
             @Parameter(description = "每页条数") @RequestParam(defaultValue = "20") long size) {
-        int safeSize = (int) Math.min(Math.max(size, 1L), 100L);
-        int safePage = (int) Math.max(page, 1L);
+        int safeSize = safeSize(size);
+        int safePage = safePage(page);
         return Result.success(noteQueryService.pageUserNotes(userId, safePage, safeSize));
     }
 
@@ -119,9 +120,29 @@ public class NoteController {
     public Result<PageVO<NoteListItemVO>> myCollections(
             @Parameter(description = "页码，从 1 开始") @RequestParam(defaultValue = "1") long page,
             @Parameter(description = "每页条数") @RequestParam(defaultValue = "20") long size) {
-        int safeSize = (int) Math.min(Math.max(size, 1L), 100L);
-        int safePage = (int) Math.max(page, 1L);
+        int safeSize = safeSize(size);
+        int safePage = safePage(page);
         return Result.success(noteQueryService.pageMyCollections(safePage, safeSize));
+    }
+
+    @Operation(summary = "谁赞了这篇笔记",
+            description = "点赞人列表，按点赞时间倒序；与笔记详情同一套可见性门禁")
+    @GetMapping("/{id}/likes")
+    public Result<PageVO<FollowUserVO>> likers(
+            @Parameter(description = "笔记ID") @PathVariable Long id,
+            @Parameter(description = "页码，从 1 开始") @RequestParam(defaultValue = "1") long page,
+            @Parameter(description = "每页条数") @RequestParam(defaultValue = "20") long size) {
+        return Result.success(noteQueryService.pageLikers(id, safePage(page), safeSize(size)));
+    }
+
+    @Operation(summary = "谁收藏了这篇笔记",
+            description = "收藏人列表，按收藏时间倒序；刻意不提供「某人的整个收藏夹」查询")
+    @GetMapping("/{id}/collects")
+    public Result<PageVO<FollowUserVO>> collectors(
+            @Parameter(description = "笔记ID") @PathVariable Long id,
+            @Parameter(description = "页码，从 1 开始") @RequestParam(defaultValue = "1") long page,
+            @Parameter(description = "每页条数") @RequestParam(defaultValue = "20") long size) {
+        return Result.success(noteQueryService.pageCollectors(id, safePage(page), safeSize(size)));
     }
 
     // ------------------------------------------------------------------
@@ -154,5 +175,19 @@ public class NoteController {
     @DeleteMapping("/{id}/collect")
     public Result<NoteVO> uncollect(@Parameter(description = "笔记ID") @PathVariable Long id) {
         return Result.success(interactionService.uncollect(id));
+    }
+/**
+     * 分页参数夹取
+     *
+     * <p>抽出来是因为这个 controller 已经有 4 个分页端点，逐个重复
+     * {@code Math.min(Math.max(...))} 只会抄错一次；而且 size 不夹的话，
+     * {@code size=1000000} 会让 MyBatis-Plus 生成一条巨大的 OFFSET/LIMIT。
+     */
+    private static int safePage(long page) {
+        return (int) Math.max(page, 1L);
+    }
+
+    private static int safeSize(long size) {
+        return (int) Math.min(Math.max(size, 1L), 100L);
     }
 }

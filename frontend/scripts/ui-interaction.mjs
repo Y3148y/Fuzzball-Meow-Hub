@@ -192,14 +192,69 @@ try {
     (await pressed('note-like-btn')) === true && (await pressed('note-collect-btn')) === true,
   )
 
-  // 复位，给评论测试留个干净的计数基线
+  /* ============ 第二段前半：「谁赞了 / 谁收藏了」入口 ============ */
+  //
+  // 计数与名单是两件事。此处 like=1 / collect=1（就是刚才我自己点的），
+  // 所以「1 人赞过」这条链接此刻正好该出现 —— 计数为 0 时整行不渲染，
+  // 那条断言也能顺带钉住「不显示 0 人赞过」。
+  await s.waitFor("!!document.querySelector('[data-test=note-likes-link]')", '「N 人赞过」链接出现')
+  s.check('有点赞时出现「N 人赞过」入口', (await text('note-likes-link')).includes('1 人赞过'),
+    await text('note-likes-link'))
+  s.check('有收藏时出现「N 人收藏过」入口', (await text('note-collects-link')).includes('1 人收藏过'),
+    await text('note-collects-link'))
+
+  // 入口是 RouterLink（a[href]），不是脚本跳转 —— 键盘和右键新开标签页都该能用
+  const likeHref = await s.evaluate(`document.querySelector('[data-test=note-likes-link]')?.getAttribute('href')`)
+  s.check('点赞入口是真链接（a[href]，可右键/回车打开）',
+    likeHref === `#/note/${noteId}/likes`, `href=${likeHref}`)
+
+  await click('note-likes-link')
+  await s.waitFor("location.hash.startsWith('#/note/') && location.hash.endsWith('/likes')", '进入点赞人列表')
+  await s.waitFor("!document.querySelector('[data-test=follow-loading]')", '点赞人列表终态', 20000)
+  await sleep(600)
+  const likers = await s.evaluate(`(() => JSON.stringify({
+    hash: location.hash,
+    mode: document.querySelector('[data-test=follow-list]')?.dataset.mode,
+    rows: document.querySelectorAll('[data-test=follow-row]').length,
+    nicks: [...document.querySelectorAll('[data-test=follow-nick]')].map(e=>e.textContent.trim()),
+  }))()`)
+  const lk = JSON.parse(likers)
+  s.check('进了点赞人列表且 data-mode=likers（不是复用关注页的默认值）',
+    lk.hash.endsWith('/likes') && lk.mode === 'likers', likers)
+  s.check('名单里正好 1 行', lk.rows === 1, likers)
+  s.check('名单里是我自己（我刚赞过这篇）',
+    lk.nicks.some((n) => n.includes('小哭猫')), `nicks=${lk.nicks.join(',')}`)
+
+  await s.goto(`${BASE}/#/note/${noteId}`)
+  await s.waitFor("!!document.querySelector('[data-test=note-collects-link]')", '返回详情')
+  await click('note-collects-link')
+  await s.waitFor("location.hash.endsWith('/collects')", '进入收藏人列表')
+  await s.waitFor("!document.querySelector('[data-test=follow-loading]')", '收藏人列表终态', 20000)
+  await sleep(600)
+  const col = await s.evaluate(`(() => JSON.stringify({
+    mode: document.querySelector('[data-test=follow-list]')?.dataset.mode,
+    rows: document.querySelectorAll('[data-test=follow-row]').length,
+  }))()`)
+  s.check('进了收藏人列表且 data-mode=collectors', JSON.parse(col).mode === 'collectors', col)
+  s.check('收藏人名单里正好 1 行', JSON.parse(col).rows === 1, col)
+
+  // 计数为 0 时整行不渲染（没人想点「0 人赞过」）
+  await s.goto(`${BASE}/#/note/${noteId}`)
+  await s.waitFor("document.querySelector('[data-test=note-detail]')", '回到详情')
   await click('note-like-btn')
   await click('note-collect-btn')
   await s.waitFor(
     "document.querySelector('[data-test=note-like-count]').textContent.trim() === '0' && document.querySelector('[data-test=note-collect-count]').textContent.trim() === '0'",
-    '互动复位',
+    '赞与收藏都归零',
   )
-  s.check('取消赞与取消收藏都归零', true)
+  s.check('计数归零后「N 人赞过」入口消失',
+    (await s.evaluate(`!!document.querySelector('[data-test=note-likes-link]')`)) === false)
+  s.check('计数归零后「N 人收藏过」入口也消失',
+    (await s.evaluate(`!!document.querySelector('[data-test=note-collects-link]')`)) === false)
+
+  // 上一段已经把赞与收藏归零，这里只确认基线
+  s.check('取消赞与取消收藏都归零',
+    (await num('note-like-count')) === 0 && (await num('note-collect-count')) === 0)
 
   /* ============ 第二段：常驻搭子账号，评论 ============ */
 

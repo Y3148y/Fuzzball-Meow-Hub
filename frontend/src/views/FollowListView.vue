@@ -2,7 +2,14 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { BizError } from '@/api/request'
-import { followUser, listFans, listFollowings, unfollowUser } from '@/api/follow'
+import {
+  followUser,
+  listFans,
+  listFollowings,
+  listNoteCollectors,
+  listNoteLikers,
+  unfollowUser,
+} from '@/api/follow'
 import { ErrorCode } from '@/api/types'
 import type { FollowUserVO } from '@/api/types'
 import { useUserStore } from '@/stores/user'
@@ -11,9 +18,26 @@ const route = useRoute()
 const router = useRouter()
 const userStore = useUserStore()
 
-/** 从路由名区分是「TA 的关注」还是「TA 的粉丝」，两个路由共用这一个组件 */
-const isFans = computed(() => route.name === 'fans')
-
+/**
+ * 四种名单共用这一个组件：TA 的关注 / TA 的粉丝 / 谁赞了这篇 / 谁收藏了这篇。
+ *
+ * <p>后两者是「按笔记」而不是「按用户」查的，路径参数同样是 id，
+ * 所以这里靠**路由名**区分而不是靠参数名 —— 否则两个路由长得一模一样，
+ * 迟早在某个页面把 id 当成 userId 传过去（能过测试吗？不能，接口会报错）。
+ */
+type ListMode = 'followings' | 'fans' | 'likers' | 'collectors'
+const mode = computed<ListMode>(() => {
+  switch (route.name) {
+    case 'fans':
+      return 'fans'
+    case 'note-likes':
+      return 'likers'
+    case 'note-collects':
+      return 'collectors'
+    default:
+      return 'followings'
+  }
+})
 const userId = computed(() => String(route.params.id))
 
 const rows = ref<FollowUserVO[]>([])
@@ -26,15 +50,46 @@ function isToggling(id: string) {
   return toggling.value.has(id)
 }
 
-const title = computed(() => (isFans.value ? '粉丝' : '关注'))
+const title = computed(() => {
+  switch (mode.value) {
+    case 'fans':
+      return '粉丝'
+    case 'likers':
+      return '点赞的人'
+    case 'collectors':
+      return '收藏的人'
+    default:
+      return '关注'
+  }
+})
+
+/** 空态文案四种模式各不相同：写一个「暂无数据」等于什么都没说 */
+const emptyText = computed(() => {
+  switch (mode.value) {
+    case 'fans':
+      return '还没有粉丝'
+    case 'likers':
+      return '还没有人点赞'
+    case 'collectors':
+      return '还没有人收藏'
+    default:
+      return '还没有关注任何人'
+  }
+})
 
 async function load() {
   loading.value = true
   errorMsg.value = ''
   try {
-    const page = isFans.value
-      ? await listFans(userId.value, 1, 20)
-      : await listFollowings(userId.value, 1, 20)
+    const id = userId.value
+    const page =
+      mode.value === 'fans'
+        ? await listFans(id, 1, 20)
+        : mode.value === 'likers'
+          ? await listNoteLikers(id, 1, 20)
+          : mode.value === 'collectors'
+            ? await listNoteCollectors(id, 1, 20)
+            : await listFollowings(id, 1, 20)
     rows.value = page.list
   } catch (e) {
     if (e instanceof BizError) {
@@ -86,13 +141,13 @@ onMounted(load)
       <span class="brand">{{ title }}</span>
     </header>
 
-    <p v-if="loading" class="hint" data-test="follow-loading">加载中…</p>
+    <p v-if="loading" class="hint" data-test="follow-loading" :data-mode="mode">加载中…</p>
     <p v-else-if="errorMsg" class="hint err" role="alert" data-test="follow-error">{{ errorMsg }}</p>
     <p v-else-if="!rows.length" class="hint" data-test="follow-empty">
-      {{ isFans ? '还没有粉丝' : '还没有关注任何人' }}
+      {{ emptyText }}
     </p>
 
-    <ul v-else class="list" data-test="follow-list">
+    <ul v-else class="list" data-test="follow-list" :data-mode="mode">
       <li v-for="row in rows" :key="row.id" class="row" data-test="follow-row">
         <RouterLink class="user" :to="`/user/${row.id}`">
           <img class="avatar" src="/mascot/m02.webp" alt="" width="40" height="40" />

@@ -1857,6 +1857,17 @@ async function main() {
   //   ② 未登录 / 不存在的笔记
   {
     // 造两个明确的人来赞这一篇，好把名单内容钉死
+    // ⚠️ 自己发一篇笔记，不复用全局 noteId —— 那个在 P5 段末尾被删了，
+    // 而 17.1/17.2 也在用它，等于「这条笔记此刻还在不在」要看前面几十段没碰它。
+    // 踩过：size=1 那条断言返回 0 条，排查半天才发现是笔记早没了。
+    const { json: likerNote } = await post('/api/note/publish', {
+      token: auth,
+      body: { type: 1, title: `名单用例的笔记 ${stamp}`, content: '给 P16 名单段用', imageUrls: [imageUrl] },
+    })
+    codeIs('名单用例的笔记发布成功', likerNote, 0)
+    const listNoteId = likerNote?.data?.id
+    check('名单用例拿到笔记 ID', typeof listNoteId === 'string' && /^\d+$/.test(listNoteId), `id=${listNoteId}`)
+
     const likeName = `ct_liker${stamp}`
     const { json: lk } = await post('/api/user/register', { body: { username: likeName, password: P } })
     codeIs('点赞者账号注册成功', lk, 0)
@@ -1864,14 +1875,14 @@ async function main() {
     const likerAuth = `Bearer ${lkLogin?.data?.accessToken}`
 
     // 先复位：上一轮崩在清理之前就会一直留着，导致这次 PUT 返回 30001
-    await del(`/api/note/${noteId}/like`, { token: likerAuth })
-    const { json: liked } = await put(`/api/note/${noteId}/like`, { token: likerAuth })
+    await del(`/api/note/${listNoteId}/like`, { token: likerAuth })
+    const { json: liked } = await put(`/api/note/${listNoteId}/like`, { token: likerAuth })
     codeIs('点赞者点赞成功', liked, 0)
-    await del(`/api/note/${noteId}/collect`, { token: likerAuth })
-    const { json: col } = await put(`/api/note/${noteId}/collect`, { token: likerAuth })
+    await del(`/api/note/${listNoteId}/collect`, { token: likerAuth })
+    const { json: col } = await put(`/api/note/${listNoteId}/collect`, { token: likerAuth })
     codeIs('点赞者收藏成功', col, 0)
 
-    const { json: likes } = await get(`/api/note/${noteId}/likes?page=1&size=20`, { token: auth })
+    const { json: likes } = await get(`/api/note/${listNoteId}/likes?page=1&size=20`, { token: auth })
     codeIs('点赞人列表查询成功', likes, 0)
     eq('点赞人列表 total 是 JSON number（Long 会被序列化成字符串）',
       typeof likes?.data?.total, 'number')
@@ -1887,7 +1898,7 @@ async function main() {
     check('点赞人列表没有泄露 password 字段',
       likers.every((u) => !Object.keys(u).includes('password')), '')
 
-    const { json: collects } = await get(`/api/note/${noteId}/collects`, { token: auth })
+    const { json: collects } = await get(`/api/note/${listNoteId}/collects`, { token: auth })
     codeIs('收藏人列表查询成功', collects, 0)
     check('收藏人列表里能看到刚收藏的那个人',
       (collects?.data?.list ?? []).some((u) => u.id === lk.data?.id), '')
@@ -1895,41 +1906,164 @@ async function main() {
     // 分页是这套列表唯一没做的部分，先钉住 page/size 真的生效，别让它悄悄变死循环
     // get() 返回的是 { json, ... }，不是响应体本身 —— 漏写 .json 的话
     // p1.data 是 undefined，断言会报「拿到 undefined」而不是「参数没生效」
-    const { json: p1 } = await get(`/api/note/${noteId}/likes?page=1&size=1`, { token: auth })
-    const { json: p2 } = await get(`/api/note/${noteId}/likes?page=2&size=1`, { token: auth })
+    // 分页断言需要**至少 2 个赞**：只有 1 个赞时 page=2 必然是空列表，
+    // 「两页不同」就成了恒真断言，测不出 size 有没有生效。actorAuth 正好第二个。
+    // ⚠️ 这两步的返回值必须断：PUT 没成功时关系行根本没建，
+    // 而下面 size=1 那条断言拿到 0 条 —— 症状离真因隔了 40 行。
+    // 踩过：actorAuth 在这段之前对这条笔记已经赞过（跨段状态残留），
+    // 于是 PUT 返回 100002/30001，两种情况都不会让断言给出任何提示。
+    const { json: actorReset } = await del(`/api/note/${listNoteId}/like`, { token: actorAuth })
+    const { json: actorLiked } = await put(`/api/note/${listNoteId}/like`, { token: actorAuth })
+    codeIs('第二个点赞人点赞成功', actorLiked, 0)
+    const { json: p1 } = await get(`/api/note/${listNoteId}/likes?page=1&size=1`, { token: auth })
+    const { json: p2 } = await get(`/api/note/${listNoteId}/likes?page=2&size=1`, { token: auth })
     eq('size=1 时第一页只有 1 条', p1?.data?.list?.length, 1)
     check('第二页与第一页不是同一批（否则 size 参数被忽略了）',
       p1?.data?.list?.[0]?.id !== p2?.data?.list?.[0]?.id,
       `p1=${p1?.data?.list?.[0]?.id} p2=${p2?.data?.list?.[0]?.id}`)
-    const { json: p0 } = await get(`/api/note/${noteId}/likes?size=0`, { token: auth })
+    const { json: p0 } = await get(`/api/note/${listNoteId}/likes?size=0`, { token: auth })
     eq('size=0 被夹到 1（不能靠 size=0 一次拿到全部）', p0?.data?.list?.length, 1)
 
     // 门禁①：下架的笔记，非作者拿不到名单（20002），作者仍可（P10 编辑入口需要）
-    await put(`/api/note/${noteId}/status`, { token: auth, body: { status: 2 } })
-    const downAsOther = await get(`/api/note/${noteId}/likes`, { token: likerAuth })
+    await put(`/api/note/${listNoteId}/status`, { token: auth, body: { status: 2 } })
+    const downAsOther = await get(`/api/note/${listNoteId}/likes`, { token: likerAuth })
     codeIs('非作者看不到下架笔记的点赞人名单（与详情同一门禁）', downAsOther.json, 20002)
-    const downAsAuthor = await get(`/api/note/${noteId}/likes`, { token: auth })
+    const downAsAuthor = await get(`/api/note/${listNoteId}/likes`, { token: auth })
     codeIs('作者仍能看到自己下架笔记的名单', downAsAuthor.json, 0)
-    await put(`/api/note/${noteId}/status`, { token: auth, body: { status: 1 } })
+    await put(`/api/note/${listNoteId}/status`, { token: auth, body: { status: 1 } })
 
     // 门禁②：不存在的笔记 20001、未登录 10005
     const missing = await get('/api/note/999999999999/likes', { token: auth })
     codeIs('不存在的笔记返回 20001', missing.json, 20001)
     const missingC = await get('/api/note/999999999999/collects', { token: auth })
     codeIs('不存在的笔记（收藏人）返回 20001', missingC.json, 20001)
-    const anon = await get(`/api/note/${noteId}/likes`)
+    const anon = await get(`/api/note/${listNoteId}/likes`)
     codeIs('未登录访问点赞人列表返回 10005', anon.json, 10005)
-    const anonC = await get(`/api/note/${noteId}/collects`)
+    const anonC = await get(`/api/note/${listNoteId}/collects`)
     codeIs('未登录访问收藏人列表返回 10005', anonC.json, 10005)
 
     // 复原：清掉这条点赞/收藏关系
-    await del(`/api/note/${noteId}/like`, { token: likerAuth })
-    await del(`/api/note/${noteId}/collect`, { token: likerAuth })
-    const { json: after } = await get(`/api/note/${noteId}/likes`, { token: auth })
+    await del(`/api/note/${listNoteId}/like`, { token: likerAuth })
+    await del(`/api/note/${listNoteId}/collect`, { token: likerAuth })
+    const { json: after } = await get(`/api/note/${listNoteId}/likes`, { token: auth })
     check('取消点赞后名单里没有他了',
       !(after?.data?.list ?? []).some((u) => u.id === lk.data?.id), '')
   }
 
+// ---- 17.9 P17 话题与提及：#话题 / @某人
+  //
+  // 这一段钉三件事，每件都有具体的失败方式：
+  //   ① 解析规则（去重、限长、标点截断、不误伤 C#）
+  //   ② 关系行跟着正文走（编辑后旧话题必须消失，不是追加）
+  //   ③ 可见性（下架的笔记不该让话题变热门）
+  {
+    const unique = 'T' + stamp
+    const TOPIC = '探店' + unique
+
+    const { json: p1 } = await post('/api/note/publish', {
+      token: auth,
+      body: {
+        type: 1,
+        title: `标题带 #${TOPIC} 的话题`,
+        content: `正文又写了一遍 #${TOPIC}，还有一个 #很长很长的话题名字，和 @xk_ui_follow 的互动`,
+        imageUrls: [imageUrl],
+      },
+    })
+    codeIs('带话题的笔记发布成功', p1, 0)
+    const topicNoteId = p1?.data?.id
+    const { json: d1 } = await get(`/api/note/${topicNoteId}`, { token: auth })
+    const topics = d1?.data?.topics ?? []
+    eq('识别出 2 个话题（标题 1 + 正文 2，重复的去重）', topics.length, 2)
+    check('话题名不含 #（存的是裸名，# 只是正文的语法）',
+      topics.every((t) => typeof t.name === 'string' && !t.name.startsWith('#')),
+      JSON.stringify(topics))
+    check('重复的 #话题 只存了一条',
+      topics.filter((t) => t.name === TOPIC).length === 1, JSON.stringify(topics))
+    check('标题里的话题也被识别到了', topics.some((t) => t.name === TOPIC), JSON.stringify(topics))
+    check('话题名限长 20（超长被截断而不是整段存进去）',
+      topics.every((t) => t.name.length <= 20), JSON.stringify(topics.map((t) => t.name)))
+    check('话题 id 是字符串（雪花 ID 不能变成数字）',
+      topics.every((t) => typeof t.id === 'string' && /^\d+$/.test(t.id)), JSON.stringify(topics))
+    // 关键一条：逗号必须截断，否则会解析出「很长很长的话题名字，和」
+    // 这种把标点和后半句一起吞进去的话题 —— 用户完全没意识到自己建了个
+    // 含逗号的话题，而话题页会按这个名字聚笔记
+    check('话题名在标点处截断（不把「，和」吞进话题名）',
+      !topics.some((t) => /[，。、,.]/.test(t.name)), JSON.stringify(topics.map((t) => t.name)))
+
+    const mentions = d1?.data?.mentions ?? []
+    eq('识别出 1 个提及', mentions.length, 1)
+    check('提及带 id 与昵称（详情页要渲染成可点链接）',
+      typeof mentions[0]?.id === 'string' && typeof mentions[0]?.nickname === 'string'
+        && mentions[0].nickname.length > 0, JSON.stringify(mentions))
+    check('提及回传的是昵称而不是用户名（两者不是一回事）',
+      mentions[0]?.nickname !== 'xk_ui_follow', JSON.stringify(mentions))
+
+    // 不存在的用户名：安静忽略，不报错
+    const { json: ghost } = await post('/api/note/publish', {
+      token: auth,
+      body: { type: 1, title: '提到不存在的人', content: '@no_such_user_xyz 你好', imageUrls: [imageUrl] },
+    })
+    codeIs('提到不存在的用户仍然发布成功', ghost, 0)
+    const { json: gd } = await get(`/api/note/${ghost?.data?.id}`, { token: auth })
+    eq('不存在的用户名被忽略，提及列表为空', (gd?.data?.mentions ?? []).length, 0)
+    await del(`/api/note/${ghost?.data?.id}`, { token: auth })
+
+    const { json: hot } = await get('/api/topic/list?page=1&size=50', { token: auth })
+    codeIs('热门话题列表查询成功', hot, 0)
+    const hotRow = (hot?.data?.list ?? []).find((t) => t.name === TOPIC)
+    check('新话题出现在热门列表里', !!hotRow, JSON.stringify((hot?.data?.list ?? []).map((t) => t.name)))
+    eq('热门列表的 noteCount 是 JSON number（Long 会被序列化成字符串）',
+      typeof hotRow?.noteCount, 'number')
+    eq('该话题 noteCount=1', hotRow?.noteCount, 1)
+
+    const { json: tn } = await get(`/api/topic/notes?name=${encodeURIComponent(TOPIC)}`, { token: auth })
+    codeIs('话题页查询成功', tn, 0)
+    check('话题页里有刚发的那篇',
+      (tn?.data?.list ?? []).some((n) => n.id === topicNoteId),
+      JSON.stringify((tn?.data?.list ?? []).map((n) => n.id)))
+
+    // 不存在的话题必须报错，不能静默返回空列表 ——
+    // 空列表在页面上和「这个话题还没内容」长得一模一样
+    const { json: nope } = await get('/api/topic/notes?name=' + encodeURIComponent('绝不存在的话题' + unique), { token: auth })
+    codeIs('不存在的话题返回 70001（而不是空列表）', nope, 70001)
+    const { json: withHash } = await get(`/api/topic/notes?name=${encodeURIComponent('#' + TOPIC)}`, { token: auth })
+    codeIs('话题名带 # 前缀也认得', withHash, 0)
+
+    // 下架后不该再出现在话题页/热门榜里
+    await put(`/api/note/${topicNoteId}/status`, { token: auth, body: { status: 2 } })
+    const { json: down } = await get(`/api/topic/notes?name=${encodeURIComponent(TOPIC)}`, { token: auth })
+    eq('笔记下架后话题页里没有了', (down?.data?.list ?? []).length, 0)
+    const { json: hot2 } = await get('/api/topic/list?page=1&size=50', { token: auth })
+    eq('笔记下架后该话题的 noteCount 归零',
+      (hot2?.data?.list ?? []).find((t) => t.name === TOPIC)?.noteCount, 0)
+    await put(`/api/note/${topicNoteId}/status`, { token: auth, body: { status: 1 } })
+
+    // 编辑：关系行跟着正文全量换，不能留着旧话题
+    const OLD = '旧话题' + unique
+    const { json: withOld } = await post('/api/note/publish', {
+      token: auth,
+      body: { type: 1, title: `带 #${OLD}`, content: '先有个旧话题', imageUrls: [imageUrl] },
+    })
+    const editId = withOld?.data?.id
+    const { json: ed } = await put(`/api/note/${editId}`, {
+      token: auth,
+      body: { type: 1, title: '改标题不带话题了', content: `换成 #${TOPIC}`, imageUrls: [imageUrl] },
+    })
+    codeIs('编辑成功', ed, 0)
+    const { json: after } = await get(`/api/note/${editId}`, { token: auth })
+    const afterTopics = after?.data?.topics ?? []
+    eq('编辑后只剩新话题（旧的被替换，不是追加）', afterTopics.length, 1)
+    check('编辑后话题是新写的那个', afterTopics[0]?.name === TOPIC, JSON.stringify(afterTopics))
+    await del(`/api/note/${editId}`, { token: auth })
+
+    // 删除笔记要清关系行，否则话题页会把不存在的笔记算进去
+    await del(`/api/note/${topicNoteId}`, { token: auth })
+    const { json: afterDel } = await get(`/api/topic/notes?name=${encodeURIComponent(TOPIC)}`, { token: auth })
+    eq('删除笔记后话题页为空（关系行已级联清掉）', (afterDel?.data?.list ?? []).length, 0)
+
+    const { json: anon } = await get('/api/topic/list')
+    codeIs('未登录访问热门话题返回 10005', anon, 10005)
+  }
   // ---- 18. 不支持的方法
   {
     const { json } = await call('DELETE', '/api/user/login')

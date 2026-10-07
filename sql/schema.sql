@@ -235,3 +235,63 @@ CREATE TABLE `notification`
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
   COLLATE = utf8mb4_general_ci COMMENT ='用户通知表';
+
+-- ---------------------------------------------------------------------
+--  话题与提及
+--
+--  话题（#标签）是小红书内容组织的骨架：没有话题，笔记之间就是孤岛，
+--  搜索只能靠关键词撞上。提及（@某人）则把「人和内容」连起来。
+--
+--  设计上的两个刻意选择：
+--
+--  1) topic.name 唯一键：并发下两个人同时发「#咖啡」，靠唯一键当裁判，
+--     **不要**先查再插（那是典型的 check-then-act，两个事务都能查到不存在）。
+--
+--  2) note_topic 的计数**不落库**：话题列表按 note_count 排序，而 note_count
+--     是一列冗余计数（要靠异步刷、要处理漂移）。这里的做法是查询时 GROUP BY 现算
+--     ——话题表本身很小（量级几千），一页 20 行的关联统计比维护一列异步计数
+--     简单且不会漂移。真正的问题不是「算得准不准」而是「为它付出多少」，
+--     见 NoteQueryServiceImpl 里 topicNotes 的注释。
+-- ---------------------------------------------------------------------
+DROP TABLE IF EXISTS `note_mention`;
+CREATE TABLE `note_mention`
+(
+    `id`          BIGINT UNSIGNED NOT NULL COMMENT '雪花ID',
+    `note_id`     BIGINT UNSIGNED NOT NULL COMMENT '笔记ID',
+    `user_id`     BIGINT UNSIGNED NOT NULL COMMENT '被提及的用户ID',
+    `create_time` DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_note_mention` (`note_id`, `user_id`),
+    KEY `idx_mention_user` (`user_id`)
+) ENGINE = InnoDB
+    DEFAULT CHARSET = utf8mb4
+    COLLATE = utf8mb4_general_ci COMMENT ='笔记提及（@某人）';
+
+DROP TABLE IF EXISTS `note_topic`;
+CREATE TABLE `note_topic`
+(
+    `id`          BIGINT UNSIGNED NOT NULL COMMENT '雪花ID',
+    `note_id`     BIGINT UNSIGNED NOT NULL COMMENT '笔记ID',
+    `topic_id`    BIGINT UNSIGNED NOT NULL COMMENT '话题ID',
+    `create_time` DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_note_topic` (`note_id`, `topic_id`),
+    KEY `idx_topic_note` (`topic_id`)
+) ENGINE = InnoDB
+    DEFAULT CHARSET = utf8mb4
+    COLLATE = utf8mb4_general_ci COMMENT ='笔记话题关系';
+
+DROP TABLE IF EXISTS `topic`;
+CREATE TABLE `topic`
+(
+    `id`          BIGINT UNSIGNED NOT NULL COMMENT '雪花ID',
+    `name`        VARCHAR(21)     NOT NULL COMMENT '话题名，不含 #，最长 20 字',
+    `description` VARCHAR(200)    DEFAULT NULL COMMENT '话题简介',
+    `status`      TINYINT         NOT NULL DEFAULT 1 COMMENT '1正常 2禁用',
+    `create_time` DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `update_time` DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_topic_name` (`name`)
+) ENGINE = InnoDB
+    DEFAULT CHARSET = utf8mb4
+    COLLATE = utf8mb4_general_ci COMMENT ='话题';

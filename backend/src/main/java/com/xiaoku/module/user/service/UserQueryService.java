@@ -1,5 +1,6 @@
 package com.xiaoku.module.user.service;
 
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.xiaoku.common.constant.CacheNames;
 import com.xiaoku.common.exception.BizException;
 import com.xiaoku.common.result.ErrorCodeEnum;
@@ -71,6 +72,33 @@ public class UserQueryService {
     public UserVO findUserVO(Long userId) {
         UserEntity user = userMapper.selectById(userId);
         return user == null ? null : UserConverter.toVO(user);
+    }
+
+    /**
+     * 按用户名批量查 id（解析正文里的 @提及时用）
+     *
+     * <p><b>刻意不缓存</b>：username → id 是不可变的（用户名不可改），理论上
+     * 可以缓存；但它只在「有人发 @某人」时才用到，量极小，而缓存就意味着多一套
+     * key 设计与失效规则。这点收益不值得那套复杂度。
+     *
+     * <p>查不到的（不存在的用户名）不出现在结果里 —— 调用方据此安静地忽略，
+     * 不报错：正文里写了个不存在的人名，不该让整篇笔记发不出来。
+     *
+     * @return username → userId
+     */
+    public Map<String, Long> findIdsByUsernames(List<String> usernames) {
+        if (usernames == null || usernames.isEmpty()) {
+            return Map.of();
+        }
+        List<String> distinct = usernames.stream().filter(Objects::nonNull).distinct().toList();
+        if (distinct.isEmpty()) {
+            return Map.of();
+        }
+        return userMapper.selectList(Wrappers.<UserEntity>lambdaQuery()
+                        .select(UserEntity::getId, UserEntity::getUsername)
+                        .in(UserEntity::getUsername, distinct))
+                .stream()
+                .collect(Collectors.toMap(UserEntity::getUsername, UserEntity::getId, (a, b) -> a));
     }
 
     /**

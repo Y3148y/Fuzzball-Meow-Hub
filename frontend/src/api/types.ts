@@ -180,10 +180,44 @@ export interface NoteVO {
   /** 当前登录用户是否已关注作者。注意：null 字段会被 non_null 规则省略 */
   authorNickname: string
   authorAvatar: string | null
-  authorFollowed: boolean
+authorFollowed: boolean
   /** 按上传顺序返回 */
   images: string[]
+  /** 正文里的 #话题，由后端解析后返回；前端不传（P16） */
+  topics?: TopicVO[]
+  /** 正文里的 @提及，被提到的人；详情页据此把 @昵称 渲染成链接（P16） */
+  mentions?: MentionVO[]
   createTime: string
+}
+
+/** 话题引用 */
+export interface TopicVO {
+  id: SnowflakeId
+  /** 不含 # */
+  name: string
+}
+
+/** 被提及的用户 */
+export interface MentionVO {
+  id: SnowflakeId
+  nickname: string
+  /**
+   * 被提及者的**用户名**
+   *
+   * 正文里写的是 `@xk_ui_follow`（用户名），页面上要显示的是昵称「关注搭子」，
+   * 所以两个都得给：前端靠「昵称 + 用户名」两张表去正文里定位那一段文字，
+   * 只给昵称的话整段 @提及 会渲染成纯文本，而**界面看不出任何异常**。
+   */
+  username?: string
+}
+
+/** 话题列表项 */
+export interface TopicListVO {
+  id: SnowflakeId
+  name: string
+  description: Nullable<string>
+  /** 该话题下已发布笔记数，后端实时统计 */
+  noteCount: number
 }
 
 /** 发布笔记请求体 */

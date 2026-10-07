@@ -85,6 +85,13 @@ const routes: RouteRecordRaw[] = [
       meta: { title: '粉丝', requiresAuth: true },
     },
     {
+      // 话题名是中文，所以用 +? 而不是 `：id` 那套数字路由
+      path: '/topic/:name+',
+      name: 'topic',
+      component: () => import('@/views/TopicView.vue'),
+      meta: { title: '话题', requiresAuth: true },
+    },
+    {
       // 「谁赞了这篇」—— 路径参数是 noteId，不是 userId
       path: '/note/:id(\\d+)/likes',
       name: 'note-likes',

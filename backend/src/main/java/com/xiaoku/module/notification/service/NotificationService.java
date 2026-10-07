@@ -57,4 +57,11 @@ public interface NotificationService {
     /** 回复别人的评论：{@code parentCommentId} 是被回复的那条 */
     void notifyCommentReply(Long receiverId, Long actorId, Long noteId,
                             Long parentCommentId, String content);
+
+    /**
+     * 被@提及（类型 6）
+     *
+     * @param content 提及我的那句原文，用于通知列表展示
+     */
+    void notifyMention(Long receiverId, Long actorId, Long noteId, String content);
 }

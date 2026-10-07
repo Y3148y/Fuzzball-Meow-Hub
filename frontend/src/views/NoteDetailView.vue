@@ -5,6 +5,48 @@ import { showConfirmDialog, showSuccessToast } from 'vant'
 import { changeNoteStatus, collectNote, deleteNote, getNoteDetail, likeNote, uncollectNote, unlikeNote } from '@/api/note'
 import { followUser, unfollowUser } from '@/api/follow'
 import { createComment, deleteComment, likeComment, listComments, replyComment, unlikeComment } from '@/api/comment'
+import type { MentionVO } from '@/api/types'
+
+/**
+ * 把正文切成「纯文本 / @提及链接」两种节点
+ *
+ * <p>不能整段用 v-html 渲染（XSS），也不能拿后端给的 mentions 去 replace
+ * 用户名 —— **用户名和昵称是两件事**：正文里写的是 `@xk_ui_follow`，
+ * 后端回传的 `nickname` 是「关注搭子」，拿昵称去正文里找是找不到的。
+ * 所以这里把 mentions 建成「昵称 → 用户」的表，再用正则去正文里找 @xxx，
+ * 命中的变成链接，没命中的（原样）当普通文本。
+ *
+ * <p>字符集用 `[^\\s@]{1,32}` 而不是严格的用户名正则：这里只需要知道
+ * 「@ 后面到空白为止是一段可能的昵称」，真正的匹配交给表；
+ * 用严格正则的话昵称里的中文反而匹配不上（用户名规则是 `^[a-zA-Z0-9_]+$`）。
+ */
+function mentionNodes(content: string, mentions?: MentionVO[]) {
+  const plain = [{ text: content, userId: undefined as string | undefined }]
+  if (!content || !mentions?.length) return plain
+  // ⚠️ **两种写法都要建表**：昵称（回传的）和用户名（正文里实际写的）。
+  // 只建昵称表的话，正文里的 @xk_ui_follow 匹配不上昵称「关注搭子」，
+  // 于是整个 @提及 渲染成纯文本 —— 而且**界面看不出异常**，
+  // 只是那一段字不会跳而已。（后端 NoteMentionVO 只回 id + nickname，
+  // 没有 username，所以这张表只能在前端用 mentionNodes 自己补。）
+  const byName = new Map<string, MentionVO>()
+  for (const m of mentions) {
+    if (m.nickname) byName.set(m.nickname, m)
+    if (m.username) byName.set(m.username, m)
+  }
+  const re = /@([^\s@]{1,32})/g
+  const out: { text: string; userId?: string }[] = []
+  let last = 0
+  for (let mt = re.exec(content); mt; mt = re.exec(content)) {
+    const hit = byName.get(mt[1])
+    if (!hit) continue
+    if (mt.index > last) out.push({ text: content.slice(last, mt.index) })
+    out.push({ text: '@' + hit.nickname, userId: hit.id })
+    last = mt.index + mt[0].length
+  }
+  if (last === 0) return plain
+  if (last < content.length) out.push({ text: content.slice(last) })
+  return out.length ? out : plain
+}
 import { BizError } from '@/api/request'
 import { ErrorCode } from '@/api/types'
 import type { CommentVO, NoteVO, PageVO } from '@/api/types'
@@ -829,13 +871,19 @@ onBeforeUnmount(() => {
           <h1 class="title" data-test="note-detail-title">{{ note.title }}</h1>
 
           <p
-            ref="contentEl"
-            class="content"
-            :class="{ clamped: contentClamped }"
-            data-test="note-detail-content"
-          >
-            {{ note.content }}
-          </p>
+ref="contentEl"
+              class="content"
+              :class="{ clamped: contentClamped }"
+              data-test="note-detail-content"
+            ><template
+              v-for="(seg, i) in mentionNodes(note.content, note.mentions)"
+              :key="i"
+            ><RouterLink
+              v-if="seg.userId"
+              class="mention"
+              data-test="note-mention"
+              :to="'/user/' + seg.userId"
+            >{{ seg.text }}</RouterLink><template v-else>{{ seg.text }}</template></template></p>
 
           <button
             v-if="contentOverflows"
@@ -847,6 +895,23 @@ onBeforeUnmount(() => {
           >
             {{ contentExpanded ? '收起' : '展开全文' }}
           </button>
+
+          <!--
+            话题 chip。正文里的 #话题 是唯一事实来源，这些 chip 是后端解析完回传的，
+            所以它们**总是**与正文一致 —— 前端不再自己扫一遍正文做高亮，
+            那种「两套正则」迟早对不上（发布页的预览就是另一处正则，见 noteTopics）。
+          -->
+          <ul v-if="note.topics?.length" class="topics" data-test="note-topics">
+            <li v-for="tp in note.topics" :key="tp.id">
+              <RouterLink
+                class="chip"
+                data-test="note-topic"
+                :to="'/topic/' + encodeURIComponent(tp.name)"
+              >
+                #{{ tp.name }}
+              </RouterLink>
+            </li>
+          </ul>
 
           <!--
             「谁赞了 / 谁收藏了」的入口。
@@ -881,6 +946,40 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/* 话题 chip：横排可换行，琥珀描边（品牌色里最弱的一档，不抢正文注意力） */
+.topics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 12px;
+  border: var(--xk-stroke-w) solid var(--xk-border);
+  border-radius: 999px;
+  color: var(--xk-amber-text);
+  font-size: var(--xk-fs-13);
+  text-decoration: none;
+}
+
+.chip:hover {
+  border-color: var(--xk-amber);
+  background: var(--xk-surface-2);
+}
+
+/* @提及：正文里的可点片段。只用下划线不换色 —— 正文是大块阅读，
+   一处标记就够，再上颜色会让人以为标错了 */
+.mention {
+  color: var(--xk-amber-text);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
 
 /*
  * 「N 人赞过 · N 人收藏过」这一行。

@@ -22,6 +22,9 @@ import com.xiaoku.module.note.mapper.NoteMapper;
 import com.xiaoku.module.note.service.NoteQueryService;
 import com.xiaoku.module.note.support.NoteCounterStore;
 import com.xiaoku.module.note.vo.NoteListItemVO;
+import com.xiaoku.module.topic.service.TopicRelationService;
+import com.xiaoku.module.topic.vo.MentionVO;
+import com.xiaoku.module.topic.vo.TopicVO;
 import com.xiaoku.module.note.vo.NoteVO;
 import com.xiaoku.module.user.service.UserQueryService;
 import com.xiaoku.module.user.vo.UserVO;
@@ -52,6 +55,7 @@ public class NoteQueryServiceImpl implements NoteQueryService {
     private final UserFollowQueryService userFollowQueryService;
     private final NoteIdBloomFilter bloomFilter;
     private final NoteCounterStore counterStore;
+    private final TopicRelationService topicRelationService;
 
     /**
      * <b>笔记详情需要登录。</b>
@@ -104,6 +108,10 @@ public class NoteQueryServiceImpl implements NoteQueryService {
 
         NoteVO vo = NoteConverter.toVO(note, userQueryService.findUserVO(note.getUserId()), images,
                 liked, collected, authorFollowed);
+        // 详情页要渲染话题 chip 与可点的 @提及，各一次查询（走 note_topic /
+        // note_mention 的索引，代价可忽略；列表页则用批量版，见 applyRelations）
+        vo.setTopics(topicRelationService.listTopics(noteId));
+        vo.setMentions(topicRelationService.listMentions(noteId));
         // 计数以 Redis 为准；key 缺失（被驱逐/清库/多实例分发）时回退「DB 关系行的实时数」，
         // 不能回退 note.like_count 列——那是异步落库的产物，最多滞后 30s，
         // 详情页拿滞后值会对不上「刚点赞完的 +1」。

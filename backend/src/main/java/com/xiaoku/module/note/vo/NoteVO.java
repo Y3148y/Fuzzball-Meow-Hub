@@ -9,6 +9,9 @@ import lombok.NoArgsConstructor;
 import java.io.Serial;
 import java.io.Serializable;
 import java.time.LocalDateTime;
+import com.xiaoku.module.topic.vo.MentionVO;
+import com.xiaoku.module.topic.vo.TopicVO;
+
 import java.util.List;
 
 /**
@@ -82,6 +85,12 @@ public class NoteVO implements Serializable {
 
     @Schema(description = "图片URL列表，按 sort 升序")
     private List<String> images;
+
+    /** 正文里的 #话题（P16）；发布/编辑时由后端从正文解析，前端不传 */
+    private List<TopicVO> topics;
+
+    /** 正文里的 @提及（被提到的人），给详情页渲染成可点的链接 */
+    private List<MentionVO> mentions;
 
     @Schema(description = "发布时间")
     private LocalDateTime createTime;

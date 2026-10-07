@@ -3,7 +3,21 @@ import { onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { BizError } from '@/api/request'
 import { searchNotes } from '@/api/search'
-import type { NoteListItemVO } from '@/api/types'
+import type { NoteListItemVO, TopicListVO } from '@/api/types'
+import { listHotTopics } from '@/api/topic'
+
+/** 热门话题：只在「没搜到东西」时露出来，给用户一个往下钻的方向 */
+const hotTopics = ref<TopicListVO[]>([])
+async function loadHot() {
+  try {
+    const page = await listHotTopics(1, 12)
+    hotTopics.value = page.list
+  } catch {
+    // 话题是「锦上添花」，拉不到不该影响搜索页本身（用户搜东西才是目的）
+    hotTopics.value = []
+  }
+}
+
 
 const route = useRoute()
 const router = useRouter()
@@ -58,7 +72,9 @@ watch(
 )
 
 // 初进页面若带 ?keyword= 参数，直接开搜（watch 首次挂载不触发）
+// 两件事都在 onMounted 里：热门话题是补充，挂了它不该让带参进搜索的用例受影响
 onMounted(() => {
+  void loadHot()
   if (keywordFromRoute()) void load(true)
 })
 
@@ -83,6 +99,27 @@ onMounted(() => {
       />
       <button class="xk-btn go" type="submit" data-test="search-submit">搜索</button>
     </form>
+
+    <!--
+      热门话题。放在搜索页而不是单独开一个入口，是因为「搜索」本身就是
+      「不知道要找什么」的兜底 —— 用户没想好搜什么，先看看大家在聊什么。
+      只在没有搜索结果时出现：已经搜到东西了就别拿话题抢位置了。
+    -->
+    <section
+      v-if="!results.length && !loading && hotTopics.length"
+      class="card xk-card xk-card--flat hot"
+      data-test="search-hot-topics"
+    >
+      <p class="hot-title">大家都在聊</p>
+      <ul class="hot-list">
+        <li v-for="t in hotTopics" :key="t.id">
+          <RouterLink class="hot-chip" data-test="hot-topic" :to="'/topic/' + encodeURIComponent(t.name)">
+            #{{ t.name }}
+            <span class="hot-count">{{ t.noteCount }}</span>
+          </RouterLink>
+        </li>
+      </ul>
+    </section>
 
     <section class="card xk-card xk-card--flat results" data-test="search-results">
       <p v-if="loading && !results.length" class="hint" data-test="search-loading">搜索中…</p>
@@ -127,6 +164,48 @@ onMounted(() => {
 </template>
 
 <style scoped>
+/* 热门话题：标题 + 横排 chip，数字用 meta 色（它是次要信息） */
+.hot {
+  margin-bottom: 14px;
+}
+
+.hot-title {
+  margin: 0 0 10px;
+  font-size: var(--xk-fs-15);
+  font-weight: 700;
+}
+
+.hot-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.hot-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-height: 40px;
+  padding: 0 12px;
+  border: var(--xk-stroke-w) solid var(--xk-border);
+  border-radius: 999px;
+  color: var(--xk-amber-text);
+  font-size: var(--xk-fs-13);
+  text-decoration: none;
+}
+
+.hot-chip:hover {
+  border-color: var(--xk-amber);
+}
+
+.hot-count {
+  font-size: var(--xk-fs-12);
+  color: var(--xk-text-3);
+  font-variant-numeric: tabular-nums;
+}
 /* .page 骨架统一在 main.css，这里重复写会用 0,2,0 特异性压掉全局断点 */
 
 .top {

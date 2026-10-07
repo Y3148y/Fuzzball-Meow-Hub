@@ -21,7 +21,16 @@ public enum NotificationType {
     FOLLOW(4, "关注了你"),
 
     /** 回复了我的评论 —— targetId = 父评论ID，content = 回复内容 */
-    COMMENT_REPLY(5, "回复了你的评论");
+    COMMENT_REPLY(5, "回复了你的评论"),
+
+    /**
+     * P16 被提及：targetId = noteId，content 为提及我的那句原文
+     *
+     * <p>与「评论通知」分开而不是复用：两者都是「有人在我名下说了话」，
+     * 但入口不同（一个在评论区、一个在正文里 @ 我），通知页的文案与
+     * 「去这条笔记」的动作都一样，分开只是为了将来能分别统计。
+     */
+    MENTION(6, "在笔记里提到了我");
 
     private final int code;
     private final String text;

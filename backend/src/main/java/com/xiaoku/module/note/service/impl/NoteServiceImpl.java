@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.xiaoku.common.context.UserContextHolder;
 import com.xiaoku.common.exception.BizException;
 import com.xiaoku.module.moderation.TextModeration;
+import com.xiaoku.module.topic.service.TopicRelationService;
 import com.xiaoku.common.result.ErrorCodeEnum;
 import com.xiaoku.common.storage.ImageStorage;
 import com.xiaoku.common.support.NoteIdBloomFilter;
@@ -70,6 +71,7 @@ public class NoteServiceImpl implements NoteService {
     private final NoteIdBloomFilter bloomFilter;
     private final NoteCounterStore counterStore;
     private final TextModeration textModeration;
+    private final TopicRelationService topicRelationService;
 
     @Value("${xiaoku.kafka.note-topic}")
     private String noteEventTopic;
@@ -101,11 +103,21 @@ public class NoteServiceImpl implements NoteService {
             noteImageMapper.insert(image);
         }
 
-        log.info("笔记发布成功 noteId={} userId={} images={}", note.getId(), userId, params.images().size());
+log.info("笔记发布成功 noteId={} userId={} images={}", note.getId(), userId, params.images().size());
+
         // 稀缺：规划 ES 索引的异步同步。必须在 afterCommit 发送而不是在事务内直接发，
         // 否则「消息进了 Kafka、事务却回滚」会产生索引里有、库里没有的幽灵文档。
         // 发送是异步的且失败只记日志：搜索索引可被 /api/search/reindex 一键重建，不值得拖成功接口
-        registerAfterCommit(NoteEventDTO.ACTION_PUBLISH, note);
+        //
+        // ⚠️ **这行之前被误删过**：P17 插入「话题关系行」时，编辑器把它当成了
+        // 上一段注释的延续，一起删掉了。结果是发布不再发 ES 事件，而
+        // **接口照常返回 200**，契约里的「发布后经 Kafka 异步入搜索索引」
+        // 才红 —— 一条与话题毫无关系的断言替你抓到的话题改动出的问题。
+        registerAfterCommit(NoteEventDTO.ACTION_PUBLISH, ofEventNote(note, params, dto, STATUS_PUBLISHED));
+
+        // 话题/提及关系行：正文是唯一事实来源，后端自己从 title+content 解析。
+        // 放在写完 note/note_image 之后 —— 关系行需要 noteId，而 noteId 到这里才有。
+        topicRelationService.replaceRelations(note, note.getTitle(), note.getContent());
         // 刚发布的笔记必然没有点赞/收藏/关注作者（自己不能关注自己），三者都是 false
         return NoteConverter.toVO(note, userQueryService.getUserVO(userId), params.images(), false, false, false);
     }
@@ -148,6 +160,10 @@ public class NoteServiceImpl implements NoteService {
         }
 
         log.info("笔记更新成功 noteId={} userId={}", noteId, userId);
+        // 话题/提及全量替换：编辑本来就是全量覆盖语义，关系行跟着换。
+        // 不做增量 diff —— 一篇最多 5 话题 10 提及，删了重插很便宜，
+        // 而增量留下的「改了正文还挂着旧话题」残留更难查
+        topicRelationService.replaceRelations(note, dto.getTitle().trim(), dto.getContent().trim());
         // 编辑不会让一篇笔记「重新上热搜」：已下架的继续发 UNPUBLISH（确保索引里没有），
         // 正常的才带新标题/正文 re-upsert
         int curStatus = note.getStatus() == null ? STATUS_PUBLISHED : note.getStatus();
@@ -227,6 +243,9 @@ public class NoteServiceImpl implements NoteService {
         noteLikeMapper.delete(Wrappers.<NoteLikeEntity>lambdaQuery().eq(NoteLikeEntity::getNoteId, noteId));
         noteCollectMapper.delete(Wrappers.<NoteCollectEntity>lambdaQuery().eq(NoteCollectEntity::getNoteId, noteId));
         noteImageMapper.delete(Wrappers.<NoteImageEntity>lambdaQuery().eq(NoteImageEntity::getNoteId, noteId));
+        // 话题/提及关系行同样没有外键，删笔记必须自己清，否则会留下指向
+        // 不存在笔记的孤儿关系（topic 列表会把这些笔记算进热门度）
+        topicRelationService.removeRelations(noteId);
         noteMapper.deleteById(noteId);
 
         // Redis 计数键清掉（赞/收藏 ZSet + 待落库标记），DB 行删完不留死 key

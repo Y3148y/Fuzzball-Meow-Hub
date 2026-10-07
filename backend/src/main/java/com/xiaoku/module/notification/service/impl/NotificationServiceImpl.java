@@ -204,4 +204,19 @@ public class NotificationServiceImpl implements NotificationService {
                                    Long parentCommentId, String content) {
         push(receiverId, actorId, NotificationType.COMMENT_REPLY, parentCommentId, noteId, content);
     }
+
+    @Override
+    public void notifyMention(Long receiverId, Long actorId, Long noteId, String content) {
+        // 摘一句原文做展示：全文可能有 2000 字，通知列表塞不下也没必要
+        push(receiverId, actorId, NotificationType.MENTION, noteId, noteId, excerpt(content));
+    }
+
+    /** 通知正文摘要：单行、限长，超出用省略号 */
+    private static String excerpt(String content) {
+        if (content == null) {
+            return null;
+        }
+        String oneLine = content.replaceAll("\\s+", " ").trim().trim();
+        return oneLine.length() <= 60 ? oneLine : oneLine.substring(0, 60) + "…";
+    }
 }

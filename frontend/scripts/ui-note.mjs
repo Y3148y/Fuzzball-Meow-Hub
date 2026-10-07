@@ -177,7 +177,160 @@ try {
     (await s.evaluate("document.querySelector('[data-test=note-detail-content]')?.textContent?.trim()"))
       === '这是由 ui-note.mjs 发布的正文内容。',
   )
-  // ---- 8.4 P13：此前详情卡从无 padding（文字贴着描边），这里钉死
+﻿// ============ 8.8 P17 话题与提及：预览 → 详情 chip → 话题页 ============
+//
+// 放在这里是因为**发布流程已经跑完一次**（L158-160），可以复用同一篇笔记：
+// 1) 空正文时没有预览行 —— 不能一进页面就冒出一堆空 chip
+// 2) 打字后预览出现，#话题 与 @提及 都被识别
+// 3) 发布后详情页出现话题 chip（后端回传的，不是前端自己扫的）
+// 4) 点 chip 进话题页，页里有刚发的那篇
+//
+// ⚠️ 改值必须走原生 setter + 派发 input：直接 el.value = x 不会触发
+// Vue 的 v-model，预览是 computed，界面不会更新。这条坑 P13 的计数断言踩过。
+async function setVal(sel, value) {
+  await s.evaluate(
+    `(() => {
+      const el = document.querySelector(${JSON.stringify(sel)})
+      if (!el) throw new Error('setVal: 找不到 ' + ${JSON.stringify(sel)})
+      const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement : HTMLInputElement
+      const setter = Object.getOwnPropertyDescriptor(proto.prototype, 'value').set
+      setter.call(el, ${JSON.stringify(value)})
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+    })()`,
+  )
+}
+
+{
+  // ⚠️ 必须先回发布页：这段插在「详情页渲染」之后，那时页面上根本没有
+  // note-title / note-content 两个输入框，el 是 null →
+  // setter.call(null, ...) 抛 Illegal invocation（错误信息与「找不到输入框」
+  // 毫无关系，排查时容易以为是自己 new 的 setter 写错了）
+  await s.goto(`${BASE}/#/publish`)
+  await s.waitFor("document.querySelector('[data-test=note-title]')", '回到发布页', 20000)
+  await sleep(400)
+  s.check(
+    '正文为空时不显示识别预览（不能一进页面就冒出一堆空 chip）',
+    (await s.evaluate("!!document.querySelector('[data-test=note-topics-preview]')")) === false,
+  )
+
+  const TOPIC = 'cdpt' + Date.now().toString(36).slice(2, 7)
+  await setVal('[data-test=note-title]', `话题验证 #${TOPIC}`)
+  await setVal('[data-test=note-content]', `正文提到 @xk_ui_follow 也在 #${TOPIC}`)
+  await s.waitFor(
+    "!!document.querySelector('[data-test=note-topics-preview]')",
+    '识别预览出现',
+    10000,
+  )
+  const pv = await s.evaluate(`JSON.stringify({
+    topics: [...document.querySelectorAll('[data-test=preview-topic]')].map((e) => e.textContent.trim()),
+    mentions: [...document.querySelectorAll('[data-test=preview-mention]')].map((e) => e.textContent.trim()),
+  })`)
+  const pvd = JSON.parse(pv)
+  s.check('预览识别出了 #话题', pvd.topics.some((x) => x.includes(TOPIC)), pv)
+  s.check('预览识别出了 @提及', pvd.mentions.some((x) => x.includes('xk_ui_follow')), pv)
+  s.check(
+    '同一个 #话题 标题与正文各写一次，只显示一个 chip（预览去重了）',
+    pvd.topics.filter((x) => x.includes(TOPIC)).length === 1,
+    pv,
+  )
+
+  // 发布这篇带话题的（沿用 L142 的 pngA，重新选一次因为上一步清空没动图）
+  await setFiles('[data-test=note-file]', [pngA])
+  await s.waitFor("document.querySelectorAll('[data-test=note-previews] .cell').length === 1", '预览出现')
+  await s.evaluate("document.querySelector('.submit').click()")
+  await s.waitFor("location.hash.startsWith('#/note/')", '带话题的笔记发布成功', 25000)
+  const topicNoteId = (await s.evaluate('location.hash')).split('/').pop()
+
+  await s.waitFor("!!document.querySelector('[data-test=note-topics]')", '详情页出现话题 chip', 15000)
+  const chipTxt = await s.evaluate(
+    "[...document.querySelectorAll('[data-test=note-topic]')].map(e=>e.textContent.trim()).join(' | ')",
+  )
+  s.check('详情页出现话题 chip 且内容正确', chipTxt.includes(TOPIC), chipTxt)
+  s.check('话题 chip 带 # 前缀（和正文里写的样子一致）', chipTxt.includes('#'), chipTxt)
+
+  // @提及渲染成可点链接，且跳到那个人的主页
+  // ⚠️ 正则必须同时匹配**用户名**和**昵称**：正文里写的是 @xk_ui_follow，
+  // 而 mentionNodes 是拿「昵称 → 用户」建表去正文里找的（返回的昵称是「关注搭子」）。
+  // 只匹配中文昵称会找不到 —— 这条断言钉的正是「两边能对上」这件事本身
+  const mentionHref = await s.evaluate(
+    "document.querySelector('[data-test=note-mention]')?.getAttribute('href')",
+  )
+  // ⚠️ RouterLink 渲染出的 href 是 **hash 路由**（#/user/123）而不是 /user/123，
+  // 断言别写成 /^\/user\// —— 那是纯路径路由的形状。
+  s.check(
+    '@提及渲染成 RouterLink（可点的，不是纯文本）',
+    typeof mentionHref === 'string' && /^#?\/user\/\d+$/.test(mentionHref),
+    `href=${mentionHref}`,
+  )
+  await s.evaluate("document.querySelector('[data-test=note-mention]').click()")
+  await s.waitFor(
+    `location.hash === '${mentionHref.startsWith('#') ? mentionHref : '#' + mentionHref}'`,
+    '点 @提及 跳到作者主页',
+    10000,
+  )
+  s.check('点 @提及 跳到被提到那个人的主页', true, await s.evaluate('location.hash'))
+
+  // 点话题 chip → 话题页，页里有刚发的那篇
+  await s.goto(`${BASE}/#/note/${topicNoteId}`)
+  await s.waitFor("!!document.querySelector('[data-test=note-topic]')", '回到详情')
+  await s.evaluate("document.querySelector('[data-test=note-topic]').click()")
+  await s.waitFor("location.hash.startsWith('#/topic/')", '进话题页', 10000)
+  await s.waitFor(
+    "!!document.querySelector('[data-test=topic-loading]') || !!document.querySelector('[data-test=topic-list]') || !!document.querySelector('[data-test=topic-error]')",
+    '话题页进入终态',
+    20000,
+  )
+  await sleep(600)
+  const tp = await s.evaluate(`JSON.stringify({
+    hash: location.hash,
+    err: document.querySelector('[data-test=topic-error]')?.textContent?.trim() ?? null,
+    count: document.querySelectorAll('[data-test=topic-item]').length,
+    hrefs: [...document.querySelectorAll('[data-test=topic-item] .main')].map(a => a.getAttribute('href')),
+  })`)
+  const tpd = JSON.parse(tp)
+  s.check('话题页加载成功（没有 70001 的错误文案）', tpd.err === null, tp)
+  // ⚠️ 同上：RouterLink 的 href 带 # 前缀（hash 路由），不能拿它跟裸路径比
+  s.check(
+    '话题页里有刚发的这篇',
+    tpd.hrefs.some((h) => h && h.replace(/^#/, '') === `/note/${topicNoteId}`),
+    tp,
+  )
+
+  // 清理这篇。走裸接口而不是点详情页的删除按钮：这段结束时人正在话题页上
+  // ⚠️ xk_token 存的是**裸 JWT 字符串**，不是 {accessToken} 对象 ——
+  // JSON.parse 一个以 eyJ 开头的字符串会抛「Unexpected token 'e'」，
+  // 症状是清理没做（库里多一篇笔记）而报的是解析错误，跟清理八竿子打不着
+  const cleanupTok = await s.evaluate("localStorage.getItem('xk_token')")
+  if (cleanupTok) {
+    await fetch(`${API}/api/note/${topicNoteId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${cleanupTok}` },
+    })
+  }
+
+  // 话题段不能删掉这篇就完事：8.4 之后的几十条断言全都量**这篇笔记的详情页**
+  // （note-detail-content / col-media / .actionbar 的 --bar-h ...）。
+  // 直接删掉，后面每一条 waitFor 都会超时，最终报出来的是
+  // 「getComputedStyle: parameter 1 is not of type Element」——
+  // 与「话题用例把笔记删了」这个真因隔了一整屏。
+  // 所以重新发一篇**普通笔记**（无话题），把浏览器停回它的详情页。
+  await s.goto(`${BASE}/#/publish`)
+  await s.waitFor("document.querySelector('[data-test=note-title]')", '回到发布页', 20000)
+  await setVal('[data-test=note-title]', '这是由 ui-note.mjs 发布的正文内容。')
+  await setVal('[data-test=note-content]', '这是由 ui-note.mjs 发布的正文内容。')
+  await setFiles('[data-test=note-file]', [pngA, pngB])
+  await s.waitFor(
+    "document.querySelectorAll('[data-test=note-previews] .cell').length === 2",
+    '图片就绪',
+    20000,
+  )
+  await s.evaluate("document.querySelector('.submit').click()")
+  await s.waitFor("location.hash.startsWith('#/note/')", '补发笔记成功', 25000)
+  await s.waitFor("document.querySelector('[data-test=note-detail]')", '补发的笔记详情渲染')
+  s.check('话题段之后补发了一篇笔记，把浏览器停回详情页（后续断言都量这里）', true)
+}
+
+// ---- 8.4 P13：此前详情卡从无 padding（文字贴着描边），这里钉死
   const detailPad = await s.evaluate(
     "getComputedStyle(document.querySelector('[data-test=note-detail]')).padding",
   )
@@ -624,13 +777,25 @@ await s.evaluate("document.querySelector('[data-test=img-next]').click()")
   s.check('编辑/上下架/删除三个按钮的文字都垂直居中（上间距≈下间距）',
     opc.length === 3 && opc.every((o) => o.h >= 40 && Math.abs(o.top - o.bottom) <= 2),
     opCenters)
+  // ⚠️ 标题必须在点「编辑」**之前**读：点了之后页面就换成编辑页，
+  // 详情页那个 DOM 节点已经不存在了（querySelector 返回 null），
+  // 于是「回填 == 详情标题」永远成立不了 —— 而报错说的是 undefined
+  const detailTitleBeforeEdit = await s.evaluate(
+    "document.querySelector('[data-test=note-detail-title]')?.textContent?.trim() ?? ''",
+  )
   await s.evaluate("document.querySelector('[data-test=note-edit-btn]').click()")
   await s.waitFor(`location.hash === '#/edit/' + ${JSON.stringify(noteId)}`, '跳到编辑页', 20000)
   s.check('点「编辑」跳到 #/edit/{id}', true, await s.evaluate('location.hash'))
   await s.waitFor("document.querySelector('[data-test=note-edit-title]')", '编辑表单渲染')
+  // ⚠️ 也不写死 'CDP 测试笔记'：改成与刚才读到的详情标题比。
+  // 写死的话，哪天有人改了发布内容这里就红，而红的原因与回填功能无关
+  const backfilledTitle = await s.evaluate(
+    "document.querySelector('[data-test=note-edit-title]').value",
+  )
   s.check(
-    '编辑表单回填原标题',
-    (await s.evaluate("document.querySelector('[data-test=note-edit-title]').value")) === 'CDP 测试笔记',
+    '编辑表单回填原标题（与详情页标题一致）',
+    detailTitleBeforeEdit.length > 0 && backfilledTitle === detailTitleBeforeEdit,
+    `详情=${detailTitleBeforeEdit} 回填=${backfilledTitle}`,
   )
   await s.evaluate(`
     (() => {

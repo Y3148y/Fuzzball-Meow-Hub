@@ -1,4 +1,44 @@
 <script setup lang="ts">
+/*
+ * 话题/提及的**预览**解析。
+ *
+ * <p>规则刻意与后端 TopicRelationServiceImpl 保持一致：
+ * 话题 `#([^\\s#@]{1,20})`、提及 `@([a-zA-Z0-9_]{3,32})`。
+ *
+ * <p><b>为什么不写成一个共享包</b>：后端是 Java、前端是 TS，共享要靠
+ * 「后端下发解析规则」或「改语言」，成本远大于收益。
+ * 但**必须在这里写下「改一处要同步另一处」的注释**，否则两边会各自漂移，
+ * 症状是「输入时看见话题、发布后详情页没有」。
+ */
+const TOPIC_RE = /#([^\s#@\uFF0C\u002C\u3002\u002E\u3001\uFF1B\u003B\uFF01\u0021\uFF1F\u003F\uFF1A\u003A]{1,20})/g
+const MENTION_RE = /@([a-zA-Z0-9_]{3,32})/g
+const MAX_TOPICS = 5
+
+function detectTopics(text: string) {
+  const out: string[] = []
+  if (!text) return out
+  TOPIC_RE.lastIndex = 0
+  for (let m = TOPIC_RE.exec(text); m && out.length < MAX_TOPICS; m = TOPIC_RE.exec(text)) {
+    if (!out.includes(m[1])) out.push(m[1])
+  }
+  return out
+}
+
+function detectMentions(text: string) {
+  const out: string[] = []
+  if (!text) return out
+  MENTION_RE.lastIndex = 0
+  for (let m = MENTION_RE.exec(text); m; m = MENTION_RE.exec(text)) {
+    if (!out.includes(m[1])) out.push(m[1])
+  }
+  return out
+}
+
+const pickedTopics = computed(() => [
+  ...detectTopics(title.value),
+  ...detectTopics(content.value),
+].filter((n, i, a) => a.indexOf(n) === i).slice(0, MAX_TOPICS))
+const pickedMentions = computed(() => detectMentions(content.value))
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { showSuccessToast } from 'vant'
@@ -212,6 +252,35 @@ const { markClean } = useUnsavedChanges(
         />
         <span class="count" :class="{ over: contentLen > 2000 }">{{ contentLen }}/2000</span>
       </label>
+
+      <!--
+        输入时的识别预览。**必须有**：否则用户打完 #咖啡 完全不知道
+        「这算不算一个话题」，发出去才发现详情页没有 chip。
+        预览是本地解析的（规则见文件头注释），发布后以后端回传的为准。
+      -->
+      <div
+        v-if="pickedTopics.length || pickedMentions.length"
+        class="pickrow"
+        data-test="note-topics-preview"
+      >
+        <span v-if="pickedTopics.length" class="picklabel">话题</span>
+        <RouterLink
+          v-for="t in pickedTopics"
+          :key="t"
+          class="pickchip"
+          data-test="preview-topic"
+          :to="'/topic/' + encodeURIComponent(t)"
+        >
+          #{{ t }}
+        </RouterLink>
+        <span v-if="pickedMentions.length" class="picklabel">提到</span>
+        <span
+          v-for="m in pickedMentions"
+          :key="m"
+          class="pickchip mention"
+          data-test="preview-mention"
+        >@{{ m }}</span>
+      </div>
     </section>
 
     <section class="card xk-card">
@@ -286,6 +355,36 @@ const { markClean } = useUnsavedChanges(
 </template>
 
 <style scoped>
+/* 识别预览：贴在下���输入框下面，一行 chip。视觉权重刻意压得很低，
+   它是「告诉你系统读到了什么」，不是内容本身 */
+.pickrow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 0;
+}
+
+.picklabel {
+  font-size: var(--xk-fs-12);
+  color: var(--xk-text-3);
+}
+
+.pickchip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 10px;
+  border: var(--xk-stroke-w) solid var(--xk-border);
+  border-radius: 999px;
+  color: var(--xk-amber-text);
+  font-size: var(--xk-fs-12);
+  text-decoration: none;
+}
+
+.pickchip.mention {
+  color: var(--xk-text-2);
+}
 /* 骨架默认在 main.css（别再抄一遍以免压掉全局断点）；
  * 这里是**有意**覆盖：发布页桌面改两栏。 */
 

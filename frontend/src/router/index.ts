@@ -85,6 +85,12 @@ const routes: RouteRecordRaw[] = [
       meta: { title: '粉丝', requiresAuth: true },
     },
     {
+      path: '/blocks',
+      name: 'blocks',
+      component: () => import('@/views/BlockListView.vue'),
+      meta: { title: '黑名单', requiresAuth: true },
+    },
+    {
       // 话题名是中文，所以用 +? 而不是 `：id` 那套数字路由
       path: '/topic/:name+',
       name: 'topic',

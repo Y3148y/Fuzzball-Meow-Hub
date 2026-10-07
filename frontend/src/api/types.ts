@@ -51,6 +51,12 @@ export const ErrorCode = {
   // 50xxx 搜索域
 SEARCH_SERVICE_ERROR: 50001,
   SEARCH_KEYWORD_EMPTY: 50002,
+  // 80xxx 举报与黑名单域（P18）
+  ALREADY_REPORTED: 80003,
+  CANNOT_REPORT_SELF: 80004,
+  ALREADY_BLOCKED: 80005,
+  NOT_BLOCKED_YET: 80006,
+  CANNOT_BLOCK_SELF: 80007,
   // 60xxx 内容审核域（P15）
   CONTENT_SENSITIVE: 60001,
 } as const
@@ -209,6 +215,15 @@ export interface MentionVO {
    * 只给昵称的话整段 @提及 会渲染成纯文本，而**界面看不出任何异常**。
    */
   username?: string
+}
+
+/** 黑名单项 */
+export interface BlockedUserVO {
+  id: SnowflakeId
+  username: string
+  nickname: string
+  avatar: Nullable<string>
+  createTime: string
 }
 
 /** 话题列表项 */

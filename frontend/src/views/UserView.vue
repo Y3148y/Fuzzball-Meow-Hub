@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { showSuccessToast, showToast } from 'vant'
 import { BizError } from '@/api/request'
 import { followUser, getUserFollowStatus, unfollowUser } from '@/api/follow'
+import { blockUser, listReportReasons, reportContent, unblockUser } from '@/api/report'
+import type { ReportReasonVO, ReportTarget } from '@/api/report'
 import { getUserNotes } from '@/api/feed'
 import { ErrorCode } from '@/api/types'
 import type { FollowUserVO, NoteListItemVO } from '@/api/types'
@@ -21,6 +24,74 @@ const loading = ref(true)
 const notFound = ref(false)
 const errorMsg = ref('')
 const following = ref(false)
+
+/* ============ P18 拉黑与举报 ============ */
+
+const blocking = ref(false)
+const blocked = ref(false)
+const reportOpen = ref(false)
+const reasons = ref<ReportReasonVO[]>([])
+/** 举报弹窗里「要举报哪一条」的目标：后端只有「举报某条笔记」这一个入口，
+ *  所以目标列表是本地从这个账号的笔记列表里拼的 */
+const reportTargets = ref<ReportTarget[]>([])
+/** 选好的目标；null 表示还没选内容（此时点原因要提示） */
+const pickedTarget = ref<ReportTarget | null>(null)
+
+async function toggleBlock() {
+  if (blocking.value) return
+  blocking.value = true
+  try {
+    if (blocked.value) {
+      await unblockUser(userId)
+      blocked.value = false
+      showSuccessToast('已解除拉黑')
+    } else {
+      await blockUser(userId)
+      blocked.value = true
+      showSuccessToast('已拉黑')
+      // 拉黑之后这个主页本来就不该再看下去了：留在页面上会让用户以为
+      // 「拉黑只是隐藏了内容」而不是「TA 从我的世界里消失了」
+      router.back()
+    }
+  } catch (e) {
+    showToast(e instanceof BizError ? e.message : '操作失败，请稍后重试')
+  } finally {
+    blocking.value = false
+  }
+}
+
+async function openReport() {
+  reportOpen.value = true
+  reportTargets.value = notes.value.slice(0, 10)
+  pickedTarget.value = null
+  if (!reasons.value.length) {
+    try {
+      reasons.value = await listReportReasons()
+    } catch {
+      reasons.value = []
+      showToast('举报原因加载失败')
+    }
+  }
+}
+
+function pickTarget(_kind: 'note', t: ReportTarget) {
+  pickedTarget.value = t
+  showToast(`已选中：${t.title}`)
+}
+
+async function submitReport(r: ReportReasonVO) {
+  if (!pickedTarget.value) {
+    showToast('请先选择要举报的内容')
+    return
+  }
+  try {
+    await reportContent(1, pickedTarget.value.id, r.code)
+    reportOpen.value = false
+    showSuccessToast('已举报，我们会尽快处理')
+  } catch (e) {
+    showToast(e instanceof BizError ? e.message : '举报失败，请稍后重试')
+  }
+}
 
 const isSelf = computed(() => !!userStore.userInfo && userId === userStore.userInfo.id)
 
@@ -107,6 +178,66 @@ onMounted(load)
           >
             {{ author.followed ? '已关注' : '关注' }}
           </button>
+
+          <!--
+            拉黑。刻意做成**文字链接**而不是第二个实心按钮：
+            关注是社交动作、拉黑是私人屏蔽，两者放在同一个视觉层级上
+            会让人以为「拉黑」是「关注」的一部分。
+          -->
+          <button
+            v-if="!isSelf"
+            class="blockbtn"
+            type="button"
+            :disabled="blocking"
+            data-test="user-block"
+            @click="toggleBlock"
+          >
+            {{ blocked ? '已拉黑' : '拉黑' }}
+          </button>
+
+          <button
+            v-if="!isSelf"
+            class="blockbtn"
+            type="button"
+            data-test="user-report"
+            @click="openReport"
+          >
+            举报
+          </button>
+        </div>
+
+        <!--
+          举报弹窗。原因选项来自后端（固定枚举），**不要写死在前端**：
+          运营随时能加分类，而前端跟着发版才能改。
+        -->
+        <div v-if="reportOpen" class="sheet" data-test="report-sheet">
+          <p class="sheet-title">举报「{{ author.nickname }}」</p>
+          <p v-if="reportTargets.length" class="sheet-sub">选择要举报的内容：</p>
+          <ul v-if="reportTargets.length" class="sheet-list">
+            <li v-for="t in reportTargets" :key="'n' + t.id">
+              <button class="sheet-item" type="button" @click="pickTarget('note', t)">
+                笔记：{{ t.title }}
+              </button>
+            </li>
+          </ul>
+          <p v-if="reportTargets.length === 0" class="sheet-hint" data-test="report-no-target">
+            这个账号还没有可举报的笔记
+          </p>
+          <ul class="sheet-list">
+            <li v-for="r in reasons" :key="r.code">
+              <button
+                class="sheet-item reason"
+                type="button"
+                data-test="report-reason"
+                @click="submitReport(r)"
+              >
+                {{ r.text }}
+              </button>
+            </li>
+          </ul>
+          <button class="sheet-cancel" type="button" data-test="report-cancel" @click="reportOpen = false">
+            取消
+          </button>
         </div>
 
         <p v-if="author.bio" class="bio" data-test="user-bio">{{ author.bio }}</p>
@@ -149,6 +280,93 @@ onMounted(load)
 </template>
 
 <style scoped>
+/*
+ * 拉黑/举报按钮：刻意用文字链接的视觉（无描边、meta 色）。
+ * 理由：关注是社交动作、拉黑是私人屏蔽，两者的情绪完全不同，
+ * 放在同一层级上会让人以为「拉黑」是「关注」的一个选项。
+ */
+.blockbtn {
+  padding: 0 2px;
+  border: 0;
+  background: none;
+  color: var(--xk-text-3);
+  font-size: var(--xk-fs-13);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.blockbtn:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+/* 举报弹窗：底部抽屉（移动端友好），不用居中 modal ——
+   拇指够得到比「看起来正式」重要 */
+.sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 90;
+  max-height: 72vh;
+  overflow-y: auto;
+  padding: 18px 16px calc(18px + env(safe-area-inset-bottom, 0px));
+  border-top: var(--xk-stroke-w) solid var(--xk-stroke);
+  border-radius: var(--xk-radius-blob) var(--xk-radius-blob) 0 0;
+  background: var(--xk-surface);
+  box-shadow: var(--xk-shadow-hard);
+  overscroll-behavior: contain;
+}
+
+.sheet-title {
+  margin: 0 0 4px;
+  font-size: var(--xk-fs-16);
+  font-weight: 700;
+}
+
+.sheet-sub,
+.sheet-hint {
+  margin: 0 0 8px;
+  color: var(--xk-text-3);
+  font-size: var(--xk-fs-13);
+}
+
+.sheet-list {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+}
+
+.sheet-item {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 0;
+  border-bottom: var(--xk-stroke-w) solid var(--xk-border);
+  background: none;
+  color: var(--xk-text);
+  font-size: var(--xk-fs-14);
+  text-align: left;
+  cursor: pointer;
+}
+
+.sheet-item.reason {
+  border: var(--xk-stroke-w) solid var(--xk-border);
+  border-radius: 999px;
+  margin-bottom: 8px;
+  text-align: center;
+}
+
+.sheet-cancel {
+  width: 100%;
+  min-height: 44px;
+  border: var(--xk-stroke-w) solid var(--xk-border);
+  border-radius: 999px;
+  background: var(--xk-surface-2);
+  color: var(--xk-text-2);
+  cursor: pointer;
+}
 /* .page 骨架统一在 main.css，这里重复写会用 0,2,0 特异性压掉全局断点 */
 
 .top {

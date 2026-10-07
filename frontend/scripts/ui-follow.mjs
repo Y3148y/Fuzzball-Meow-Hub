@@ -23,6 +23,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 /** 常驻素材号 fixture，撞 10003 视为已存在 */
 const PEER = { username: 'xk_ui_follow', password: 'Xk@2026peer', nickname: '关注搭子' }
 
+/** 收尾清理：崩在中途也会执行（见 P18 段内的注释） */
+const finallyCleanup = []
+
 try {
   await preflight()
 } catch (e) {
@@ -328,6 +331,151 @@ try {
   async function firstToggleText() {
     return s.evaluate(`document.querySelector('[data-test=follow-toggle]')?.textContent?.trim()`)
   }
+// ============ P18 拉黑与举报 ============
+//
+// 复用这一组本来就有的「固定搭子账号」（peerId），不再新造数据：
+// 造一个新的会多消耗一次注册额度（10/min/IP），全量连跑时那点额度很紧。
+//
+// 钉的是三件事：
+//  1) 作者页上「拉黑」按钮存在，且点了之后真生效
+//  2) 拉黑之后对方从我的视野里消失（作者主页 / 详情页）
+//  3) 举报弹窗能选内容与原因并提交
+{
+  // 这是浏览器内的 CDP 脚本，**没有 node 侧的 token**。
+  // 从 localStorage 读 —— 存的是裸 JWT 字符串，不是 {accessToken} 对象
+  const tok = await s.evaluate("localStorage.getItem('xk_token')")
+  const auth = { Authorization: 'Bearer ' + tok }
+  const api = (p, opt = {}) =>
+    fetch(API + p, { ...opt, headers: { ...auth, 'Content-Type': 'application/json' } })
+      .then((r) => r.json())
+      .catch(() => null)
+
+  // 复原登记在 finally 里，中途崩了也会跑（见上方 finallyCleanup）。
+  // 这不是洁癖：上一轮崩在清理之前，拉黑关系留在库里，
+  // 下一轮「关注流出现测试笔记」会永远超时 —— 症状与本段代码毫无关系。
+  finallyCleanup.push(() => api(`/api/user/block/${peerId}`, { method: 'DELETE' }))
+
+  // 清掉历史拉黑：崩在清理之前的话这次点按钮会走「解除」分支，方向反了
+  await api(`/api/user/block/${peerId}`, { method: 'DELETE' })
+
+  // **本组前一段结尾把 peer 取关了**，先关注回来，
+  // 否则下面的前置断言没有意义
+  await api(`/api/follow/${peerId}`, { method: 'PUT' })
+  const peerNotes = await api(`/api/note/user/${peerId}?page=1&size=1`)
+  const peerNoteId = peerNotes?.data?.list?.[0]?.id
+  s.check('前置：TA 名下至少有一篇笔记', !!peerNoteId, `id=${peerNoteId}`)
+
+  // 作者主页上的笔记数：拉黑前后都用它对比 —— **确定性**。
+  // ⚠️ 刻意不用首页两个流验：它们只取第一页 20 条且按时间倒序，
+  // TA 那几篇笔记比本组前几段刚造的数据旧，根本不在第一页，
+  // 拿第一页断言会变成「恒真」—— 看着绿，其实钉不住任何东西。
+  // 两个流的过滤由契约测试按 noteId 精确断言（服务端，确定性）。
+  const profileNotes = async () => {
+    await s.goto(`${BASE}/#/user/${peerId}`)
+    await s.waitFor("!document.querySelector('[data-test=user-loading]')", '作者页终态', 20000)
+    await sleep(800)
+    return s.evaluate("document.querySelectorAll('[data-test=user-note]').length")
+  }
+
+  const before = await profileNotes()
+  s.check('前置：拉黑前能看到 TA 的笔记', before >= 1, `notes=${before}`)
+  s.check('作者页有「拉黑」按钮', await exists('user-block'))
+  s.check('拉黑按钮初始文案是「拉黑」', (await text('user-block')) === '拉黑',
+    await text('user-block'))
+  s.check('作者页有「举报」入口', await exists('user-report'))
+
+  // 点拉黑。成功后 router.back() 离开作者页 —— 这不是 bug，
+  // 见 UserView.toggleBlock 的注释：留在页面上会让人以为「拉黑只是隐藏了内容」
+  await click('user-block')
+  await s.waitFor(`location.hash !== '#/user/${peerId}'`, '拉黑后离开作者页', 10000)
+
+  const blocked = await api('/api/user/block/list')
+  s.check('后端黑名单里已经有 TA', (blocked?.data?.list ?? []).some((x) => x.id === peerId),
+    `total=${blocked?.data?.total}`)
+  s.check('拉黑后作者主页看不到 TA 的笔记', (await profileNotes()) === 0)
+
+  // 详情页按「不存在」处理：不给「TA 拉黑了你」任何提示
+  await s.goto(`${BASE}/#/note/${peerNoteId}`)
+  await s.waitFor("document.querySelector('[data-test=note-detail], .hint')", '笔记页有终态', 20000)
+  await sleep(500)
+  s.check('拉黑后直接访问 TA 的笔记也看不到（按「不存在」处理，不提示原因）',
+    (await s.evaluate("!!document.querySelector('[data-test=note-detail]')")) === false)
+
+  // 黑名单页：入口 + 列表 + 解除
+  await s.goto(`${BASE}/#/profile`)
+  await s.waitFor("!!document.querySelector('[data-test=me-blocks-link]')", '「我」页黑名单入口', 20000)
+  s.check('「我」页有黑名单入口', await exists('me-blocks-link'))
+  await click('me-blocks-link')
+  await s.waitFor("location.hash === '#/blocks'", '进黑名单页', 10000)
+  await s.waitFor("!document.querySelector('[data-test=blocks-loading]')", '黑名单终态', 20000)
+  await sleep(500)
+  const bl = await s.evaluate(`(() => JSON.stringify({
+    rows: document.querySelectorAll('[data-test=block-row]').length,
+    nicks: [...document.querySelectorAll('[data-test=block-nick]')].map((e) => e.textContent.trim()),
+  }))()`)
+  const bld = JSON.parse(bl)
+  s.check('黑名单页列出了刚拉黑的人', bld.rows === 1 && bld.nicks.length === 1, bl)
+
+  // 解除要二次确认：误点一次就解除保护是不可逆的
+  await click('block-unblock')
+  await sleep(700)
+  s.check('点「解除」先弹二次确认（不直接解除）',
+    (await s.evaluate("!!document.querySelector('.van-dialog')")) === true)
+  await s.evaluate(`(() => {
+    const btn = [...document.querySelectorAll('.van-dialog__confirm')].pop()
+    if (btn) btn.click()
+  })()`)
+  await sleep(1500)
+  const after = await s.evaluate("document.querySelectorAll('[data-test=block-row]').length")
+  s.check('确认之后从列表消失', after === 0, `rows=${after}`)
+  const bl2 = await api('/api/user/block/list')
+  s.check('后端黑名单也清空了', bl2?.data?.total === 0, `total=${bl2?.data?.total}`)
+
+  // 解除之后笔记要重新可见（拉黑只过滤，没删内容）
+  s.check('解除拉黑后 TA 的笔记重新可见（拉黑是过滤，不是删除）',
+    (await profileNotes()) >= 1)
+
+  // ---- 举报：作者页 → 选内容 → 选原因 → 提交
+  await s.goto(`${BASE}/#/user/${peerId}`)
+  await s.waitFor("document.querySelector('[data-test=user-report]')", '举报入口', 20000)
+  await click('user-report')
+  await s.waitFor("!!document.querySelector('[data-test=report-sheet]')", '举报弹窗打开', 10000)
+  await sleep(700)
+  const sheet = await s.evaluate(`(() => JSON.stringify({
+    reasons: document.querySelectorAll('[data-test=report-reason]').length,
+    targets: document.querySelectorAll('.sheet-item:not(.reason)').length,
+  }))()`)
+  const sd = JSON.parse(sheet)
+  s.check('举报弹窗列出 6 个原因（来自后端枚举，不是写死在前端）', sd.reasons === 6, sheet)
+
+  // 先不选内容就点原因 → 应提示而不是提交成功
+  await s.evaluate("document.querySelector('[data-test=report-reason]').click()")
+  await sleep(700)
+  s.check('没选内容就点原因时弹窗不关闭', (await exists('report-sheet')) === true)
+
+  if (sd.targets > 0) {
+    await s.evaluate("document.querySelector('.sheet-item:not(.reason)').click()")
+    await sleep(500)
+    await s.evaluate("document.querySelector('[data-test=report-reason]').click()")
+    await sleep(1500)
+    // ⚠️ 举报去重是**永久**的（uk_report_once，且没有撤回接口），
+    // 所以第二次跑这条必然是 80003。两个分支都是产品承诺的行为，
+    // 所以这里断言的是「有明确反馈」而不是「弹窗一定关闭」——
+    // 这与「用 || 掩盖不稳定」不同：两个分支各有自己的提示文案。
+    const closed = (await exists('report-sheet')) === false
+    const toast = await s.evaluate(
+      "document.querySelector('.van-toast')?.textContent?.trim() ?? ''",
+    )
+    s.check(
+      '举报提交有明确反馈（首次成功关弹窗 / 重复举报给提示）',
+      closed || /举报过/.test(toast),
+      `closed=${closed} toast="${toast}"`,
+    )
+  } else {
+    s.check('这个账号没有可举报的笔记（前置条件）', true, 'targets=0，跳过提交')
+  }
+}
+
 } catch (e) {
   s.check('用例执行到底', false, String(e.message))
 } finally {

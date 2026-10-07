@@ -55,6 +55,7 @@ public class NoteQueryServiceImpl implements NoteQueryService {
     private final UserFollowQueryService userFollowQueryService;
     private final NoteIdBloomFilter bloomFilter;
     private final NoteCounterStore counterStore;
+    private final com.xiaoku.module.user.service.UserBlockService userBlockService;
     private final TopicRelationService topicRelationService;
 
     /**
@@ -132,6 +133,11 @@ public class NoteQueryServiceImpl implements NoteQueryService {
 
     @Override
     public PageVO<NoteListItemVO> pageUserNotes(Long userId, int page, int size) {
+        // P18 block 过滤：拉黑后对方的主页不该出现在我的视野里（笔记与统计都算）
+        Long myId = UserContextHolder.requireUserId();
+        if (!myId.equals(userId) && userBlockService.hiddenUserIds(myId).contains(userId)) {
+            return PageVO.of(List.of(), 0, page, size);
+        }
         Long currentUserId = UserContextHolder.requireUserId();
 
         // 目标不存在（含逻辑删除）直接 10001，否则「TA 没有笔记」和「TA 不存在」无法区分
@@ -207,6 +213,14 @@ public class NoteQueryServiceImpl implements NoteQueryService {
     private NoteEntity requireVisible(Long noteId, Long currentUserId) {
         NoteEntity note = noteMapper.selectById(noteId);
         if (note == null) {
+            throw new BizException(ErrorCodeEnum.NOTE_NOT_FOUND);
+        }
+        // P18 黑名单：被拉黑（或已拉黑对方）时，这篇笔记按「不存在」处理。
+        // **不给「他拉黑了你」单独的提示**：那等于把对方的操作暴露给被操作的人，
+        // 会把普通屏蔽变成社交对抗，也会让人去打探「谁拉黑了我」。
+        // 作者本人不受这条影响（自己不会拉黑自己，且要留编辑入口）
+        if (!currentUserId.equals(note.getUserId())
+                && userBlockService.hiddenUserIds(currentUserId).contains(note.getUserId())) {
             throw new BizException(ErrorCodeEnum.NOTE_NOT_FOUND);
         }
         boolean isAuthor = currentUserId.equals(note.getUserId());

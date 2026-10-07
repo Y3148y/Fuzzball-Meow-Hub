@@ -30,7 +30,15 @@ public enum NotificationType {
      * 但入口不同（一个在评论区、一个在正文里 @ 我），通知页的文案与
      * 「去这条笔记」的动作都一样，分开只是为了将来能分别统计。
      */
-    MENTION(6, "在笔记里提到了我");
+    MENTION(6, "在笔记里提到了我"),
+
+    /**
+     * P18 内容被举报：{@code targetId} = noteId 或 commentId（由 noteId 是否为空区分）
+     *
+     * <p><b>刻意不告诉作者「是谁举报的」</b>：那等于让举报人暴露，
+     * 从此没人敢举报。通知只说「你的内容被举报」，不给举报人身份。
+     */
+    REPORTED(7, "你的内容被举报");
 
     private final int code;
     private final String text;

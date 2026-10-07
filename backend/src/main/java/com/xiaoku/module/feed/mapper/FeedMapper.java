@@ -28,26 +28,40 @@ import java.util.List;
 public interface FeedMapper {
 
     @Select("""
+            <script>
             SELECT COUNT(*)
             FROM note n
             INNER JOIN user_follow f
                     ON n.user_id = f.follow_id AND f.user_id = #{userId} AND f.status = 1
             WHERE n.status = 1
+                <if test="hiddenIds != null and !hiddenIds.isEmpty()">
+                    AND n.user_id NOT IN
+                    <foreach collection="hiddenIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+                </if>
+            </script>
             """)
-    long countFollowFeed(@Param("userId") Long userId);
+    long countFollowFeed(@Param("userId") Long userId,
+                           @Param("hiddenIds") java.util.Collection<Long> hiddenIds);
 
     @Select("""
+            <script>
             SELECT n.*
             FROM note n
             INNER JOIN user_follow f
                     ON n.user_id = f.follow_id AND f.user_id = #{userId} AND f.status = 1
             WHERE n.status = 1
+              <if test="hiddenIds != null and !hiddenIds.isEmpty()">
+                  AND n.user_id NOT IN
+                  <foreach collection="hiddenIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+              </if>
             ORDER BY n.create_time DESC, n.id DESC
             LIMIT #{size} OFFSET #{offset}
+            </script>
             """)
     List<NoteEntity> pageFollowFeed(@Param("userId") Long userId,
                                     @Param("offset") long offset,
-                                    @Param("size") int size);
+                                    @Param("size") int size,
+                                    @Param("hiddenIds") java.util.Collection<Long> hiddenIds);
 
     /* ==================== 发现流 ==================== */
 
@@ -58,11 +72,18 @@ public interface FeedMapper {
      * 「没关注任何人」的新用户也能看到内容 —— 这正是补这个流的目的。
      */
     @Select("""
+            <script>
             SELECT COUNT(*)
             FROM note n
-            WHERE n.status = 1 AND n.user_id <> #{userId}
+            WHERE n.status = 1
+                <if test="hiddenIds != null and !hiddenIds.isEmpty()">
+                    AND n.user_id NOT IN
+                    <foreach collection="hiddenIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+                </if> AND n.user_id != #{userId}
+            </script>
             """)
-    long countDiscover(@Param("userId") Long userId);
+    long countDiscover(@Param("userId") Long userId,
+                         @Param("hiddenIds") java.util.Collection<Long> hiddenIds);
 
     /**
      * 发现流排序，三级依次比较：
@@ -78,17 +99,24 @@ public interface FeedMapper {
      * 为了排序去读 3 个 ZSet 的全部成员，代价远大于排序本身。
      */
     @Select("""
+            <script>
             SELECT n.*
             FROM note n
-            WHERE n.status = 1 AND n.user_id <> #{userId}
+            WHERE n.status = 1 AND n.user_id != #{userId}
+              <if test="hiddenIds != null and !hiddenIds.isEmpty()">
+                  AND n.user_id NOT IN
+                  <foreach collection="hiddenIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+              </if>
             ORDER BY (EXISTS (SELECT 1 FROM user_follow f
                              WHERE f.user_id = #{userId} AND f.follow_id = n.user_id AND f.status = 1)) DESC,
                      (n.like_count + n.collect_count + n.comment_count) DESC,
                      n.create_time DESC,
                      n.id DESC
             LIMIT #{size} OFFSET #{offset}
+            </script>
             """)
     List<NoteEntity> pageDiscover(@Param("userId") Long userId,
                                   @Param("offset") long offset,
-                                  @Param("size") int size);
+                                  @Param("size") int size,
+                                  @Param("hiddenIds") java.util.Collection<Long> hiddenIds);
 }

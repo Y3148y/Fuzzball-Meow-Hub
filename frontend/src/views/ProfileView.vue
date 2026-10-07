@@ -279,6 +279,7 @@ class="xk-input area"
         <span>通知</span>
         <span v-if="unread > 0" class="notify-badge" data-test="me-notify-unread">{{ unread }}</span>
       </RouterLink>
+        <RouterLink class="link" to="/blocks" data-test="me-blocks-link">黑名单</RouterLink>
       <RouterLink class="link" to="/collections" data-test="me-collections-link">我的收藏</RouterLink>
       <RouterLink class="link" to="/publish" data-test="go-publish">发布新笔记</RouterLink>
       <button class="link" type="button" data-test="me-logout" @click="logout">退出登录</button>

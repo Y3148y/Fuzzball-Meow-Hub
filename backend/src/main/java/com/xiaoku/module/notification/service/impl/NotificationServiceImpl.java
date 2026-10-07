@@ -211,6 +211,19 @@ public class NotificationServiceImpl implements NotificationService {
         push(receiverId, actorId, NotificationType.MENTION, noteId, noteId, excerpt(content));
     }
 
+    @Override
+    public void notifyReported(Long receiverId, Long actorId, Long targetId,
+                               Integer targetType, String reasonText) {
+        // 拉黑关系不在这条通知里体现：被拉黑的人不该收到「XX 举报了你」。
+        // 内容写死「某条内容」而不是具体标题 —— 通知列表要显示正文摘要，
+        // 而这里刻意不给举报人身份（否则举报人等于暴露）
+        String text = (targetType != null && targetType == 2
+                ? "你的一条评论被举报（" + reasonText + "），请留意内容规范"
+                : "你的笔记被举报（" + reasonText + "），请留意内容规范");
+        // targetId 传 noteId；评论举报传 0，通知页「去这条笔记」会因此不显示跳转
+        push(receiverId, actorId, NotificationType.REPORTED, targetId, targetId, text);
+    }
+
     /** 通知正文摘要：单行、限长，超出用省略号 */
     private static String excerpt(String content) {
         if (content == null) {

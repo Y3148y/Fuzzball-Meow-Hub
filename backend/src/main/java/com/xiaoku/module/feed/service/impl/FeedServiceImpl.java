@@ -5,6 +5,7 @@ import com.xiaoku.common.result.PageVO;
 import com.xiaoku.module.feed.mapper.FeedMapper;
 import com.xiaoku.module.feed.service.FeedService;
 import com.xiaoku.module.follow.service.UserFollowQueryService;
+import com.xiaoku.module.user.service.UserBlockService;
 import com.xiaoku.module.note.converter.NoteConverter;
 import com.xiaoku.module.note.entity.NoteEntity;
 import com.xiaoku.module.note.support.NoteCounterStore;
@@ -28,23 +29,29 @@ public class FeedServiceImpl implements FeedService {
     private final UserQueryService userQueryService;
     private final NoteCounterStore counterStore;
     private final UserFollowQueryService userFollowQueryService;
+    private final UserBlockService userBlockService;
 
     @Override
     public PageVO<NoteListItemVO> followFeed(int page, int size) {
         Long userId = UserContextHolder.requireUserId();
 
-        long total = feedMapper.countFollowFeed(userId);
+        // P18 黑名单：被拉黑作者的笔记不进我的两个流。
+        // 过滤在 SQL 里做而不是查回来再筛 —— 否则 total 会和 list 对不上，
+        // 分页会出现「明明 total=20 却只显示 18 条」
+        Set<Long> hidden = userBlockService.hiddenUserIds(userId);
+        long total = feedMapper.countFollowFeed(userId, hidden);
         long offset = (long) (page - 1) * size;
-        return assemble(feedMapper.pageFollowFeed(userId, offset, size), total, page, size, userId);
+        return assemble(feedMapper.pageFollowFeed(userId, offset, size, hidden), total, page, size, userId);
     }
 
     @Override
     public PageVO<NoteListItemVO> discoverFeed(int page, int size) {
         Long userId = UserContextHolder.requireUserId();
 
-        long total = feedMapper.countDiscover(userId);
+        Set<Long> hidden = userBlockService.hiddenUserIds(userId);
+        long total = feedMapper.countDiscover(userId, hidden);
         long offset = (long) (page - 1) * size;
-        return assemble(feedMapper.pageDiscover(userId, offset, size), total, page, size, userId);
+        return assemble(feedMapper.pageDiscover(userId, offset, size, hidden), total, page, size, userId);
     }
 
     /**

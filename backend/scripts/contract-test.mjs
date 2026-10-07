@@ -2064,6 +2064,190 @@ async function main() {
     const { json: anon } = await get('/api/topic/list')
     codeIs('未登录访问热门话题返回 10005', anon, 10005)
   }
+// ---- 18.0 P18 举报与黑名单：POST /api/report | /user/block/{id}
+  //
+  // 这一段钉两件性质完全不同的事，所以放一起：
+  //   举报 = **公共治理**（要让运营知道，所以作者会收到通知）
+  //   拉黑 = **私人屏蔽**（不通知对方，只改变「我」的视野）
+  // 混在一起写会让人以为它们是一套机制的两面。
+  {
+    // 自己建一篇，交给另一个账号去举报 —— 被举报者必须是别人
+    const { json: rp } = await post('/api/note/publish', {
+      token: auth,
+      body: { type: 1, title: `被举报的笔记 ${stamp}`, content: '用来测举报', imageUrls: [imageUrl] },
+    })
+    codeIs('被举报的笔记发布成功', rp, 0)
+    const rpNoteId = rp?.data?.id
+
+    // ---- 举报
+    const reasons = await get('/api/report/reasons', { token: actorAuth })
+    codeIs('举报原因列表可查', reasons.json, 0)
+    check('举报原因是固定 6 项（前端据此渲染成可点的一排选项）',
+      Array.isArray(reasons.json?.data) && reasons.json.data.length === 6
+        && reasons.json.data.every((r) => typeof r.code === 'number' && typeof r.text === 'string'),
+      JSON.stringify(reasons.json?.data))
+
+    const { json: rep } = await post('/api/report', {
+      token: actorAuth,
+      body: { targetType: 1, targetId: rpNoteId, reasonCode: 1, detail: '这是广告' },
+    })
+    codeIs('举报成功', rep, 0)
+    check('举报返回新举报 ID（字符串，雪花 ID 不能变成数字）',
+      typeof rep.data === 'string' && /^\d+$/.test(rep.data), `id=${rep.data}`)
+
+    const { json: rep2 } = await post('/api/report', {
+      token: actorAuth,
+      body: { targetType: 1, targetId: rpNoteId, reasonCode: 2 },
+    })
+    codeIs('同一个人重复举报同一条返回 80003', rep2, 80003)
+    const { json: self } = await post('/api/report', {
+      token: auth,
+      body: { targetType: 1, targetId: rpNoteId, reasonCode: 1 },
+    })
+    codeIs('举报自己的内容返回 80004', self, 80004)
+    const { json: ghost } = await post('/api/report', {
+      token: actorAuth,
+      body: { targetType: 1, targetId: 999999999999, reasonCode: 1 },
+    })
+    codeIs('举报不存在的笔记返回 20001', ghost, 20001)
+    const { json: badCode } = await post('/api/report', {
+      token: actorAuth,
+      body: { targetType: 1, targetId: rpNoteId, reasonCode: 99 },
+    })
+    codeIs('非法举报原因被 DTO 拦下（100001）', badCode, 100001)
+    const { json: noTarget } = await post('/api/report', {
+      token: actorAuth,
+      body: { reasonCode: 1 },
+    })
+    codeIs('缺少 targetId 被拦下（100001）', noTarget, 100001)
+    const { json: longDetail } = await post('/api/report', {
+      token: actorAuth,
+      body: { targetType: 1, targetId: rpNoteId, reasonCode: 6, detail: 'x'.repeat(300) },
+    })
+    // 300 字被 @Size(max=200) 拦在 DTO 层。注意这里**不是** 80003：
+    // 那条路径要先过 DTO 校验才到业务去重，所以超长字��是参数错误。
+    // 写成期望 80003 就会红 —— 「先入为先」不是「先业务后参数」
+    codeIs('补充说明超 200 字返回 100001（DTO 层，不是业务去重）', longDetail, 100001)
+    const { json: anonRep } = await post('/api/report', {
+      body: { targetType: 1, targetId: rpNoteId, reasonCode: 1 },
+    })
+    codeIs('未登录举报返回 10005', anonRep, 10005)
+
+    // 作者会收到通知，但**不告诉他是��举报的**
+    const { json: nlist } = await get('/api/notification/list?page=1&size=50', { token: auth })
+    const reported = (nlist?.data?.list ?? []).find((x) => x.type === 7 && x.noteId === rpNoteId)
+    check('作者收到「内容被举报」通知（类型 7）', !!reported, JSON.stringify((nlist?.data?.list ?? []).slice(0, 3)))
+    if (reported) {
+      check('通知文案不回显举报人身份（否则举报人等于暴露，从此没人敢举报）',
+        !reported.content?.includes('ct'), reported.content)
+    }
+
+    // 举报**不**改变内容状态：处置是运营的权限
+    const { json: still } = await get(`/api/note/${rpNoteId}`, { token: auth })
+    codeIs('举报之后笔记仍然可读（举报不自动处置）', still, 0)
+    eq('举报之后笔记没有被下架', still?.data?.status, 1)
+
+    // ---- 黑名单
+    const { json: blk } = await post(`/api/user/block/${userId}`, { token: actorAuth })
+    codeIs('拉黑成功', blk, 0)
+    const { json: blk2 } = await post(`/api/user/block/${userId}`, { token: actorAuth })
+    codeIs('重复拉黑返回 80005', blk2, 80005)
+    const { json: me } = await get('/api/user/me', { token: actorAuth })
+    const { json: blkSelf } = await post(`/api/user/block/${me.data.id}`, { token: actorAuth })
+    codeIs('拉黑自己返回 80007', blkSelf, 80007)
+
+    const { json: bl } = await get('/api/user/block/list', { token: actorAuth })
+    codeIs('黑名单列表可查', bl, 0)
+    eq('黑名单里有 1 条', bl?.data?.total, 1)
+    check('黑名单项带昵称与拉黑时间',
+      typeof bl?.data?.list?.[0]?.nickname === 'string' && bl?.data?.list?.[0]?.createTime,
+      JSON.stringify(bl?.data?.list?.[0]))
+
+    // 拉黑后的可见性：详情、作者主页、两个流全都要变。
+    // 每一处都是独立的读取入口，漏一处就等于「拉黑只生效了一半」
+    const { json: hidden } = await get(`/api/note/${rpNoteId}`, { token: actorAuth })
+    codeIs('拉黑后看不到对方的笔记详情（按「不存在」处理）', hidden, 20001)
+    const { json: hiddenProfile } = await get(`/api/note/user/${userId}?page=1&size=20`, { token: actorAuth })
+    eq('拉黑后对方的主页笔记数为 0', hiddenProfile?.data?.total, 0)
+    const { json: disc } = await get('/api/feed/discover?page=1&size=50', { token: actorAuth })
+    check('拉黑后发现流里没有对方的笔记',
+      !(disc?.data?.list ?? []).some((n) => n.id === rpNoteId),
+      `ids=${(disc?.data?.list ?? []).map((n) => n.id).join(',')}`)
+    const { json: fol } = await get('/api/feed/follow?page=1&size=50', { token: actorAuth })
+    check('拉黑后关注流里也没有对方的笔记',
+      !(fol?.data?.list ?? []).some((n) => n.id === rpNoteId),
+      `ids=${(fol?.data?.list ?? []).map((n) => n.id).join(',')}`)
+    const { json: selfStill } = await get(`/api/note/${rpNoteId}`, { token: auth })
+    codeIs('被拉黑的一方自己仍然能看到自己的笔记（否则会失去编辑入口）', selfStill, 0)
+
+    const { json: unblk } = await call('DELETE', `/api/user/block/${userId}`, { token: actorAuth })
+    codeIs('取消拉黑成功', unblk, 0)
+    const { json: unblk2 } = await call('DELETE', `/api/user/block/${userId}`, { token: actorAuth })
+    codeIs('没拉黑却取消返回 80006（不静默成功，否则前端会把按钮状态改掉）', unblk2, 80006)
+    const { json: back } = await get(`/api/note/${rpNoteId}`, { token: actorAuth })
+    codeIs('取消拉黑后又能看到', back, 0)
+
+    // ---- 双向：对方拉黑我，我这边也不该再看见
+    // 做成单向的话，「拉黑」就只是自己藏别人，而藏不住别人，
+    // 与现实里的直觉相反
+    const { json: rev } = await post(`/api/user/block/${me.data.id}`, { token: auth })
+    codeIs('被拉黑的一方反向拉黑也成功', rev, 0)
+    const { json: revHide } = await get(`/api/feed/discover?page=1&size=50`, { token: auth })
+    check('对方拉黑我之后，我的发现流也过滤掉了 TA',
+      !(revHide?.data?.list ?? []).some((n) => n.id === rpNoteId),
+      `ids=${(revHide?.data?.list ?? []).map((n) => n.id).join(',')}`)
+    await call('DELETE', `/api/user/block/${me.data.id}`, { token: auth })
+
+    await del(`/api/note/${rpNoteId}`, { token: auth })
+  }
+
+// ---- 18.1 P18 举报：POST /api/report | GET /api/report/reasons
+  //
+  // 契约层再钉一遍「通知不暴露举报人」与「举报不自动处置」，
+  // 以及去重是**永久**的（没有撤回接口）—— 这三条是产品承诺，
+  // 值得在服务端也钉住而不只是靠 UI 表现。
+  {
+    const { json: rs } = await get('/api/report/reasons', { token: actorAuth })
+    codeIs('举报原因列表可查（固定 6 项，前端据此渲染弹窗）', rs, 0)
+    eq('举报原因恰好 6 项', rs?.data?.length, 6)
+    check('每项都有 code 与文案（前端不能写死）',
+      (rs?.data ?? []).every((r) => Number.isInteger(r.code) && typeof r.text === 'string'),
+      JSON.stringify(rs?.data))
+
+    // 举报一条 actorAuth 的笔记（用 17.8 段自建的 listNoteId？它已被删，
+    // 这里自己发一篇，避免依赖别的段）
+    const { json: victim } = await post('/api/note/publish', {
+      token: actorAuth,
+      body: { type: 1, title: `被举报的笔记 ${stamp}`, content: '举报用例', imageUrls: [imageUrl] },
+    })
+    codeIs('被举报的笔记发布成功', victim, 0)
+    const victimId = victim?.data?.id
+
+    const { json: rp } = await post('/api/report', {
+      token: auth,
+      body: { targetType: 1, targetId: victimId, reasonCode: 1 },
+    })
+    codeIs('举报成功', rp, 0)
+    const { json: again } = await post('/api/report', {
+      token: auth,
+      body: { targetType: 1, targetId: victimId, reasonCode: 3 },
+    })
+    codeIs('重复举报返回 80003（去重是永久的，没有撤回接口）', again, 80003)
+    // 换个人举报同一条 —— 应该成功：去重维度是「谁举报的」
+    const { json: other } = await post('/api/report', {
+      token: rlAuth,
+      body: { targetType: 1, targetId: victimId, reasonCode: 3 },
+    })
+    codeIs('换个举报人能再报一次（去重维度含 reporter）', other, 0)
+
+    // 举报**不改变内容状态**：处置是运营的权限，不是举报这个动作的副作用
+    const { json: still } = await get(`/api/note/${victimId}`, { token: actorAuth })
+    codeIs('举报之后内容仍然可读（不自动下架）', still, 0)
+    eq('举报之后 status 仍是 1（已发布）', still?.data?.status, 1)
+
+    await del(`/api/note/${victimId}`, { token: actorAuth })
+  }
+
   // ---- 18. 不支持的方法
   {
     const { json } = await call('DELETE', '/api/user/login')

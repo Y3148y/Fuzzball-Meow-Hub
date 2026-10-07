@@ -64,4 +64,13 @@ public interface NotificationService {
      * @param content 提及我的那句原文，用于通知列表展示
      */
     void notifyMention(Long receiverId, Long actorId, Long noteId, String content);
+
+    /**
+     * 内容被举报（类型 7）
+     *
+     * @param targetType 1笔记 2评论
+     * @param reasonText 举报原因文案，用于通知正文
+     */
+    void notifyReported(Long receiverId, Long actorId, Long targetId,
+                        Integer targetType, String reasonText);
 }

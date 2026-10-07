@@ -295,3 +295,58 @@ CREATE TABLE `topic`
 ) ENGINE = InnoDB
     DEFAULT CHARSET = utf8mb4
     COLLATE = utf8mb4_general_ci COMMENT ='话题';
+
+-- ---------------------------------------------------------------------
+--  举报与黑名单
+--
+--  有了内容审核词表之后为什么还要这两张表：**审核只能在发布那一刻拦一次**，
+--  词表也可能漏。真实社区的兜底是「用户举报 + 人工处置」，没有举报入口，
+--  违规内容只能靠运营每天翻数据库捞。
+--
+--  两个刻意的不对称：
+--
+--  1) 举报是**对外的公开动作**（让作者知道被举报了），去重维度是
+--     (reporter_id, target_type, target_id)，同一个人对同一条只留一条 ——
+--     否则一个人能刷几千条举报把运营后台淹掉。
+--
+--  2) 黑名单是**私人的**（不通知对方），去重维度是 (user_id, blocked_id)。
+--     拉黑只影响「我」的视野：首页两个流都要过滤掉被拉黑作者的笔记，
+--     详情页按「不存在」处理，不泄露「他被拉黑了」这件事。
+-- ---------------------------------------------------------------------
+DROP TABLE IF EXISTS `report`;
+CREATE TABLE `report`
+(
+    `id`          BIGINT UNSIGNED NOT NULL COMMENT '雪花ID',
+    `reporter_id` BIGINT UNSIGNED NOT NULL COMMENT '举报人',
+    `target_type` TINYINT         NOT NULL COMMENT '1笔记 2评论',
+    `target_id`   BIGINT UNSIGNED NOT NULL COMMENT '被举报对象ID',
+    `reason_code` TINYINT         NOT NULL COMMENT '1垃圾广告 2色情低俗 3违法违规 4侵权 5恶意攻击 6其他',
+    `detail`      VARCHAR(200)    DEFAULT NULL COMMENT '补充说明，截断到 200 字',
+    `status`      TINYINT         NOT NULL DEFAULT 0 COMMENT '0待处理 1已受理 2已驳回',
+    `handle_note` VARCHAR(200)    DEFAULT NULL COMMENT '处置备注（运营回填）',
+    `create_time` DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `update_time` DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    -- 同一个人对同一个对象只能举报一次。这不只是为了去重：
+    -- 没有它，运营后台会被一个人的重复举报刷屏，而真正的举报淹在里面
+    UNIQUE KEY `uk_report_once` (`reporter_id`, `target_type`, `target_id`),
+    KEY `idx_target` (`target_type`, `target_id`),
+    KEY `idx_status_time` (`status`, `create_time`)
+) ENGINE = InnoDB
+    DEFAULT CHARSET = utf8mb4
+    COLLATE = utf8mb4_general_ci COMMENT ='举报';
+
+DROP TABLE IF EXISTS `user_block`;
+CREATE TABLE `user_block`
+(
+    `id`          BIGINT UNSIGNED NOT NULL COMMENT '雪花ID',
+    `user_id`     BIGINT UNSIGNED NOT NULL COMMENT '拉黑的人',
+    `blocked_id`  BIGINT UNSIGNED NOT NULL COMMENT '被拉黑的人',
+    `create_time` DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    -- 物理删除 + 唯一索引当裁判，与 user_follow 同一套做法
+    UNIQUE KEY `uk_block_once` (`user_id`, `blocked_id`),
+    KEY `idx_blocked` (`blocked_id`)
+) ENGINE = InnoDB
+    DEFAULT CHARSET = utf8mb4
+    COLLATE = utf8mb4_general_ci COMMENT ='黑名单';

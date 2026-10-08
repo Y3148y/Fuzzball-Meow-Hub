@@ -68,6 +68,16 @@ public class UserVO implements Serializable {
     @Schema(description = "获赞总数")
     private Integer likeReceivedCount;
 
+    /**
+     * 角色：0 普通用户 1 管理员（P20）。
+     *
+     * <p>前端据此决定「我的」页要不要渲染运营后台入口。
+     * <b>这只是一层界面提示，不是安全边界</b> —— 真权限在 AdminInterceptor。
+     * 前端不判也能用（点了会被后端 90001 拦），判了只是省一次无谓请求。
+     */
+    @Schema(description = "角色 0 普通用户 1 管理员")
+    private Integer role;
+
     @Schema(description = "注册时间")
     private LocalDateTime createTime;
 }

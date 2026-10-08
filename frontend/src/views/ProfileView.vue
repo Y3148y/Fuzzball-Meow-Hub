@@ -280,6 +280,22 @@ class="xk-input area"
         <span v-if="unread > 0" class="notify-badge" data-test="me-notify-unread">{{ unread }}</span>
       </RouterLink>
         <RouterLink class="link" to="/blocks" data-test="me-blocks-link">黑名单</RouterLink>
+        <!--
+          运营后台入口（P20）。按 role 隐藏**只是界面提示，不是权限** ——
+          改 localStorage 就能让这一行出现，真权限在后端 AdminInterceptor。
+          之所以还是加这个判断：让 99% 的普通用户在「我的」里看不到运营入口，
+          比让每个人都看到一个点进去就报错的链接要好。
+          判定写成 === 1 而不是真值判断：后端 role 可能是 undefined（老账号/被截断），
+          那时必须当普通用户处理。
+        -->
+        <RouterLink
+          v-if="userStore.userInfo?.role === 1"
+          class="link admin"
+          to="/admin"
+          data-test="me-admin-link"
+        >
+          运营后台
+        </RouterLink>
       <RouterLink class="link" to="/collections" data-test="me-collections-link">我的收藏</RouterLink>
       <RouterLink class="link" to="/publish" data-test="go-publish">发布新笔记</RouterLink>
       <button class="link" type="button" data-test="me-logout" @click="logout">退出登录</button>

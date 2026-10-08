@@ -1,4 +1,4 @@
-/**
+﻿/**
  * P2 用户模块 —— HTTP 契约测试。
  *
  * 为什么不用 JUnit / RestAssured / Testcontainers：
@@ -2125,7 +2125,7 @@ async function main() {
       body: { targetType: 1, targetId: rpNoteId, reasonCode: 6, detail: 'x'.repeat(300) },
     })
     // 300 字被 @Size(max=200) 拦在 DTO 层。注意这里**不是** 80003：
-    // 那条路径要先过 DTO 校验才到业务去重，所以超长字��是参数错误。
+    // 那条路径要先过 DTO 校验才到业务去重，所以超长字是参数错误。
     // 写成期望 80003 就会红 —— 「先入为先」不是「先业务后参数」
     codeIs('补充说明超 200 字返回 100001（DTO 层，不是业务去重）', longDetail, 100001)
     const { json: anonRep } = await post('/api/report', {
@@ -2133,7 +2133,7 @@ async function main() {
     })
     codeIs('未登录举报返回 10005', anonRep, 10005)
 
-    // 作者会收到通知，但**不告诉他是��举报的**
+    // 作者会收到通知，但**不告诉他是举报的**
     const { json: nlist } = await get('/api/notification/list?page=1&size=50', { token: auth })
     const reported = (nlist?.data?.list ?? []).find((x) => x.type === 7 && x.noteId === rpNoteId)
     check('作者收到「内容被举报」通知（类型 7）', !!reported, JSON.stringify((nlist?.data?.list ?? []).slice(0, 3)))
@@ -2326,7 +2326,205 @@ async function main() {
     eq('删除后详情返回 20001', (await get(`/api/note/${note?.data?.id}`, { token: auth })).json?.code, 20001)
   }
 
-  // ---- 汇总  // ---- 汇总
+/* ================================================================
+   * 20.1 运营管理后台（P20）
+   *
+   * 身份：**不新建管理员**。role 是只能从库里改的列，而契约测试只走 HTTP、
+   * 没有任何提权入口 —— 所以它依赖两个常驻管理员 fixture
+   * （xk_ui_admin / xk_ui_admin2，口令 Xk@2026peer）。
+   * 下面第一条断言就是检查它们还在：fixture 没了会立刻报出来，
+   * 而不是让后面几十条集体假红成「鉴权坏了」。
+   *
+   * 本段只注册 **2 个**新账号（register 是 10/min/IP，这个文件前面已用掉
+   * 不少额度）。第三个身份是 p20a 自己 —— 见下面「评论作者」那段注释，
+   * 那里踩过一个坑：把评论发给谁，就决定了「禁用作者」禁的是谁。
+   * ================================================================ */
+  {
+    const ADM = 'xk_ui_admin'
+    const ADM2 = 'xk_ui_admin2'
+    const ADMP = 'Xk@2026peer'
+    const admLogin = await post('/api/user/login', { body: { username: ADM, password: ADMP } })
+    eq('管理员 fixture 能登录（口令 Xk@2026peer）', admLogin.json?.code, 0)
+    const adm = `Bearer ${admLogin.json?.data?.accessToken}`
+    const admLogin2 = await post('/api/user/login', { body: { username: ADM2, password: ADMP } })
+    eq('第二个管理员 fixture 能登录', admLogin2.json?.data?.accessToken !== undefined, true)
+    const adm2 = `Bearer ${admLogin2.json?.data?.accessToken}`
+
+    /* ---------- 鉴权分层：本阶段最重要的一段 ---------- */
+
+    codeIs('未登录访问管理端 → 10005（AuthInterceptor 先拦）',
+      (await get('/api/admin/report/list')).json, 10005)
+    codeIs('普通用户访问管理端 → 90001（已登录只是没权限，不是未登录）',
+      (await get('/api/admin/report/list', { token: auth })).json, 90001)
+    codeIs('普通用户改笔记状态 → 90001（写接口同样被拦）',
+      (await put('/api/admin/note/1/status', { token: auth, body: { status: 2 } })).json, 90001)
+    check('90001 与 10005 是两个码（分开告警的前提）',
+      (await get('/api/admin/report/list', { token: auth })).json?.code === 90001)
+    eq('管理员能进管理端', (await get('/api/admin/report/pending-count', { token: adm })).json?.code, 0)
+
+    const acts = (await get('/api/admin/report/actions', { token: adm })).json
+    eq('处置动作字典返回 4 个动作', acts?.data?.length, 4)
+    check('字典里能读到「禁用作者」', acts?.data?.some((s) => s.startsWith('4=')), JSON.stringify(acts?.data))
+
+    /* ---------- 造数据 ---------- */
+
+    const p20a = `ct_p20a${stamp}`
+    const p20r = `ct_p20r${stamp}`
+    for (const nm of [p20a, p20r]) {
+      await post('/api/user/register', { body: { username: nm, password: P } })
+    }
+    const lA = await post('/api/user/login', { body: { username: p20a, password: P } })
+    const lR = await post('/api/user/login', { body: { username: p20r, password: P } })
+    const tA = `Bearer ${lA.json?.data?.accessToken}`
+    const tR = `Bearer ${lR.json?.data?.accessToken}`
+    check('两个测试身份都拿到 token', lA.json?.code === 0 && lR.json?.code === 0,
+      `A=${lA.json?.code} R=${lR.json?.code}`)
+
+    // ⚠️ uploadImage 返回 {status, json, text}，URL 在 json.data.url ——
+    // 直接把返回值塞进 imageUrls 会让发布返 100001，症状像「发布坏了」。
+    const p20Img = (await uploadImage(tA)).json?.data?.url
+    check('图片上传拿到 URL', typeof p20Img === 'string', `url=${p20Img}`)
+
+    const p20Note = await post('/api/note/publish', {
+      token: tA,
+      body: { title: `P20 待处置 ${stamp}`, content: '待处置正文', imageUrls: [p20Img] },
+    })
+    const p20Id = p20Note.json?.data?.id
+    check('造出待处置笔记', typeof p20Id === 'string', `id=${p20Id}`)
+
+    /* ---------- 处置：下架，且不可重放 ---------- */
+
+    const rep = await post('/api/report', {
+      token: tR, body: { targetType: 1, targetId: p20Id, reasonCode: 1, detail: '垃圾广告' },
+    })
+    const repId = rep.json?.data
+    check('举报入库', typeof repId === 'string', `reportId=${repId}`)
+
+    const rl = await get('/api/admin/report/list?status=0', { token: adm })
+    const row = rl.json?.data?.list?.find((x) => x.id === repId)
+    check('运营列表能查到这条举报', row !== undefined)
+    eq('举报人字段是举报人（不是作者）', row?.reporterUsername, p20r)
+    eq('举报人昵称与作者昵称不是同一个（搞反了就等于处置了举报人）',
+      row?.targetAuthorNickname !== row?.reporterNickname, true)
+    eq('被举报内容标记为存在', row?.targetExists, true)
+    eq('举报理由是可读文案', row?.reasonText, '垃圾广告')
+
+    eq('处置（下架）成功',
+      (await post(`/api/admin/report/${repId}/handle`, {
+        token: adm, body: { action: 2, handleNote: '违规广告' } })).json?.code, 0)
+    eq('下架后他人看详情 → 20002',
+      (await get(`/api/note/${p20Id}`, { token: tR })).json?.code, 20002)
+    eq('被处置的举报不再出现在待处理里',
+      (await get('/api/admin/report/list?status=0', { token: adm })).json?.data?.list
+        ?.some((x) => x.id === repId), false)
+    codeIs('重复处置 → 90003（处置不可重放）',
+      (await post(`/api/admin/report/${repId}/handle`, { token: adm, body: { action: 3 } })).json, 90003)
+    codeIs('处置不存在的举报 → 90002',
+      (await post('/api/admin/report/1/handle', { token: adm, body: { action: 1 } })).json, 90002)
+    codeIs('非法处置动作 → 100001（DTO 层先拦）',
+      (await post(`/api/admin/report/${repId}/handle`, { token: adm, body: { action: 99 } })).json, 100001)
+
+    /* ---------- 处置「禁用作者」：禁的是【内容的作者】 ---------- */
+
+    const noteC = (await post('/api/note/publish', {
+      token: tA, body: { title: `P20 评论举报 ${stamp}`, content: '正文', imageUrls: [p20Img] },
+    })).json?.data?.id
+    check('造出第二篇笔记', typeof noteC === 'string', `id=${noteC}`)
+
+    // ⚠️ 关键：评论由 tR（p20r）发出，所以「禁用作者」禁的是 **tR**。
+    // 这一点我第一版写反了（让 tA 发评论，却断言 tC 被禁），症状是
+    // 后面几条集体返 10006「凭证无效」—— 因为被禁的那个账号
+    // 后续所有写操作都在拦截器那里被挡下来了。真因离症状隔了整屏。
+    const cmId = (await post('/api/comment', {
+      token: tR, body: { noteId: noteC, content: `待处置评论 ${stamp}` } })).json?.data?.id
+    check('造出待处置评论', typeof cmId === 'string', `commentId=${cmId}`)
+    const repC = await post('/api/report', {
+      token: tA, body: { targetType: 2, targetId: cmId, reasonCode: 1 },
+    })
+    const repCId = repC.json?.data
+    check('对评论的举报入库', typeof repCId === 'string', `reportId=${repCId}`)
+
+    codeIs('对评论「下架」→ 100001（评论没有下架状态，不能静默忽略）',
+      (await post(`/api/admin/report/${repCId}/handle`, { token: adm, body: { action: 2 } })).json, 100001)
+    eq('对评论「禁用作者」→ 0',
+      (await post(`/api/admin/report/${repCId}/handle`, {
+        token: adm, body: { action: 4, handleNote: '违规评论' } })).json?.code, 0)
+
+    codeIs('被禁用账号拿旧 token 写操作 → 90006（禁用要立刻生效）',
+      (await post('/api/comment', {
+        token: tR, body: { noteId: noteC, content: '还想发' } })).json, 90006)
+    eq('被禁用账号读操作仍可用（他要能看到自己出什么事了）',
+      (await get(`/api/note/${noteC}`, { token: tR })).json?.code, 0)
+    codeIs('被禁用账号再登录 → 10007 账号已禁用',
+      (await post('/api/user/login', { body: { username: p20r, password: P } })).json, 10007)
+
+    // 处置「禁用作者」只禁账号、不删评论：内容还在，运营能看到处置前长什么样
+    eq('禁言是账号级动作，被处置的评论仍在列表里',
+      (await get(`/api/comment/list?noteId=${noteC}&page=1&size=10`, { token: tA })).json?.data?.list
+        ?.some((c) => c.id === cmId), true)
+
+    /* ---------- 账号禁用的两条禁令 ---------- */
+
+    const meAdm = (await get('/api/user/me', { token: adm })).json?.data?.id
+    const meAdm2 = (await get('/api/user/me', { token: adm2 })).json?.data?.id
+    codeIs('禁自己的账号 → 90004',
+      (await put(`/api/admin/user/${meAdm}/status`, { token: adm, body: { status: 0 } })).json, 90004)
+    codeIs('禁用另一个管理员 → 90005（管理员之间不能互相封禁）',
+      (await put(`/api/admin/user/${meAdm2}/status`, { token: adm, body: { status: 0 } })).json, 90005)
+
+    const idR = (await get('/api/user/me', { token: tR })).json?.data?.id
+    eq('恢复账号 → 0', (await put(`/api/admin/user/${idR}/status`, {
+      token: adm, body: { status: 1 } })).json?.code, 0)
+    // 刻意**不再登录一次**来验证恢复：login 是 60/min/IP，而这个文件从头到尾
+    // 已经登录了二十几次，跑到最后一段桶基本见底，多一次就吃 100005 ——
+    // 而 100005 与「恢复失败」完全无关，看着却像同一件事。
+    // 用**手里那个已经被禁用过的 token** 来验证更准确：恢复要立刻对同一会话生效，
+    // 而不是「重新登录之后才生效」。
+    eq('恢复后同一个 token 立刻能写（禁用/恢复都是即时生效）',
+      (await post('/api/comment', { token: tR, body: { noteId: noteC, content: '恢复了' } })).json?.code, 0)
+    codeIs('改不存在的用户状态 → 90007',
+      (await put('/api/admin/user/1/status', { token: adm, body: { status: 0 } })).json, 90007)
+    codeIs('非法账号状态 → 100001',
+      (await put(`/api/admin/user/${idR}/status`, { token: adm, body: { status: 7 } })).json, 100001)
+
+    /* ---------- 运营强制下架 / 恢复笔记 ---------- */
+
+    eq('运营强制下架 → 0', (await put(`/api/admin/note/${p20Id}/status`, {
+      token: adm, body: { status: 2 } })).json?.code, 0)
+    eq('运营恢复上架 → 0', (await put(`/api/admin/note/${p20Id}/status`, {
+      token: adm, body: { status: 1 } })).json?.code, 0)
+    eq('恢复后作者能看到', (await get(`/api/note/${p20Id}`, { token: tA })).json?.code, 0)
+    codeIs('草稿状态 0 → 100001（运营不能把别人的笔记按回草稿）',
+      (await put(`/api/admin/note/${p20Id}/status`, { token: adm, body: { status: 0 } })).json, 100001)
+
+    /* ---------- 列表的过滤与分页夹取 ---------- */
+
+    // 上面已把笔记恢复成 status=1，所以**两个方向都要断言**：
+    // 按 status=2 查不到（过滤生效）+ 不过滤时看得到且状态是 1。
+    // 只写一条的话，过滤坏没坏都可能「看起来对」
+    eq('运营笔记列表按 status=2 过滤：已恢复的笔记查不到',
+      (await get(`/api/admin/note/list?keyword=P20 待处置 ${stamp}&status=2`,
+        { token: adm })).json?.data?.total, 0)
+    const nl = await get(`/api/admin/note/list?keyword=P20 待处置 ${stamp}`, { token: adm })
+    eq('运营笔记列表能按关键词查到这篇笔记（读者视角查不到）',
+      nl.json?.data?.list?.[0]?.status, 1)
+    check('运营笔记列表带被举报次数', nl.json?.data?.list?.[0]?.reportCount >= 1,
+      `reportCount=${nl.json?.data?.list?.[0]?.reportCount}`)
+    eq('运营用户列表能按用户名查到',
+      (await get(`/api/admin/user/list?keyword=${p20a}`, { token: adm })).json?.data?.list?.[0]?.username, p20a)
+    eq('size 被夹到 100（不会因为前端传 999 就一次拉全表）',
+      (await get('/api/admin/report/list?size=999', { token: adm })).json?.data?.size, 100)
+
+    /* ---------- 清理 ---------- */
+
+    await del(`/api/note/${p20Id}`, { token: tA })
+    await del(`/api/note/${noteC}`, { token: tA })
+    // 账号名用「ct_ + 前缀 + stamp」的连续形式：stamp 是 base36 小写字母数字，
+    // 中间多一个下划线就匹配不上脚本末尾打印的那条清理正则
+    // '^ct[0-9]?_[a-z0-9]+$'，于是每次跑完都留下一个清理不到的常驻垃圾账号。
+  }
+
+  // ---- 汇总
   const total = passed + failed
   console.log(`\n===== ${passed}/${total} 通过 =====`)
   if (failed > 0) {

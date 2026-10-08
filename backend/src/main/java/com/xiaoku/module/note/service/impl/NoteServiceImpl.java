@@ -179,18 +179,50 @@ log.info("笔记发布成功 noteId={} userId={} images={}", note.getId(), userI
     @Override
     @Transactional(rollbackFor = Exception.class)
     public NoteVO changeStatus(Long noteId, Integer status) {
-        if (status == null || (status != STATUS_PUBLISHED && status != STATUS_TAKEN_DOWN)) {
-            throw new BizException(ErrorCodeEnum.PARAM_VALIDATION_ERROR, "状态只能是 1（发布）或 2（下架）");
-        }
+        requireValidStatus(status);
         Long userId = UserContextHolder.requireUserId();
         NoteEntity note = noteMapper.selectById(noteId);
         if (note == null || !userId.equals(note.getUserId())) {
             throw new BizException(ErrorCodeEnum.NOTE_NOT_FOUND);
         }
+        applyStatusChange(note, status);
+        return noteQueryService.getDetail(noteId);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void forceChangeStatus(Long noteId, Integer status) {
+        requireValidStatus(status);
+        NoteEntity note = noteMapper.selectById(noteId);
+        // 运营看到的是「这篇笔记」而不是「不存在」—— 与作者侧的防探测策略相反：
+        // 举报处置时运营本来就知道对象是谁，没有理由装作看不见
+        if (note == null) {
+            throw new BizException(ErrorCodeEnum.NOTE_NOT_FOUND);
+        }
+        applyStatusChange(note, status);
+        log.info("运营强制变更笔记状态 noteId={} status={}", noteId, status);
+    }
+
+    private void requireValidStatus(Integer status) {
+        if (status == null || (status != STATUS_PUBLISHED && status != STATUS_TAKEN_DOWN)) {
+            throw new BizException(ErrorCodeEnum.PARAM_VALIDATION_ERROR, "状态只能是 1（发布）或 2（下架）");
+        }
+    }
+
+    /**
+     * 状态变更的共同实现：更新列 + 发 Kafka 事件。
+     *
+     * <p>作者自己改和运营强制改<b>必须走同一段</b>：下架要撤搜索索引，
+     * 靠的是 afterCommit 发的 UNPUBLISH 事件。复制一遍 update + 事件代码的
+     * 后果是「运营下架了但用户还能搜到」—— 那是一个只有运营能发现的静默不一致，
+     * 测试也抓不到（普通用户根本不知道这篇笔记被下架过）。
+     */
+    private void applyStatusChange(NoteEntity note, Integer status) {
+        Long noteId = note.getId();
         if (Objects.equals(note.getStatus(), status)) {
             // 幂等：已经是目标状态就什么都不动（拿不到「状态是几」的写接口除外），
             // 重复点按钮不产生多余事件和 update
-            return noteQueryService.getDetail(noteId);
+            return;
         }
 
         noteMapper.update(null, Wrappers.<NoteEntity>lambdaUpdate()
@@ -202,7 +234,7 @@ log.info("笔记发布成功 noteId={} userId={} images={}", note.getId(), userI
         // 发布时间保持首发值，搜索结果里顺序不回退
         NoteEntity eventNote = new NoteEntity();
         eventNote.setId(noteId);
-        eventNote.setUserId(userId);
+        eventNote.setUserId(note.getUserId());
         eventNote.setType(note.getType());
         eventNote.setTitle(note.getTitle());
         eventNote.setContent(note.getContent());
@@ -212,8 +244,7 @@ log.info("笔记发布成功 noteId={} userId={} images={}", note.getId(), userI
                 ? NoteEventDTO.ACTION_UNPUBLISH
                 : NoteEventDTO.ACTION_PUBLISH;
         registerAfterCommit(action, eventNote);
-        log.info("笔记状态变更 noteId={} userId={} status={}", noteId, userId, status);
-        return noteQueryService.getDetail(noteId);
+        log.info("笔记状态变更 noteId={} userId={} status={}", noteId, note.getUserId(), status);
     }
 
     @Override
@@ -235,6 +266,26 @@ log.info("笔记发布成功 noteId={} userId={} images={}", note.getId(), userI
         if (note == null || !userId.equals(note.getUserId())) {
             throw new BizException(ErrorCodeEnum.NOTE_NOT_FOUND);
         }
+        deleteCascade(noteId, userId);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void deleteAsAdmin(Long noteId) {
+        NoteEntity note = noteMapper.selectById(noteId);
+        if (note == null) {
+            throw new BizException(ErrorCodeEnum.NOTE_NOT_FOUND);
+        }
+        deleteCascade(noteId, note.getUserId());
+        log.warn("运营强制删除笔记 noteId={} authorId={}", noteId, note.getUserId());
+    }
+
+    /**
+     * 删除的级联实现。运营删除与作者删除<b>必须走同一段</b>：
+     * 评论、点赞/收藏关系、图片、话题/提及关系行、Redis 计数键、
+     * 以及 afterCommit 的 ES 删文档事件，少做哪一样都会留下可被看到的残留。
+     */
+    private void deleteCascade(Long noteId, Long userId) {
 
         // 先捞评论 id，再删评论点赞（comment_like 依赖 comment）→ 评论（含子树，一行 WHERE note_id 全带走）
         List<Long> commentIds = commentMapper.selectList(Wrappers.<CommentEntity>lambdaQuery()

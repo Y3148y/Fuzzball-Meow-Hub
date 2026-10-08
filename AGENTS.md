@@ -193,16 +193,16 @@ $env:XK_MYSQL_PASSWORD = "<.env 里的 MYSQL_ROOT_PASSWORD>"   # 不设就起不
 改后端接口 → 必须跑契约测试；改前端 → 必须跑 CDP 测试。**别攒到最后一起跑。**
 
 ```bash
-# 后端（需后端已在 8088 运行）→ 543 条
+# 后端（需后端已在 8088 运行）→ 591 条
 cd backend && node scripts/contract-test.mjs
 # 换地址：XK_API_BASE=http://ip:8088 node scripts/contract-test.mjs
 
 # 前端（需前端 5180 + 后端 8088 同时在跑）
-# → 31 + 8 + 108 + 26 + 67 + 43 + 19 + 9 + 26 + 125 = 462 条
+# → 31 + 8 + 108 + 26 + 67 + 43 + 19 + 9 + 26 + 23 + 125 = 485 条
 cd frontend && npm run test:ui
 
 # 单跑某一组：:smoke / :refresh / :note / :profile / :interaction / :follow /
-#            :search / :idempotent / :notification / :layout
+#            :search / :idempotent / :notification / :admin / :layout
 cd frontend && npm run test:ui:interaction
 
 # 前端类型 / 构建
@@ -1460,6 +1460,111 @@ CDP 那边还踩了一次：`exists`/`text`/`click` 三个 helper 在 `ui-note.m
 - **`multipart.max-file-size` 提到 200MB 是有代价的**：容器层兜底值一放宽，
   单请求就能占 200MB 内存。限流 `10/min` 是唯一防线，别为了「少传几次」调大它。
 
+### P20 运营管理后台（本 commit）
+
+契约 **591 条**（543 + 48，20.1 段），CDP **485 条**（462 + 23，新增 `ui-admin`）。
+
+**它填的不是一个假想需求，而是一处已经悬了很久的空洞**：P18 的举报
+「只记录、不自动处置」，`report` 表里连 `status` / `handle_note` 列都建好了，
+却**没有任何运营接口** —— 举报进去就没人管了。顺带堵上 P3 遗留的
+「草稿（status=0）只有管理端能造」缺口，并第一次有了账号级处置能力。
+
+| 接口 | 说明 |
+|---|---|
+| `GET /api/admin/report/list?status=&targetType=` | 举报列表，**带被举报内容摘要 + 举报人** |
+| `GET /api/admin/report/pending-count` | 待处理数（红点） |
+| `POST /api/admin/report/{id}/handle` | body `{action, handleNote}`，见下 |
+| `GET /api/admin/user/list?keyword=&status=` | 用户列表，带笔记数与**被举报次数** |
+| `PUT /api/admin/user/{id}/status` | body `{status:0\|1}` 禁用/恢复 |
+| `GET /api/admin/note/list?keyword=&status=&type=` | 笔记列表，**不过滤状态** |
+| `PUT /api/admin/note/{id}/status` | body `{status:1\|2}` 强制下架/恢复 |
+
+处置动作：`1` 驳回（`status=2`）、`2` 下架笔记、`3` 删除笔记、`4` 禁用作者
+（这四个都把举报标成 `status=1` 已受理）。
+
+### 三个设计决定，每一个都有代价
+
+**① 鉴权按「路径前缀」而不是注解。**
+`AdminInterceptor` 拦整个 `/api/admin/**`。做成 `@RequireAdmin` 注解的话，
+新接口漏加注解就是**静默越权** —— 没有任何人会注意到；而漏掉前缀是一整条前缀都漏，
+测试立刻炸。路径前缀是「默认全保护」，注解是「默认全保护，但要记得手动上锁」。
+
+**② role 刻意不写进 JWT，每次查库。**
+token 里带 role 看起来省事（少一次查询），但**撤权要等 token 过期才生效**。
+而「把某个运营降级」几乎总是出事后要立刻做的事 —— 等两小时那段时间里
+他照样能删数据。token 一旦签发就收不回来，这是 JWT 无状态设计的固有代价，
+只能在**需要即时生效的字段**上退回查库。管理端流量低，这次 PK 查询可以忽略。
+
+**③ 禁用账号 = 封号，且写操作当场失效。**
+`AccountStatusInterceptor` 对所有 POST/PUT/PATCH/DELETE 再查一次 `status`。
+登录本来就拒（`USER_DISABLED=10007`），但那不够：手上那个还没过期的 token
+照样能发内容，从运营视角看就是「我明明禁了他，他怎么还在发」。
+**读操作刻意不拦**：被禁用的人自己得能看到「我账号出什么事了」，
+看不到只能去问客服；同时读是浏览热路径，不该为它加开销。
+代价写在明面上：每次写多一条主键索引查找。
+
+### 三个「不这么做会静默出错」的地方
+
+- **处置动作不可重放**：已处理的举报再处置一律 `90003`。真正的风险不是重复点按钮，
+  而是**两次不同的处置落在同一批内容上**（先下架再删除，用户看到的笔记就凭空消失）。
+  `status` 由 `action` 推导而不让调用方直接传，就是为了不让运营自己想
+  「下架之后这条举报该标成什么状态」。
+- **运营改笔记状态必须复用作者那条路径**（`NoteService.forceChangeStatus`）。
+  下架要撤搜索索引靠的是 afterCommit 发的 UNPUBLISH 事件；复制一遍 update + 事件代码的
+  后果是「运营下架了但用户还能搜到」—— 那是一个**只有运营能发现**的静默不一致。
+  删除同理（`deleteAsAdmin` 与 `delete` 共用 `deleteCascade`）。
+- **举报对象可能已经不存在**（作者自己删了 / 被上一条处置删了）。
+  列表里这时 `targetExists=false` 并提示「建议直接驳回」，**不报「处理失败」**。
+  顺带一条产品事实：**举报没有撤回接口**，所以目标被删之后举报就成了孤儿行，
+  测试数据清理必须带上 `report` 表（见第 5 节）。
+
+### 错误码分段：9xxxx 是「只有运营能触发」
+
+`8xxxx` 是**用户能触发**的动作（我举报了 / 我拉黑了），`9xxxx` 是**只有运营能触发**的。
+分段之后日志与网关能按前缀分开统计 —— 用户侧举报激增和运营侧越权尝试
+是完全不同的两件事，混在一个段位里看不出区别。
+
+`FORBIDDEN_NOT_ADMIN(90001)` 刻意**不复用** `10005`（未登录）：两者要分开告警。
+未登录是流量问题，一片 `10005` 说明有人在撞；**已登录却不是管理员**说明有账号
+被错误提权，那是**安全事件**。
+
+### 三个「不能禁」与两条默认值
+
+`90004` 禁自己（把自己关在门外且无人能解）、`90005` 禁另一个管理员
+（否则一个运营能把自己这条线的同事全干掉）。
+运营笔记状态**只认 1/2 不认 0**：草稿是作者自己的中间态，
+运营把别人的笔记按回草稿会让「这篇笔记消失了但没人下架过」成为可能。
+
+### 测试基建
+
+- **管理员 fixture 是常驻的**：`xk_ui_admin` / `xk_ui_admin2`，口令 `Xk@2026peer`。
+  契约与 CDP 都**不新建管理员**（role 只能从库里改，而这两层都不该动数据库），
+  而是各自**第一条断言就检查 fixture 还在** —— fixture 没了会立刻报出来，
+  而不是让后面几十条集体假红成「鉴权坏了」。
+- `ui-admin.mjs` 第 ⑦ 步会把 `xiaoku_demo` 禁用，**恢复必须排在 finally 的最前**。
+  不恢复的话后面 ui-search / ui-follow 全都登不进去，而症状看起来与它们毫无关系
+  —— 与 P15 记的「清理不在 finally 里」是同一个坑。
+- `switchIdentity` 换 token 前必须先 `goto` 到应用域名：会话初始停在 `about:blank`，
+  那是**不透明源**，读 localStorage 直接 `SecurityError`（首次跑就撞上）。
+- 契约那段踩了三个自坑，都写进注释了：① `uploadImage` 返回 `{status,json,text}`、
+  URL 在 `json.data.url` —— 直接把返回值塞进 `imageUrls` 会让发布返 `100001`；
+  ② 同一个坑在 P19 的 `up()` 上已经踩过一次，**同类助手的返回形态不一致**；
+  ③ 本段只注册 2 个账号（register 10/min/IP，再多注册会把其中一个打成 `100005`
+  → 登录拿不到 token → `Bearer undefined` → 后续全返 `10006`「凭证无效」，
+  看起来像「鉴权坏了」）；④ 最后一条断言原本写成「恢复后能重新登录」，
+  而跑到文件末尾时 login 的 60/min/IP 桶已经见底 → 改成用**手里那个已被禁用过的
+  token** 验证恢复，这也更准确：恢复要对同一会话立刻生效。
+
+### 已知取舍
+
+- **没有分页 UI**：三张表都取 `size=50` 一次，没有「加载更多」。
+- **没有操作审计**：谁在什么时候处置了什么，只体现在 `report.handle_note` 的自由文本里。
+  真实系统需要一张独立的 `admin_operation_log`。
+- **`report_count` 是关联统计而不是冗余列**：user/note 列表里都带它。
+  真要提速可以加异步刷新的列，但那会引入「刷列失败导致运营按旧数据处置」的坏情况。
+- **前端 role 判断只是界面提示**：「我的」页的运营入口按 `role === 1` 渲染，
+  但改 localStorage 就能让这一行出现。真权限在 `AdminInterceptor`，
+  所以 `AdminView` 对 `90001` 的处理是**正常分支而不是兜底**（它会把用户退回「我的」）。
 ## 8. prod 栈运维（2026-10-04 踩出来的，都是环境问题不是代码问题）
 
 ### 8.1 prod 后端镜像曾经落后三个阶段（已修）

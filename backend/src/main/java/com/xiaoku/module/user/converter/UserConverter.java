@@ -34,6 +34,7 @@ public final class UserConverter {
                 .followCount(user.getFollowCount())
                 .fansCount(user.getFansCount())
                 .likeReceivedCount(user.getLikeReceivedCount())
+                .role(user.getRole())
                 .createTime(user.getCreateTime())
                 .build();
     }

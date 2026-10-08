@@ -84,13 +84,24 @@ const routes: RouteRecordRaw[] = [
       component: () => import('@/views/FollowListView.vue'),
       meta: { title: '粉丝', requiresAuth: true },
     },
-    {
-      path: '/blocks',
-      name: 'blocks',
-      component: () => import('@/views/BlockListView.vue'),
-      meta: { title: '黑名单', requiresAuth: true },
-    },
-    {
+{
+        path: '/blocks',
+        name: 'blocks',
+        component: () => import('@/views/BlockListView.vue'),
+        meta: { title: '黑名单', requiresAuth: true },
+      },
+      {
+        // 运营后台。⚠️ 刻意**不在前端做 requiresAdmin 守卫**：
+        // 前端判 role 只是省一次无谓请求，真权限在后端 AdminInterceptor。
+        // 在这里加守卫反而会给人「已经有权限控制了」的错觉 ——
+        // 而守卫是可以被绕过的（改 localStorage 就能进这个路由），
+        // 后端那道才是唯一有效的。
+        path: '/admin',
+        name: 'admin',
+        component: () => import('@/views/AdminView.vue'),
+        meta: { title: '运营后台', requiresAuth: true },
+      },
+      {
       // 话题名是中文，所以用 +? 而不是 `：id` 那套数字路由
       path: '/topic/:name+',
       name: 'topic',

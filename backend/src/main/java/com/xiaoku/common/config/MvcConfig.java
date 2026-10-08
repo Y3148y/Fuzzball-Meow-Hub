@@ -1,5 +1,7 @@
 package com.xiaoku.common.config;
 
+import com.xiaoku.common.interceptor.AccountStatusInterceptor;
+import com.xiaoku.common.interceptor.AdminInterceptor;
 import com.xiaoku.common.interceptor.AuthInterceptor;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -22,6 +24,8 @@ import java.util.List;
 public class MvcConfig implements WebMvcConfigurer {
 
     private final AuthInterceptor authInterceptor;
+    private final AdminInterceptor adminInterceptor;
+    private final AccountStatusInterceptor accountStatusInterceptor;
 
     @Value("${xiaoku.storage.local-path:uploads}")
     private String localPath;
@@ -63,6 +67,18 @@ public class MvcConfig implements WebMvcConfigurer {
                 .addPathPatterns("/api/**")
                 .excludePathPatterns(WHITE_LIST)
                 .order(0);
+        // 管理端鉴权必须排在 order(0) 之后：它依赖 UserContextHolder 里那个
+        // 「已鉴权身份」，而那个身份是 AuthInterceptor 放进去的。顺序反了会
+        // 直接抛「未登录」，把「不是管理员」这个真实原因盖掉。
+        registry.addInterceptor(adminInterceptor)
+                .addPathPatterns(AdminInterceptor.ADMIN_PREFIX + "**")
+                .order(1);
+        // 账号状态检查排在最后：只关心「这个被禁用的账号在写东西」，而管理员
+        // 处置本身也是一次写 —— 它查的是**目标用户**的状态，不受影响
+        registry.addInterceptor(accountStatusInterceptor)
+                .addPathPatterns("/api/**")
+                .excludePathPatterns(WHITE_LIST)
+                .order(2);
         log.info("已注册鉴权拦截器，白名单路径：{}", WHITE_LIST);
     }
 

@@ -59,6 +59,15 @@ public class UserEntity implements Serializable {
     /** 0 禁用 1 正常 */
     private Integer status;
 
+    /**
+     * 角色：0 普通用户 1 管理员（P20 运营后台）。
+     *
+     * <p>刻意<b>不写进 JWT</b>：写在 token 里撤权要等 token 过期才生效，
+     * 而「把某个运营降级」往往正是出事后要立刻做的事。AdminInterceptor
+     * 每次请求查库，代价可以接受（管理端流量本来就低）。
+     */
+    private Integer role;
+
     private LocalDateTime lastLoginTime;
 
     @TableField(fill = FieldFill.INSERT)

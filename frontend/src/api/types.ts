@@ -110,9 +110,17 @@ export interface UserVO {
   gender: number
   followCount: number
   fansCount: number
-  likeReceivedCount: number
-  /** 后端是 LocalDateTime，默认序列化出 "2026-09-23T10:58:35" */
-  createTime: string
+likeReceivedCount: number
+/**
+ * 角色 0 普通用户 1 管理员（P20）
+ *
+ * ⚠️ 这只用于「我的」页决定要不要渲染运营后台入口，**不是安全边界** ——
+ * 真权限在后端 AdminInterceptor。P20 之前这个字段不存在，
+ * 是加在 likeReceivedCount 之后的；老账号后端返回 null 时按 0（非管理员）处理。
+ */
+role: number
+/** 后端是 LocalDateTime，默认形如 "2026-09-23T10:58:35" */
+createTime: string
 }
 
 /**

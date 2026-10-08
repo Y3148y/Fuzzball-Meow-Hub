@@ -1452,6 +1452,14 @@ CDP 那边还踩了一次：`exists`/`text`/`click` 三个 helper 在 `ui-note.m
 结果报出 `t is not defined` —— 那个 `t` 是节点侧变量，压根不该出现在浏览器里。
 **helper 要照抄同项目里已经跑通的那个文件，别凭印象写。**
 
+- **prod 真调用已过**（走 nginx 18080）：3MB mp4 上传 `code=0` → 发布 type=2 →
+  详情 `videoUrl` 一致 → 静态 GET 200/`video/mp4`、字节数与上传相同 →
+  mov 拒 100001 → 删笔记 0。12MB 那一档在 dev 验过（**旧 10MB 配置必然炸，
+  这是唯一必须真传大文件才能验的点**）。prod 探针账号按 8.4 的模式手删干净。
+
+- **`multipart.max-file-size` 提到 200MB 是有代价的**：容器层兜底值一放宽，
+  单请求就能占 200MB 内存。限流 `10/min` 是唯一防线，别为了「少传几次」调大它。
+
 ## 8. prod 栈运维（2026-10-04 踩出来的，都是环境问题不是代码问题）
 
 ### 8.1 prod 后端镜像曾经落后三个阶段（已修）
@@ -1501,6 +1509,27 @@ git log -1 --format="%ad" --date=iso -S'DeleteMapping' -- backend/src/main/java/
 **仓库里的 `backend/Dockerfile` 与 `.dockerignore` 一个字都没改** —— 上面三条
 全是本机网络环境的问题，把镜像源写进仓库 Dockerfile 会污染所有人的构建。
 
+### 8.5 只重建 backend 容器后 nginx 报 502（2026-10-08 踩过）
+
+**现象**：`docker compose -f deploy/docker-compose.prod.yml up -d backend` 之后，
+prod backend 容器 `health=healthy`、容器内 `curl /api/system/ping` 返回 `{"code":0}`，
+但从宿主打 `http://127.0.0.1:18080/api/system/ping` 是 **502 Bad Gateway**。
+此时如果按 8.1 的判据去查镜像日期，会发现镜像**确实是新的**（就是刚 build 的），
+于是得出「镜像没问题、那一定是代码的问题」——**结论完全反了**。
+
+**根因**：nginx 在**启动时**把 upstream 的主机名解析成 IP 写进配置。backend 容器
+重建后 IP 变了（docker 每次 recreate 都可能重新分配），nginx 还拿着旧 IP 去连，
+连不上就是 502。**nginx 容器本身完全健康**，所以 `docker ps` 全绿、
+`docker inspect xiaoku-prod-frontend-1` 也一切正常。
+
+**修法**：`docker restart xiaoku-prod-frontend-1` 让它重新解析。
+
+**判据（一句话）**：`502` + `后端容器内 curl 正常` + `镜像日期是新的`
+= nginx 缓存了旧 IP，不是后端问题，也**不是**镜像落后于代码。
+
+⚠️ 这与 8.1 的现象**完全相反**（8.1 是镜像落后 + 接口 404/100002），两者都表现为
+「prod 行为与仓库不一致」，所以先分清是 **502**（上游连不上 → 重启 nginx）
+还是 **业务错误码**（接口存在但行为旧 → 查镜像日期）。
 ### 8.3 换 analyzer 必须删索引重建（prod 也踩了一次）
 
 给 prod ES 装上 IK 插件后，我用旧后端发一篇「图书漂流」搜「图书漂流」→ **命中了**，

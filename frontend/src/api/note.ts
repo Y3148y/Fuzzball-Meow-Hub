@@ -33,6 +33,30 @@ export function uploadImage(file: File, onProgress?: (percent: number) => void) 
 }
 
 /**
+ * 上传视频（mp4 / webp 各不超过 200MB，**后端不转码**）
+ *
+ * <p>超时给到 5 分钟：图片是 10MB 级的，60s 够用；视频是几十上百 MB，
+ * 弱网下 60s 会必然超时，用户看到的是一个假失败。
+ *
+ * <p>只放行 mp4/webm 是因为这两种浏览器能直接播；mov/avi 上传完是黑屏，
+ * 比明确拒绝更糟 —— 前端在选文件时就拦掉并提示转格式。
+ */
+export function uploadVideo(file: File, onProgress?: (percent: number) => void) {
+  const form = new FormData()
+  form.append('file', file)
+
+  return postForm<{ url: string }>('/note/video', form, {
+    timeout: 300000,
+    idempotent: true,
+    onUploadProgress: (e) => {
+      if (onProgress && e.total) {
+        onProgress(Math.round((e.loaded * 100) / e.total))
+      }
+    },
+  })
+}
+
+/**
  * 发布笔记。
  *
  * <b>注意 id 是 string</b>：雪花 ID 10^17 超出 JS 的 MAX_SAFE_INTEGER，

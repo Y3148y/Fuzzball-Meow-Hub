@@ -2254,7 +2254,79 @@ async function main() {
     codeIs('不支持的请求方法被统一处理（100002）', json, 100002)
   }
 
-  // ---- 汇总
+// ---- 19. P19 视频：POST /api/note/video + type=2 发布
+  //
+  // 这一段只钉「上传与落盘这条链路」，**不钉「视频真的能播」**：
+  // 契约测试发上去的是构造出来的字节，不是真 mp4，验证不了解码。
+  // 「详情页播放器拿得到 src」由 CDP 的 ui-note 验（那边是真浏览器）。
+  //
+  // 三个刻意不做：
+  //   ① 不做转码（引 ffmpeg 是另一件事，要单独立项）
+  //   ② 不校验魔数 —— 只按 content-type 白名单放行 mp4/webm
+  //   ③ 不做多码率切片
+  {
+    const up = async (filename, type, bytes) => {
+      const fd = new FormData()
+      fd.append('file', new Blob([bytes], { type }), filename)
+      const r = await fetch(`${BASE}/api/note/video`, {
+        method: 'POST',
+        headers: { Authorization: auth },
+        body: fd,
+      })
+      return r.json()
+    }
+
+    const up1 = await up('p19.mp4', 'video/mp4', new Uint8Array(64 * 1024))
+    codeIs('上传 mp4 成功', up1, 0)
+    const videoUrl = up1?.data?.url
+    check('返回的是可访问的相对路径（不是磁盘绝对路径）',
+      typeof videoUrl === 'string' && videoUrl.startsWith('/'), `url=${videoUrl}`)
+    check('文件名是 UUID 而不是用户提供的原始名（防路径穿越）',
+      !videoUrl.includes('p19.mp4') && /\/[0-9a-f]{32}\.mp4$/.test(videoUrl), `url=${videoUrl}`)
+    // 目录按日期分：避免单目录几百万个文件（ext4 查目录会明显变慢）
+    check('按日期分目录存放', /\/\d{4}\/\d{2}\/\d{2}\//.test(videoUrl), `url=${videoUrl}`)
+
+    const up2 = await up('p19.webm', 'video/webm', new Uint8Array(1024))
+    codeIs('上传 webm 成功（浏览器能直接播的两种格式）', up2, 0)
+
+    // mov / avi 需要转码，放行它们等于「传完看到黑屏」，比明确拒绝更糟
+    const mov = await up('p19.mov', 'video/quicktime', new Uint8Array(1024))
+    codeIs('mov 被拒（100001）：浏览器不能直接播，要先转码', mov, 100001)
+    const spoof = await up('p19.mp4', 'text/plain', new Uint8Array(1024))
+    codeIs('伪装 content type 被拒（100001）：扩展名按 content-type 反查', spoof, 100001)
+
+    const got = await fetch(`${BASE}${videoUrl}`)
+    eq('上传后的 URL 真能取到文件（静态资源已挂载）', got.status, 200)
+
+    const { json: note } = await post('/api/note/publish', {
+      token: auth,
+      body: { type: 2, title: '视频笔记', content: '播放器验证', videoUrl },
+    })
+    codeIs('发布视频笔记（type=2）成功', note, 0)
+    const { json: detail } = await get(`/api/note/${note?.data?.id}`, { token: auth })
+    eq('详情里的 videoUrl 与上传一致', detail?.data?.videoUrl, videoUrl)
+    eq('视频笔记的 type 是 2', detail?.data?.type, 2)
+
+    // 反过来：type=2 却没给视频地址，必须被拒（否则会产生「永远播不出来」的笔记）
+    const { json: noVid } = await post('/api/note/publish', {
+      token: auth,
+      body: { type: 2, title: '没有视频的视频', content: 'x' },
+    })
+    codeIs('type=2 但没给 videoUrl 返回 100001', noVid, 100001)
+
+    // ⚠️ 本项目未登录是 **HTTP 200 + body code 10005**，不是 401 ——
+    // 断言按 401 写会红，而红的原因（约定记错）与视频功能无关
+    const anonFd = new FormData()
+    anonFd.append('file', new Blob([new Uint8Array(16)], { type: 'video/mp4' }), 'anon.mp4')
+    const anon = await fetch(`${BASE}/api/note/video`, { method: 'POST', body: anonFd })
+    eq('未登录上传视频返回 10005（HTTP 仍是 200，全站统一约定）',
+      (await anon.json())?.code, 10005)
+
+    await del(`/api/note/${note?.data?.id}`, { token: auth })
+    eq('删除后详情返回 20001', (await get(`/api/note/${note?.data?.id}`, { token: auth })).json?.code, 20001)
+  }
+
+  // ---- 汇总  // ---- 汇总
   const total = passed + failed
   console.log(`\n===== ${passed}/${total} 通过 =====`)
   if (failed > 0) {

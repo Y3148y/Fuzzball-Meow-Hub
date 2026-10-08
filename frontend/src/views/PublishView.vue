@@ -42,6 +42,7 @@ const pickedMentions = computed(() => detectMentions(content.value))
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { showSuccessToast } from 'vant'
+import { uploadVideo } from '@/api/note'
 import { publishNote, uploadImage } from '@/api/note'
 import { BizError } from '@/api/request'
 import { ErrorCode, NOTE_IMAGE_LIMIT } from '@/api/types'
@@ -119,6 +120,36 @@ function flipPage(d: number) {
 watch([title, content, () => files.value.length], schedulePreview)
 onMounted(schedulePreview)
 
+const VIDEO_ACCEPT = 'video/mp4,video/webm'
+/** 单个视频上限，与后端 LocalVideoStorage.MAX_SIZE 一致（前端先拦一次，少传 200MB 再被拒） */
+const VIDEO_MAX = 200 * 1024 * 1024
+/** 视频模式：选视频而不是图片。与图片互斥 —— 一篇笔记要么图文要么视频 */
+const isVideo = ref(false)
+const videoFile = ref<File | null>(null)
+const videoUrl = ref('')
+const videoError = ref('')
+
+function onVideoPicked(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const f = input.files?.[0]
+  if (!f) return
+  videoError.value = ''
+  if (!VIDEO_ACCEPT.split(',').includes(f.type)) {
+    // 明确提示转格式，而不是让用户传完看到黑屏
+    videoError.value = '只支持 mp4 / webm（浏览器要能直接播），请先转成 mp4'
+    input.value = ''
+    return
+  }
+  if (f.size > VIDEO_MAX) {
+    videoError.value = '视频不能超过 200MB'
+    input.value = ''
+    return
+  }
+  videoFile.value = f
+  files.value = []
+  isVideo.value = true
+}
+
 const TYPE_ACCEPT = 'image/jpeg,image/png,image/webp,image/gif'
 const MAX_SIZE = 10 * 1024 * 1024
 
@@ -144,7 +175,9 @@ function onFileChange(e: Event) {
       errorMsg.value = `「${f.name}」超过 10MB，已跳过`
       continue
     }
-    files.value.push(f)
+    isVideo.value = false
+  videoFile.value = null
+  files.value.push(f)
     previews.value.push(URL.createObjectURL(f))
   }
 }
@@ -165,6 +198,22 @@ async function submit() {
     // 先把图片换成 URL，再一次性发布。
     // 不合并成一次 multipart 是因为图片存到一半失败时无法回滚已落盘的文件。
     const urls: string[] = []
+    if (isVideo.value && videoFile.value) {
+      // 视频：先传视频拿 URL，再按 type=2 发布。
+      // 后端不转码，所以这里没有「等转码」这一步 —— 上传返回即可发布
+      const { url } = await uploadVideo(videoFile.value)
+      videoUrl.value = url
+      const note = await publishNote({
+        title: title.value.trim(),
+        content: content.value.trim(),
+        type: 2,
+        videoUrl: url,
+      })
+      showSuccessToast('发布成功')
+      markClean()
+      await router.push(`/note/${note.id}`)
+      return
+    }
     if (files.value.length) {
       for (const f of files.value) {
         const { url } = await uploadImage(f)
@@ -337,7 +386,40 @@ const { markClean } = useUnsavedChanges(
         </li>
       </ul>
 
-      <label v-if="files.length < NOTE_IMAGE_LIMIT" class="picker">
+      <!--
+        视频入口。刻意做成「切到视频模式」而不是在同一个 input 里混选：
+        一篇笔记要么图文要么视频（note 表只有 cover 与 video_url 两个位置，
+        没有「图 + 视频」这种第三种状态），混在一个 input 里会让用户传了 3 张图
+        再选个视频，最后只生效一半。
+      -->
+      <div class="videobar">
+        <button
+          class="video-tab"
+          type="button"
+          :class="{ on: isVideo }"
+          data-test="note-video-mode"
+          @click="isVideo = !isVideo; if (isVideo) { files = [] } else { videoFile = null }"
+        >
+          {{ isVideo ? '图文模式' : '发视频' }}
+        </button>
+        <span v-if="isVideo" class="video-hint">mp4 / webm，单个不超过 200MB</span>
+      </div>
+
+      <label v-if="isVideo" class="picker">
+        <input
+          type="file"
+          accept="video/mp4,video/webm"
+          aria-label="选择视频"
+          data-test="note-video-file"
+          @change="onVideoPicked"
+        />
+        <span>{{ videoFile ? videoFile.name : '+ 选择视频' }}</span>
+      </label>
+      <p v-if="videoError" class="hint err" role="alert" data-test="note-video-error">
+        {{ videoError }}
+      </p>
+
+      <label v-if="!isVideo && files.length < NOTE_IMAGE_LIMIT" class="picker">
         <input
           type="file"
           accept="image/jpeg,image/png,image/webp,image/gif"
@@ -355,6 +437,37 @@ const { markClean } = useUnsavedChanges(
 </template>
 
 <style scoped>
+/* 视频模式那一行：切换按钮 + 说明文字 */
+.videobar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+/* 视频模式切换：琥珀描边的小药丸，与「模板选择」那排保持同一视觉语言 */
+.video-tab {
+  align-self: flex-start;
+  min-height: 40px;
+  padding: 0 14px;
+  border: var(--xk-stroke-w) solid var(--xk-border);
+  border-radius: 999px;
+  background: var(--xk-surface-2);
+  color: var(--xk-text-2);
+  font-size: var(--xk-fs-13);
+  cursor: pointer;
+}
+
+.video-tab.on {
+  border-color: var(--xk-amber);
+  color: var(--xk-amber-text);
+}
+
+.video-hint {
+  margin: 0;
+  color: var(--xk-text-3);
+  font-size: var(--xk-fs-12);
+}
 /* 识别预览：贴在下���输入框下面，一行 chip。视觉权重刻意压得很低，
    它是「告诉你系统读到了什么」，不是内容本身 */
 .pickrow {

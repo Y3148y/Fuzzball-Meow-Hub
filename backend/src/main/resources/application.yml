@@ -36,8 +36,11 @@ spring:
 
   servlet:
     multipart:
-      max-file-size: 10MB
-      max-request-size: 100MB
+      # 容器层兜底值，真实上限由各自的 Storage 再校验一遍。
+      # 视频 200MB 是 P19 提上来的（原来 10MB / 100MB）；**调大它不会让图片突破 10MB**，
+      # 因为那是 LocalImageStorage 里另一道代码校验（MaxUploadSizeException 只会更早触发）。
+      max-file-size: 200MB
+      max-request-size: 210MB
 
   # ---------------- 数据源 ----------------
   # 端口 3309 对应 docker-compose.yml 里的 MySQL（宿主机 3306 已被本机原生 MySQL 占用）

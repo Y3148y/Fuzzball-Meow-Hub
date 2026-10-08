@@ -193,12 +193,12 @@ $env:XK_MYSQL_PASSWORD = "<.env 里的 MYSQL_ROOT_PASSWORD>"   # 不设就起不
 改后端接口 → 必须跑契约测试；改前端 → 必须跑 CDP 测试。**别攒到最后一起跑。**
 
 ```bash
-# 后端（需后端已在 8088 运行）→ 529 条
+# 后端（需后端已在 8088 运行）→ 543 条
 cd backend && node scripts/contract-test.mjs
 # 换地址：XK_API_BASE=http://ip:8088 node scripts/contract-test.mjs
 
 # 前端（需前端 5180 + 后端 8088 同时在跑）
-# → 31 + 8 + 98 + 26 + 67 + 43 + 26 + 19 + 9 + 26 + 125 = 443 条
+# → 31 + 8 + 108 + 26 + 67 + 43 + 19 + 9 + 26 + 125 = 462 条
 cd frontend && npm run test:ui
 
 # 单跑某一组：:smoke / :refresh / :note / :profile / :interaction / :follow /
@@ -1401,6 +1401,57 @@ MySQL 里 `<>` 与 `!=` 等价，换成 `!=` 绕开转义。
 **下一轮「关注流出现测试笔记」会永远超时** —— 症状与新代码毫无关系，
 看起来像是拉黑功能把关注流弄坏了。改成 `finallyCleanup` 数组、
 由 `finally` 统一执行后才稳定。这与 P15 记的 `ui-notification` 是同一个坑。
+
+### P19 视频：上传 + 原文件播放（本 commit）
+
+契约 **543 条**（529 + 14，19 段），CDP **462 条**（453 + 9，ui-note）。
+
+**本轮刻意只做「上传 + 存原文件 + 播放器」，不做转码。** 这是明确的边界而不是省事：
+转码要引入 ffmpeg 依赖、CPU 开销、以及「转码失败怎么办」的一整套状态机，
+属于要单独立项的工程。反过来，「能上传能播」这件事本身有价值 ——
+之前 `note.video_url` 存了但**详情页根本没有 video 标签**，等于这个字段是死的。
+
+- 新增 `VideoStorage` 接口 + `LocalVideoStorage`（默认实现）。**刻意不与
+  `ImageStorage` 合用**：两者约束完全不同（图片 10MB、每篇 9 张；
+  视频 200MB、每篇 1 个），共用就得在每个方法里问「这次是图还是视频」。
+- `POST /api/note/video`：multipart，**只放行 mp4 / webm**。
+  限流 `10/min`（比图片的 30/min 严得多 —— 一个视频就是几十上百 MB）。
+- `application.yml` 的 `multipart.max-file-size` 提到 200MB。调大它**不会**让图片
+  突破 10MB，因为那是 `LocalImageStorage` 里另一道代码校验。
+- 安全模型与图片完全一致：文件名一律 UUID、扩展名**按 content-type 反查**
+  （绝不使用用户提供的原始名，否则 `../../etc/cron.d/evil` 能路径穿越）、
+  拼完路径再 `startsWith(dir)` 确认一次、按日期分目录。
+- 前端：发布页「发视频」是一个**切换模式**，不是同一个 input 里混选 ——
+  一篇笔记要么图文要么视频（`note` 表只有 `cover` 与 `video_url` 两个位置），
+  混着选会让用户传了 3 张图再选个视频、最后只生效一半。
+  详情页 `<video controls preload="metadata" playsinline>`，
+  `preload=metadata` 而不是 `auto`（一进页面就下上百 MB 不可接受），
+  `controls` 必须留（移动端自动播会被拦，且有声自动播很烦人）。
+
+## 四个刻意的取舍
+
+1. **mov / avi 一律拒绝**（100001）：这两种浏览器不能直接播，放行它们等于
+   「传完看到黑屏加一个下载按钮」，比明确拒绝更糟。前端在选文件时就提示转格式。
+2. **不校验魔数**：只按 content-type 白名单。要做魔数校验得引入 `FileTypeDetector`
+   之类的依赖，而现在这条链路的价值是「能上传能播」，不是防伪。
+3. **不做封面抽取**：视频笔记的 `cover` 可以为空，详情页的播放器没有 poster。
+   抽帧要 ffmpeg，属于转码那一档。
+4. **删笔记时不删视频文件**：与图片一致（图片文件本体也留在 `uploads/`）。
+   文件残留只是浪费一点磁盘，不该让删除接口失败。
+
+## 两条测试上的自坑
+
+1. **契约里我自己写的 `up()` 返回解析后的 body，我却按 `{ json: x }` 解构** ——
+   断言报的是「code=undefined」，与「上传失败」毫无关系。
+2. **未登录返回的是 HTTP 200 + body code 10005**，不是 401。断言按 401 写会红，
+   而红的原因（约定记错）与视频功能无关。
+
+CDP 那边还踩了一次：`exists`/`text`/`click` 三个 helper 在 `ui-note.mjs` 里
+**本来不存在**（我从 `ui-interaction` 记混了），第一次跑是 `exists is not defined`。
+补的时候又用了字符串拼接而不是本项目惯用的模板字符串，
+结果报出 `t is not defined` —— 那个 `t` 是节点侧变量，压根不该出现在浏览器里。
+**helper 要照抄同项目里已经跑通的那个文件，别凭印象写。**
+
 ## 8. prod 栈运维（2026-10-04 踩出来的，都是环境问题不是代码问题）
 
 ### 8.1 prod 后端镜像曾经落后三个阶段（已修）

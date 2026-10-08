@@ -579,8 +579,28 @@ onBeforeUnmount(() => {
           靠 order 把图片提到全文之前（见样式里的 order 注释）→
           图片 → 标题 → 作者 → 正文 → 评论
       -->
-      <div class="col-media">
-        <div v-if="note.images.length" class="grid" data-test="note-detail-images">
+<div class="col-media">
+      <!--
+        视频。**放在图片区之前并用 v-if 排他**：`videoUrl` 存在时这篇是视频笔记
+        （后端 publish 时 type=2 要求 videoUrl 非空），不该同时渲染图。
+        controls 保留 —— 小红书也是手动播放，自动播放在移动端会被浏览器拦，
+        而且自动播有声视频是很烦人的。
+        preload="metadata" 而不是 auto：一进页面就下载几十上百 MB 是不可接受的。
+      -->
+      <div v-if="note.videoUrl" class="videobox" data-test="note-video">
+        <video
+          class="player"
+          :src="note.videoUrl"
+          :poster="note.cover ?? undefined"
+          controls
+          preload="metadata"
+          playsinline
+          data-test="note-video-player"
+        />
+        <p class="videohint">原视频，未转码</p>
+      </div>
+
+      <div v-if="!note.videoUrl && note.images.length" class="grid" data-test="note-detail-images">
           <van-swipe
             ref="swipeRef"
             :loop="note.images.length > 1"
@@ -946,6 +966,27 @@ ref="contentEl"
 </template>
 
 <style scoped>
+/* 视频播放器：宽度跟随左栏，比例用 9/16 兜底（竖屏视频最常见），
+   实际比例由浏览器按视频元数据调整，max-height 防止横屏视频把左栏撑得过高 */
+.videobox {
+  margin-bottom: 12px;
+}
+
+.player {
+  display: block;
+  width: 100%;
+  max-height: 72vh;
+  aspect-ratio: var(--img-ratio, 9 / 16);
+  background: #000;
+  border: var(--xk-stroke-w) solid var(--xk-stroke);
+  border-radius: var(--xk-radius-blob);
+}
+
+.videohint {
+  margin: 6px 0 0;
+  color: var(--xk-text-3);
+  font-size: var(--xk-fs-12);
+}
 /* 话题 chip：横排可换行，琥珀描边（品牌色里最弱的一档，不抢正文注意力） */
 .topics {
   display: flex;

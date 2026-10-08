@@ -63,6 +63,27 @@ public class NoteController {
         return Result.success(Map.of("url", noteService.uploadImage(file)));
     }
 
+    /**
+     * 上传视频。
+     *
+     * <p><b>限流比图片严得多</b>（10/min vs 30/min）：一个视频就是几十上百 MB，
+     * 放开一分钟 30 个就是几个 GB 的入站流量。
+     *
+     * <p><b>只存原文件，不转码</b>：mp4/webm 浏览器能直接播；mov/avi 需要
+     * 转码，那是另一件事（要引 ffmpeg、要处理转码失败）。
+     */
+    @Operation(summary = "上传视频",
+            description = "multipart/form-data，字段名 file；只支持 mp4/webp，各不超过 200MB；不转码")
+    @RateLimit(count = 10, seconds = 60, dimension = RateLimit.Dimension.USER,
+            message = "视频上传太频繁了，请稍后再试")
+    @Idempotent
+    @PostMapping("/video")
+    public Result<Map<String, String>> uploadVideo(
+            @Parameter(description = "视频文件", required = true)
+            @RequestParam("file") MultipartFile file) {
+        return Result.success(Map.of("url", noteService.uploadVideo(file)));
+    }
+
     @Operation(summary = "编辑笔记",
             description = "作者本人，请求体字段与发布一致（全量更新：标题/正文/类型/图片/视频）")
     // PUT 本身幂等（重试多次结果一致），限流与发布对齐，避免改稿被刷

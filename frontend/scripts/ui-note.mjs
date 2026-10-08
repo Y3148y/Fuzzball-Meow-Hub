@@ -187,6 +187,27 @@ try {
 //
 // ⚠️ 改值必须走原生 setter + 派发 input：直接 el.value = x 不会触发
 // Vue 的 v-model，预览是 computed，界面不会更新。这条坑 P13 的计数断言踩过。
+/**
+ * 造一个最小 .mp4 交给 <input type=file>
+ *
+ * <p>内容是随便填的字节：**后端只按 content-type 白名单 + 大小校验，不校验魔数**，
+ * 而浏览器给 File.type 又是按扩展名判的，所以「叫对扩展名」就够跑通这条链路。
+ * 这里验的是「上传 → 落盘 → 播放器拿得到 src」，不是「视频真能解码」——
+ * 后者需要真 mp4 文件与解码器，属于 headless 里验不动的部分。
+ */
+function makeFakeVideo(dir) {
+  const p = join(dir, 'probe.mp4')
+  // ftyp box 头，让它至少「看起来」像个 mp4
+  const head = Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70])
+  writeFileSync(p, Buffer.concat([head, Buffer.alloc(4096)]))
+  return p
+}
+
+/** exists / text 两个小工具是视频段要用的，本文件原先没有 */
+const exists = (test) => s.evaluate(`!!document.querySelector('[data-test=${test}]')`)
+const click = (test) => s.evaluate(`document.querySelector('[data-test=${test}]')?.click()`)
+const text = (test) => s.evaluate(`document.querySelector('[data-test=${test}]')?.textContent?.trim() ?? ''`)
+
 async function setVal(sel, value) {
   await s.evaluate(
     `(() => {
@@ -328,6 +349,89 @@ async function setVal(sel, value) {
   await s.waitFor("location.hash.startsWith('#/note/')", '补发笔记成功', 25000)
   await s.waitFor("document.querySelector('[data-test=note-detail]')", '补发的笔记详情渲染')
   s.check('话题段之后补发了一篇笔记，把浏览器停回详情页（后续断言都量这里）', true)
+}
+
+// ============ 8.9 P19 视频：切视频模式 → 选文件 → 发布 → 详情页能播 ============
+//
+// 用「切换到视频模式」而不是同一个 input 里混选：一篇笔记要么图文要么视频，
+// 混选会让用户传了图再选视频、最后只生效一半（PublishView 注释写了这层理由）。
+{
+  const vidPath = makeFakeVideo(dir)
+  await s.goto(`${BASE}/#/publish`)
+  await s.waitFor("document.querySelector('[data-test=note-video-mode]')", '视频模式按钮', 20000)
+  s.check('发布页有「发视频」入口', await exists('note-video-mode'))
+
+  await click('note-video-mode')
+  await s.waitFor("!!document.querySelector('[data-test=note-video-file]')", '切到视频模式', 10000)
+  s.check('切到视频模式后出现视频文件选择框', await exists('note-video-file'))
+  s.check(
+    '切到视频模式后图片选择框消失（两者互斥）',
+    (await s.evaluate("!!document.querySelector('[data-test=note-file]')")) === false,
+  )
+  s.check(
+    '切到视频模式后按钮变成「图文模式」（可切回）',
+    (await text('note-video-mode')) === '图文模式',
+    await text('note-video-mode'),
+  )
+
+  await setVal('[data-test=note-title]', 'CDP 视频笔记')
+  await setVal('[data-test=note-content]', '播放器验证')
+  await setFiles('[data-test=note-video-file]', [vidPath])
+  await sleep(500)
+  s.check(
+    '选完视频后显示文件名',
+    (await s.evaluate("document.querySelector('.picker')?.textContent || ''")).includes('probe.mp4'),
+  )
+
+  await s.evaluate("document.querySelector('.submit').click()")
+  await s.waitFor("location.hash.startsWith('#/note/')", '视频笔记发布成功', 40000)
+  const videoNoteId = (await s.evaluate('location.hash')).split('/').pop()
+
+  await s.waitFor(
+    "!!document.querySelector('[data-test=note-video-player]')",
+    '详情页播放器渲染',
+    20000,
+  )
+  const vs = await s.evaluate(`(() => {
+    const v = document.querySelector('[data-test=note-video-player]')
+    return JSON.stringify({
+      src: v?.getAttribute('src') ?? null,
+      controls: v?.hasAttribute('controls'),
+      preload: v?.getAttribute('preload'),
+      w: Math.round(v?.getBoundingClientRect().width ?? 0),
+    })
+  })()`)
+  const vd = JSON.parse(vs)
+  s.check('详情页有 <video> 且 src 是上传后的路径（UUID 命名）',
+    typeof vd.src === 'string' && /\/[0-9a-f]{32}\.mp4$/.test(vd.src), vs)
+  s.check('播放器带 controls（移动端自动播会被拦，且有声自动播很烦人）', vd.controls === true)
+  s.check('preload=metadata 而不是 auto（一进页面就下上百 MB 不可接受）',
+    vd.preload === 'metadata', vs)
+  s.check('播放器有实际宽度（不是 0 宽的隐藏元素）', vd.w > 100, `w=${vd.w}`)
+  s.check('视频笔记不渲染图集（图文与视频互斥）',
+    (await s.evaluate("!!document.querySelector('[data-test=note-detail-images]')")) === false)
+
+  // 清理（走裸接口：这时人在详情页）
+  const tok9 = await s.evaluate("localStorage.getItem('xk_token')")
+  await fetch(`${API}/api/note/${videoNoteId}`, {
+    method: 'DELETE',
+    headers: { Authorization: 'Bearer ' + tok9 },
+  })
+
+  // 复原：重新发一篇图文笔记，把浏览器停回普通详情页
+  await s.goto(`${BASE}/#/publish`)
+  await s.waitFor("document.querySelector('[data-test=note-title]')", '回到发布页', 20000)
+  await setVal('[data-test=note-title]', '这是由 ui-note.mjs 发布的正文内容。')
+  await setVal('[data-test=note-content]', '这是由 ui-note.mjs 发布的正文内容。')
+  await setFiles('[data-test=note-file]', [pngA, pngB])
+  await s.waitFor(
+    "document.querySelectorAll('[data-test=note-previews] .cell').length === 2",
+    '图片就绪',
+    20000,
+  )
+  await s.evaluate("document.querySelector('.submit').click()")
+  await s.waitFor("location.hash.startsWith('#/note/')", '补发图文笔记成功', 25000)
+  await s.waitFor("document.querySelector('[data-test=note-detail]')", '详情渲染')
 }
 
 // ---- 8.4 P13：此前详情卡从无 padding（文字贴着描边），这里钉死
@@ -1103,7 +1207,7 @@ await s.evaluate("document.querySelector('[data-test=img-next]').click()")
   })).json()
   s.check('纯文字笔记删除后详情返回 20001', cleaned.code === 20001, `code=${cleaned.code}`)
 } catch (e) {
-  s.check('用例执行到底', false, String(e.message))
+  s.check('用例执行到底', false, String(e.message));
 } finally {
   const allOk = await s.close()
   process.exit(allOk ? 0 : 1)

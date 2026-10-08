@@ -27,6 +27,8 @@ public interface NoteService {
      */
     String uploadImage(MultipartFile file);
 
+    String uploadVideo(MultipartFile file);
+
     /**
      * 编辑笔记（作者本人），请求体与发布同构（全量更新）。
      *

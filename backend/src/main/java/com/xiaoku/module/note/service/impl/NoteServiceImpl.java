@@ -24,6 +24,7 @@ import com.xiaoku.module.note.mapper.NoteLikeMapper;
 import com.xiaoku.module.note.mapper.NoteMapper;
 import com.xiaoku.module.note.service.NoteQueryService;
 import com.xiaoku.module.note.service.NoteService;
+import com.xiaoku.common.storage.VideoStorage;
 import com.xiaoku.module.note.support.NoteCounterStore;
 import com.xiaoku.module.note.vo.NoteVO;
 import com.xiaoku.module.search.event.NoteEventDTO;
@@ -67,6 +68,7 @@ public class NoteServiceImpl implements NoteService {
     private final NoteQueryService noteQueryService;
     private final UserQueryService userQueryService;
     private final ImageStorage imageStorage;
+    private final VideoStorage videoStorage;
     private final KafkaTemplate<String, Object> kafkaTemplate;
     private final NoteIdBloomFilter bloomFilter;
     private final NoteCounterStore counterStore;
@@ -217,6 +219,11 @@ log.info("笔记发布成功 noteId={} userId={} images={}", note.getId(), userI
     @Override
     public String uploadImage(MultipartFile file) {
         return imageStorage.store(file);
+    }
+
+    @Override
+    public String uploadVideo(MultipartFile file) {
+        return videoStorage.store(file);
     }
 
     @Override

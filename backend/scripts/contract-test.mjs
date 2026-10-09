@@ -1310,14 +1310,38 @@ async function main() {
     eq('详情图片与编辑一致', JSON.stringify(json?.data?.images), JSON.stringify([editImageUrl]))
   }
   {
-    // 清空图片：cover 要走「显式 set null」路径（updateById 的 not_null 会跳过空值，旧封面残留）
-    const { json } = await put(`/api/note/${noteId}`, {
+    // ⚠️ 这条断言在 P21 之前是**相反**的。
+    //
+    // P10 刻意让 update 传 requireGraphicImage=false，理由是「编辑是全量覆盖，
+    // 不让内容修订卡在创建期的规则上」，P11 也把它写进了契约。
+    // 但 2026-10-08 手测发现：**无图笔记会把前端真的打坏** ——
+    //   ① 详情页 .col-media 渲染成空块，再叠加 :has() 单栏兜底 → 布局看着是乱的；
+    //   ② 列表卡拿吉祥物兜底当封面，@load 把**吉祥物的宽高比**写进 --r
+    //      → 卡片高度与其它 3/4 卡不一致。
+    // 小红书发帖与编辑都要求至少一张图，这里对齐它：让「无图笔记」这个形态
+    // 压根不存在，比事后给前端加兜底分支更省事。
+    //
+    // ⚠️ 下面两条同时覆盖「空数组」和「不传」：P10 之所以允许是因为
+    // 全量覆盖语义下「不传 imageUrls」和「传空数组」都会让图片被清掉，
+    // 现在两者都不再允许，但**它们各自该报什么错**要分开钉住 ——
+    // 前者进 validatePublishParams，后者也是，两者都是 100001。
+    const cleared = await put(`/api/note/${noteId}`, {
+      token: auth,
+      body: { title: '编辑后的标题', content: '编辑后的正文', imageUrls: [] },
+    })
+    codeIs('编辑清空图片被拒（100001，P21 起对齐小红书）', cleared.json, 100001)
+
+    const omitted = await put(`/api/note/${noteId}`, {
       token: auth,
       body: { title: '编辑后的标题', content: '编辑后的正文' },
     })
-    codeIs('编辑清空图片成功', json, 0)
-    eq('清空后 images 为空数组', JSON.stringify(json?.data?.images), JSON.stringify([]))
-    check('清空后 cover 为 null，旧封面没有残留', json?.data?.cover == null, `cover=${JSON.stringify(json?.data?.cover)}`)
+    codeIs('编辑不传 imageUrls 同样被拒（缺省即空）', omitted.json, 100001)
+
+    // 被拒之后旧封面必须**原封不动**：这条比「清空成功」那条更有价值 ——
+    // 它验的是「校验拦在写库之前」，而不是「清空之后有没有残留」。
+    const after = await get(`/api/note/${noteId}`, { token: auth })
+    eq('编辑被拒后原图片还在（校验拦在写库之前）',
+      JSON.stringify(after.json?.data?.images), JSON.stringify([editImageUrl]))
   }
 
   // ---- 17.2 P10 上下架（PUT /api/note/{id}/status，只认 1/2）+ 搜索可见性
@@ -1706,14 +1730,24 @@ async function main() {
   }
   {
     // 幂等：同一个人对同一个对象重复互动，通知列表只该有一条
-    const before = await get('/api/notification/list?page=1&size=50', { token: auth })
-    const likeN = (before.json?.data?.list ?? []).filter((n) => n.type === 1).length
+    //
+    // ⚠️ P21 起这条断言的**写法**变了，语义没变：
+    // 原来比的是「点赞类通知的**总数**与操作前相等」。取消赞现在会撤回那条通知
+    // （P21 的核心改动），所以「取消 → 再赞」是一次真实的重新互动，
+    // 通知理应重新出现，总数会 +1 —— 再比总数就必然假红。
+    //
+    // 真正该钉的是 uk_notify_once 的语义：**同一个对象永远只有一条**。
+    // 那个断言精确、不受撤回影响，而且来回来回多少次都能拦住「刷出第二条」。
     await put(`/api/note/${noteId}/like`, { token: actorAuth })
     await del(`/api/note/${noteId}/like`, { token: actorAuth })
     await put(`/api/note/${noteId}/like`, { token: actorAuth })
     const after = await get('/api/notification/list?page=1&size=50', { token: auth })
-    const likeA = (after.json?.data?.list ?? []).filter((n) => n.type === 1).length
-    eq('重复赞同一篇笔记不会刷出第二条通知（uk_notify_once + touchExisting）', likeA, likeN)
+    const sameTarget = (after.json?.data?.list ?? []).filter(
+      (n) => n.type === 1 && n.targetId === noteId,
+    )
+    eq('同一篇笔记的点赞通知只有一条（取消再来回也不累积）', sameTarget.length, 1)
+    check('重新点赞后这条通知回到未读（touchExisting 的既有语义没被破坏）',
+      sameTarget[0]?.isRead === 0, `isRead=${sameTarget[0]?.isRead}`)
   }
   {
     // 不给自己发通知：自己赞自己的笔记不该收到通知
@@ -2522,6 +2556,143 @@ async function main() {
     // 账号名用「ct_ + 前缀 + stamp」的连续形式：stamp 是 base36 小写字母数字，
     // 中间多一个下划线就匹配不上脚本末尾打印的那条清理正则
     // '^ct[0-9]?_[a-z0-9]+$'，于是每次跑完都留下一个清理不到的常驻垃圾账号。
+  }
+
+/* ================================================================
+   * 21.1 P21：通知撤回 + 编辑必带图
+   *
+   * 这两条都是「用户看到的东西与真实状态对不上」：
+   *   ① 赞取消了、评论删了，那条通知还挂在铃铛里 → 点进去是空的
+   *   ② 编辑可以把图清空 → 详情页媒体区变成空块、列表卡比例错乱
+   * 两条都来自 2026-10-08 的手测，本段把它们钉住。
+   * ================================================================ */
+  {
+    // ⚠️ 刻意**不注册新账号**，直接用两个常驻 fixture（口令 Xk@2026peer）。
+    // register 是 10/min/IP，P20 段刚注册过 2 个，这一段再注册 2 个必然撞；
+    // 撞了之后后面十几条全是「凭证无效」的连锁假红，真因（注册被限流）隔了整屏。
+    // 用 fixture 的代价是它们有历史通知残留，但本段全部用「相对增量」断言，
+    // 不受影响；也不用清理（AGENTS 登记过：这几个 fixture 不要清理）。
+    // ⚠️ 两个 fixture 的口令**不一样**（smoke 是 Xk@123456，
+    // interact/follow 才是 Xk@2026peer）。写成同一个的话只有 smoke 登录失败，
+    // 而症状是「凭证无效」一路连锁到十几条断言，真因隔了整屏。
+    const lA = await post('/api/user/login', { body: { username: 'xk_ui_smoke', password: 'Xk@123456' } })
+    const lB = await post('/api/user/login', { body: { username: 'xk_ui_follow', password: 'Xk@2026peer' } })
+    // fixture 登录失败 = 口令漂移或账号被删，必须当场报出来而不是让后面集体假红
+    check('P21 两个 fixture 都能登录', lA.json?.code === 0 && lB.json?.code === 0,
+      `smoke=${lA.json?.code} follow=${lB.json?.code}`)
+    const p21a = 'xk_ui_smoke'
+    const p21b = 'xk_ui_follow'
+    const tA = `Bearer ${lA.json?.data?.accessToken}`
+    const tB = `Bearer ${lB.json?.data?.accessToken}`
+    const idA = (await get('/api/user/me', { token: tA })).json?.data?.id
+    const idB = (await get('/api/user/me', { token: tB })).json?.data?.id
+
+    const p21Img = (await uploadImage(tA)).json?.data?.url
+    const note = await post('/api/note/publish', {
+      token: tA, body: { title: `P21 通知撤回 ${stamp}`, content: '正文', imageUrls: [p21Img] },
+    })
+    const noteId = note.json?.data?.id
+    check('造出笔记', typeof noteId === 'string', `id=${noteId}`)
+
+    /** 未读数：通知在不在的唯一可观测信号（读未读通知的接口要轮询，这里只看数量） */
+    const unread = async (token) => (await get('/api/notification/unread-count', { token })).json?.data
+    /** 撤回是 afterCommit，所以要等一小会儿（同步方法 + 毫秒级） */
+    const settle = () => new Promise((r) => setTimeout(r, 250))
+
+    /* ---------- ① 赞笔记 → 通知出现 → 取消赞 → 通知消失 ---------- */
+
+    const beforeLike = await unread(tA)
+    eq('B 点赞成功', (await put(`/api/note/${noteId}/like`, { token: tB })).json?.code, 0)
+    await settle()
+    eq('A 收到「赞了我的笔记」通知（未读 +1）', await unread(tA), beforeLike + 1)
+
+    eq('B 取消点赞成功', (await del(`/api/note/${noteId}/like`, { token: tB })).json?.code, 0)
+    await settle()
+    // ⭐ 本段的核心断言：通知必须跟着互动一起消失
+    eq('取消点赞后那条通知被撤回（未读回到原值）', await unread(tA), beforeLike)
+
+    /* ---------- ② 评论 → 通知出现 → 删评论 → 通知消失 ---------- */
+
+    eq('B 评论成功', (await post('/api/comment', {
+      token: tB, body: { noteId, content: `P21 待删评论 ${stamp}` } })).json?.code, 0)
+    await settle()
+    eq('A 收到「评论了我的笔记」通知', await unread(tA), beforeLike + 1)
+
+    const cList = await get(`/api/comment/list?noteId=${noteId}&page=1&size=20`, { token: tA })
+    const mine = cList.json?.data?.list?.find((c) => c.content === `P21 待删评论 ${stamp}`)
+    check('找到刚发的那条评论', !!mine, `id=${mine?.id}`)
+    // 删评论必须由作者本人操作，所以这里换 B 自己删 —— 与 A 的通知无关也不影响
+    eq('B 删除自己的评论成功', (await del(`/api/comment/${mine?.id}`, { token: tB })).json?.code, 0)
+    await settle()
+    eq('评论删除后那条通知被撤回', await unread(tA), beforeLike)
+
+    /* ---------- ③ 赞评论 → 通知出现 → 取消赞 → 通知消失 ---------- */
+
+    const cm2 = await post('/api/comment', {
+      token: tB, body: { noteId, content: `P21 被赞评论 ${stamp}` } })
+    const cm2id = cm2.json?.data?.id
+    const cmAuthor = cm2.json?.data?.nickname
+    check('B 又发了一条评论', typeof cm2id === 'string', `id=${cm2id}`)
+
+    // 「赞评论」的通知发给**评论作者**，也就是 B 自己 —— 但 P15 明确「不给自己发通知」，
+    // 所以这条断言必须换个身份：A 赞 B 的评论，通知发给 B。
+    const bUnreadBefore = await unread(tB)
+    eq('A 赞 B 的评论成功', (await put(`/api/comment/${cm2id}/like`, { token: tA })).json?.code, 0)
+    await settle()
+    eq('B 收到「赞了你的评论」通知', await unread(tB), bUnreadBefore + 1)
+
+    eq('A 取消对评论的赞', (await del(`/api/comment/${cm2id}/like`, { token: tA })).json?.code, 0)
+    await settle()
+    eq('取消评论赞后那条通知被撤回', await unread(tB), bUnreadBefore)
+
+    /* ---------- ④ 删笔记 → 该笔记的全部通知消失 ---------- */
+
+    // ⚠️ 基线必须取在「B 的评论已经清空」之后，否则算不准：
+    // ③ 步给 A 留了一条聚合的「XX 评论了你的笔记」通知（B 那时还留着一���评论）。
+    // 删笔记时 retractByNoteId 会把它**一起**扫掉 —— 那是正确行为（笔记都没了，
+    // 那条评论通知留着就是死链），但它会让「删笔记前后未读数相等」这条断言差 1。
+    // 真实症状：期望 N+1 实际 N，而真因是基线取早了，隔了好几行。
+    eq('B 删除剩下的评论（聚合通知的前置条件）',
+      (await del(`/api/comment/${cm2id}`, { token: tB })).json?.code, 0)
+    await settle()
+    eq('最后一条评论删掉后，聚合的评论通知也被撤回', await unread(tB), bUnreadBefore)
+    // 撤回之后未读是**减少**：③ 步给 A 留的那条（beforeLike + 1）被撤掉，
+    // 所以回到 beforeLike。写成 +1 会把「撤掉了」当成「没撤」——
+    // 这条断言本来就是用来证明「真的撤了」，算式反了它就恒真了。
+    eq('撤的是 A 收到的那条（对 A 而言未读从 +1 回落到基线）', await unread(tA), beforeLike)
+
+    const aUnreadBefore = await unread(tA)
+    eq('B 点赞通知存在（前置条件）',
+      (await put(`/api/note/${noteId}/like`, { token: tB })).json?.code, 0)
+    await settle()
+    eq('通知 +1', await unread(tA), aUnreadBefore + 1)
+
+    eq('A 删除自己的笔记', (await del(`/api/note/${noteId}`, { token: tA })).json?.code, 0)
+    await settle()
+    // ⭐ 按 note_id 撤，不是逐条按类型撤 —— 漏掉哪一类，作者下次点到的就是死链
+    eq('删笔记后该笔记的通知全部被撤回', await unread(tA), aUnreadBefore)
+
+    /* ---------- ⑤ 编辑也必须带图（P21 起 publish/update 一致） ---------- */
+
+    const note2 = await post('/api/note/publish', {
+      token: tA, body: { title: `P21 编辑清图 ${stamp}`, content: '正文', imageUrls: [p21Img] } })
+    const note2Id = note2.json?.data?.id
+    // ⚠️ 这条断言在 P21 之前是**相反**的：P10 刻意保留了「编辑可清空图片」，
+    // P11 也把它写进了契约。手测发现无图笔记会把前端打坏（详情页媒体区空块 +
+    // 列表卡比例错乱），而小红书发帖与编辑都要求至少一张图，所以改成和发布一致。
+    codeIs('编辑时清空图片 → 100001（对齐小红书；P10~P20 允许，P21 起不允许）',
+      (await put(`/api/note/${note2Id}`, {
+        token: tA, body: { title: `P21 编辑清图 ${stamp}`, content: '正文', imageUrls: [] } })).json,
+      100001)
+    codeIs('编辑时不传 imageUrls（缺省=空）→ 100001',
+      (await put(`/api/note/${note2Id}`, {
+        token: tA, body: { title: `P21 编辑清图 ${stamp}`, content: '正文' } })).json, 100001)
+    eq('带图编辑仍然成功',
+      (await put(`/api/note/${note2Id}`, {
+        token: tA,
+        body: { title: `P21 编辑清图 ${stamp}`, content: '正文', imageUrls: [p21Img] } })).json?.code, 0)
+
+    await del(`/api/note/${note2Id}`, { token: tA })
   }
 
   // ---- 汇总

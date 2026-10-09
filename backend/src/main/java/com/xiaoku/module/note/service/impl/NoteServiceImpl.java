@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.xiaoku.common.context.UserContextHolder;
 import com.xiaoku.common.exception.BizException;
 import com.xiaoku.module.moderation.TextModeration;
+import com.xiaoku.module.notification.service.NotificationService;
 import com.xiaoku.module.topic.service.TopicRelationService;
 import com.xiaoku.common.result.ErrorCodeEnum;
 import com.xiaoku.common.storage.ImageStorage;
@@ -74,6 +75,7 @@ public class NoteServiceImpl implements NoteService {
     private final NoteCounterStore counterStore;
     private final TextModeration textModeration;
     private final TopicRelationService topicRelationService;
+    private final NotificationService notificationService;
 
     @Value("${xiaoku.kafka.note-topic}")
     private String noteEventTopic;
@@ -134,7 +136,14 @@ log.info("笔记发布成功 noteId={} userId={} images={}", note.getId(), userI
         if (note == null || !userId.equals(note.getUserId())) {
             throw new BizException(ErrorCodeEnum.NOTE_NOT_FOUND);
         }
-        PublishParams params = validatePublishParams(dto, false);
+        // P21 起 update 也要求至少一张图（原来传 false，P10 刻意保留「编辑可清空图片」）。
+        // 改这个的原因不是「想收紧」，而是**无图笔记会真的把前端打坏**：
+        //   ① 详情页 .col-media 渲染成空块，再叠加 :has() 单栏兜底 → 布局看着是乱的；
+        //   ② 列表卡拿吉祥物兜底当封面，宽高比被写成吉祥物的比例 → 卡片大小与其它卡不符。
+        // 这两条 2026-10-08 手测都撞到了（5 篇 P6 遗留的无图笔记）。
+        // 小红书发帖与编辑都要求至少一张图，这里对齐它 ——
+        // 让「无图笔记」这个形态压根不存在，比事后给前端加兜底分支更省事。
+        PublishParams params = validatePublishParams(dto, true);
 
         // 用 LambdaUpdateWrapper 显式 set 而不是 updateById：全项目配了
         // update-strategy not_null，updateById 会把「清空的字段」（cover / videoUrl）
@@ -309,6 +318,11 @@ log.info("笔记发布成功 noteId={} userId={} images={}", note.getId(), userI
         // Redis 计数键清掉（赞/收藏 ZSet + 待落库标记），DB 行删完不留死 key
         counterStore.removeCounters(noteId);
 
+        // 撤掉指向这篇笔记的全部通知（P21）。按 note_id 撤而不是逐条按类型撤：
+        // 通知有 7 种类型，逐一枚举必然漏掉某一类，而漏掉的那类
+        // 就是作者下次会点到的死链（点进去是「笔记不存在」）。
+        notificationService.retractByNoteId(noteId);
+
         // 事件只用 noteId：消费者按 _id 删文档，不需要标题/正文
         NoteEntity eventNote = new NoteEntity();
         eventNote.setId(noteId);
@@ -368,9 +382,13 @@ log.info("笔记发布成功 noteId={} userId={} images={}", note.getId(), userI
     /**
      * {@code publish} 与 {@code update} 共用的「类型/图片/视频地址」校验。
      *
-     * @param requireGraphicImage P11 起图文笔记创建必须至少一张图；编辑时传入 false，
-     *                            因为「编辑清空图片」是 P10 刻意保留的语义（全量覆盖），
-     *                            不让内容修订卡在创建期的规则上。
+     * <p>P21 起 <b>publish 与 update 都传 {@code requireGraphicImage=true}</b>：
+     * 编辑也必须至少一张图。原来 update 传 false 是 P10 的决定（理由是
+     * 「编辑是全量覆盖，不让内容修订卡在创建期的规则上」），但那条理由
+     * 抵不过「无图笔记会把前端打坏」这个实测事实 —— 详见 update() 里的注释。
+     *
+     * <p>形参留着而不是直接删成常量：将来若真出现「视频笔记换封面」
+     * 之类需要放宽的路径，这个开关就是唯一要动的地方。
      */
     private PublishParams validatePublishParams(NotePublishDTO dto, boolean requireGraphicImage) {
         int type = dto.getType() == null ? TYPE_GRAPHICAL : dto.getType();
@@ -386,7 +404,7 @@ log.info("笔记发布成功 noteId={} userId={} images={}", note.getId(), userI
         if (type == TYPE_VIDEO && (dto.getVideoUrl() == null || dto.getVideoUrl().isBlank())) {
             throw new BizException(ErrorCodeEnum.PARAM_VALIDATION_ERROR, "视频笔记必须填写视频地址");
         }
-        // P11 起图文笔记必须至少一张图（对齐小红书），仅创建时强制
+        // P21 起图文笔记必须至少一张图（对齐小红书），发布与编辑都强制
         if (requireGraphicImage && type == TYPE_GRAPHICAL && images.isEmpty()) {
             throw new BizException(ErrorCodeEnum.PARAM_VALIDATION_ERROR, "图文笔记必须至少上传一张图片");
         }

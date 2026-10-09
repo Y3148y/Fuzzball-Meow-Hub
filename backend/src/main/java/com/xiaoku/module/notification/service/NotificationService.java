@@ -73,4 +73,33 @@ public interface NotificationService {
      */
     void notifyReported(Long receiverId, Long actorId, Long targetId,
                         Integer targetType, String reasonText);
+
+    /* ---------------- 撤回（P21：互动被撤销时把通知一并撤掉） ---------------- */
+
+    /**
+     * 撤回一条通知：<b>互动被撤销时必须调用</b>。
+     *
+     * <p>为什么不能只写不撤：用户取消点赞、作者删掉评论之后，那条「XX 赞了你的笔记」
+     * 还留在通知中心，点进去看到的是一篇已经没有点赞的笔记 —— 用户看到的就是
+     * 一个假的互动。2026-10-08 手测实测到库里 4 条点赞通知的 {@code note_like}
+     * 行已为 0、4 条评论通知的 {@code comment} 行已不存在。
+     *
+     * <p>⚠️ 与写入一样<b>必须吞异常</b>：通知撤不掉不该让「取消点赞」失败。
+     * 用户已经看到赞取消了，交互已经完成，通知是附属品。
+     *
+     * @return 撤掉了几条（0 条也是正常情况：本来就没通知过）
+     */
+    int retract(Long receiverId, Long actorId, Integer type, Long targetId);
+
+    /**
+     * 撤掉某篇笔记下的全部通知（笔记被删除时用）。
+     *
+     * <p>按 {@code note_id} 撤而不是逐条按 {@code target_id} 撤：通知类型有 7 种，
+     * 笔记删除时该清的是「所有指向这篇笔记的通知」，
+     * 逐条枚举类型必然漏掉某一类，而漏掉的那类就是用户下次会点到的死链。
+     */
+    int retractByNoteId(Long noteId);
+
+    /** 撤掉某条评论下的全部通知（评论被删除时用，含赞评论/回复） */
+    int retractByTarget(Integer type, Long targetId);
 }

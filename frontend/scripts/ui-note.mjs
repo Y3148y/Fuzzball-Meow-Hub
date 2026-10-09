@@ -12,7 +12,7 @@
  *
  * 跑法：npm run test:ui
  */
-import { writeFileSync, mkdtempSync } from 'node:fs'
+import { writeFileSync, mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import zlib from 'node:zlib'
@@ -21,6 +21,62 @@ import { createSession, loginDemo, preflight } from './ui-cdp.mjs'
 const BASE = 'http://localhost:5180'
 const API = 'http://localhost:8088'
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+/** eq(name, actual, expected) —— 与 ui-follow / ui-interaction 同款。
+ *  ⚠️ 不要用契约测试那边的 eq：那边是**迷你断言**（自带 check），
+ *  CDP 这边的 s.check(name, condition, detail) **只判第二个参数**，
+ *  第三个是 detail。照搬签名写成 s.check(name, actual, expected) 时，
+ *  expected 被当成 condition —— actual 恰好等于 expected 就「碰巧通过」，
+ *  不等于就假红，而真因（签名不同）离现象隔了整段。
+ */
+/** eq(name, actual, expected) —— 与 ui-follow / ui-interaction 同款。
+ *  ⚠️ 不要用契约测试那边的 eq：那边是**迷你断言**（自带 check），
+ *  CDP 这边的 s.check(name, condition, detail) **只判第二个参数**，第三个是 detail。
+ *  照搬签名写成 s.check(name, actual, expected) 时，expected 被当成 condition ——
+ *  actual 恰好等于 expected 就「碰巧通过」，不等于就假红，
+ *  而真因（两个文件的同名助手签名不同）离现象隔了整段。
+ *  ⚠️ 它定义在 `const s = await createSession()` **之前**：箭头函数的引用只在
+ *  调用时求值，而所有调用都在 s 建好之后。这是本文件里唯一一处「先定义后用」，
+ *  写在一起更清楚。 */
+const eq = (name, actual, expected) =>
+  s.check(name, actual === expected, `= ${JSON.stringify(actual)}（期望 ${JSON.stringify(expected)}）`)
+
+/** 「⋯」浮层里所有动作项的文本。抽成常量是因为多个段落都要用，
+ *  而每次重写一长串 `[...querySelectorAll(...)]` 只会增加抄错的概率。 */
+const ACT_TEXTS = `JSON.stringify(
+  [...document.querySelectorAll('.van-action-sheet__item')].map((e) => e.textContent.trim()),
+)`
+
+/** 举报弹窗的三项统计：原因数 / 可选目标数 / 是否已回显「已选择」。
+ *  ⚠️ 目标数用 `[data-test=report-targets]` 里的项数，**不用** class 选择器数
+ *  「非药丸的 .sheet-item」—— 那种写法依赖样式约定，换个 class 就悄悄数错。 */
+const SHEET_STATS = `(() => JSON.stringify({
+  reasons: document.querySelectorAll("[data-test=report-reason]").length,
+  targets: document.querySelectorAll("[data-test=report-targets] .sheet-item").length,
+  picked: !!document.querySelector("[data-test=report-picked]"),
+}))()`
+
+/** 在评论列表里找一条含指定文本的评论，回传它有没有「⋯」与「删除」。
+ *  两个一起看才有用：`hasMore`/`hasDelete` 互斥，单独看任一个都可能是因为
+ *  整行都没渲染出来（那时两个都是 false，看起来像「判定正确」）。
+ *  @param needle 已 JSON.stringify 过的搜索词（直接嵌进表达式，所以必须先转义） */
+const commentRow = (needle) => `(() => {
+  const items = [...document.querySelectorAll('[data-test=comment-item]')];
+  const hit = items.find((e) => e.textContent.includes(${needle}));
+  if (!hit) return JSON.stringify({ found: false, total: items.length });
+  return JSON.stringify({
+    found: true,
+    hasMore: !!hit.querySelector('.more-btn'),
+    hasDelete: !!hit.querySelector('[data-test=comment-delete-btn]'),
+  });
+})()`
+/** 裸 DELETE。本文件原先没有这个助手（ui-follow / ui-interaction 才有）。
+ *  ⚠️ 缺它不会立刻报错：只要清理分支从没被执行到，那个未定义引用就一直是隐形的，
+ *  直到某条路径真的走到它才抛 ReferenceError —— 而那时症状是「清理没生效」，
+ *  后面跟一个与清理毫无关系的堆栈。
+ *  @param token **裸 token**（不含 Bearer 前缀），本函数自己拼前缀。
+ */
+const del = (path, { token } = {}) =>
+  fetch(API + path, { method: 'DELETE', headers: token ? { Authorization: 'Bearer ' + token } : {} })
 
 try {
   await preflight()
@@ -433,6 +489,157 @@ async function setVal(sel, value) {
   await s.waitFor("location.hash.startsWith('#/note/')", '补发图文笔记成功', 25000)
   await s.waitFor("document.querySelector('[data-test=note-detail]')", '详情渲染')
 }
+
+// ============ 8.10 P21 举报入口：笔记「⋯」+ 评论「⋯」 ============
+//
+// P18 只把举报做在**作者主页**上，笔记详情页一个入口都没有 —— 而
+// 「我看到一篇违规笔记想举报」这件事发生的地方就是详情页。
+// P21 按小红书的做法（右上角「⋯」浮层）补上笔记与评论两个入口。
+//
+// 两条纪律（都是这一段真踩出来的）：
+//   ① 素材笔记用**别人**的身份发（xk_ui_interact）：登录的是 xk_ui_demo，
+//      自己写的笔记按 `v-if="!isMyNote"` 根本不会有「⋯」，测不到东西。
+//   ② 不用 8.9 段那篇视频笔记：举报去重是**永久**的（uk_report_once 且没有
+//      撤回接口），第二次跑必然拿到 80003。用一次性笔记才每次都测到「首次成功」。
+{
+  // 本文件造唯一标识的写法（不要抄契约脚本的 stamp —— 本文件没有那个变量）
+  const T = Date.now().toString(36).slice(2, 7)
+  const rTitle = 'CDP 举报入口 ' + T
+
+  const peerLogin = await (await fetch(API + '/api/user/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'xk_ui_interact', password: 'Xk@2026peer' }),
+  })).json()
+  const peerToken = peerLogin.data.accessToken
+
+  const fd = new FormData()
+  fd.append('file', new Blob([readFileSync(pngA)], { type: 'image/png' }), 'r.png')
+  const up = await (await fetch(API + '/api/note/image', {
+    method: 'POST', headers: { Authorization: 'Bearer ' + peerToken }, body: fd,
+  })).json()
+  const pub = await (await fetch(API + '/api/note/publish', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + peerToken },
+    body: JSON.stringify({ title: rTitle, content: rTitle, imageUrls: [up.data.url] }),
+  })).json()
+  const rNoteId = pub?.data?.id
+  eq('前置：别人的素材笔记造好了', typeof rNoteId, 'string')
+
+  await s.goto(BASE + '/#/note/' + rNoteId)
+  await s.waitFor("document.querySelector('[data-test=note-detail]')", '详情渲染', 20000)
+  // ⚠️ 还要等**评论列表**这个另一个请求回来：note-detail 出现时评论可能还没加载完。
+  // 不等就断言「评论出现在列表里」，读到的就是「还没渲染」，而不是「没发出去」。
+  await s.waitFor(
+    "!!document.querySelector('[data-test=comment-item]') || !!document.querySelector('[data-test=comment-empty]')",
+    '评论列表进入终态',
+    20000,
+  )
+
+  /* ---------- 笔记级「⋯」 ---------- */
+
+  s.check('别人的笔记顶栏有「⋯」入口', await exists('note-more'))
+  await s.evaluate("document.querySelector('[data-test=note-more]').click()")
+  // 等**动作项**而不是容器：Vant 的 ActionSheet 是懒渲染，容器一直在 DOM 里
+  await s.waitFor(
+    "document.querySelectorAll('.van-action-sheet__item').length > 0",
+    '「⋯」浮层打开',
+    10000,
+  )
+  const noteActs = await s.evaluate(ACT_TEXTS)
+  s.check('笔记「⋯」里有「举报这篇笔记」', noteActs.includes('举报'), JSON.stringify(noteActs))
+  s.check('笔记「⋯」里有「拉黑作者」', noteActs.includes('拉黑'), JSON.stringify(noteActs))
+
+  // 取消浮层（先走一遍「关掉」，再单独走「举报」，两条路径分开测）
+  await s.evaluate("document.querySelector('.van-action-sheet__cancel').click()")
+  await sleep(600)
+
+  await s.evaluate("document.querySelector('[data-test=note-more]').click()")
+  await s.waitFor(
+    "document.querySelectorAll('.van-action-sheet__item').length > 0",
+    '「⋯」浮层再次打开',
+    10000,
+  )
+  await s.evaluate(
+    "[...document.querySelectorAll('.van-action-sheet__item')]"
+      + ".find((e) => e.textContent.includes('举报')).click()",
+  )
+  await s.waitFor("!!document.querySelector('[data-test=report-sheet]')", '举报弹窗打开', 10000)
+  await sleep(600)
+  const rs = JSON.parse(await s.evaluate(SHEET_STATS))
+  eq('举报弹窗列出 6 个原因（来自后端枚举，不是写死在前端）', rs.reasons, 6)
+  eq('笔记只有一个目标，不需要再选内容', rs.targets, 0)
+  eq('但要回显「已选择：这篇笔记」', rs.picked, true)
+
+  await s.evaluate("document.querySelector('[data-test=report-reason]').click()")
+  await sleep(1600)
+  s.check('提交举报后弹窗关闭（一次性笔记，每次都测得到「首次成功」这一支）', (await exists('report-sheet')) === false)
+
+  /* ---------- 评论级「⋯」 ---------- */
+
+  // demo 自己发一条 → 自己的评论不该有「⋯」
+  await s.evaluate(
+    "(() => {"
+      + "  const el = document.querySelector('[data-test=comment-input]');"
+      + "  if (!el) throw new Error('找不到评论输入框');"
+      + "  const proto = el instanceof HTMLTextAreaElement"
+      + "    ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;"
+      + "  Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, 'CDP 自评 ' + "
+      + JSON.stringify(T)
+      + ");"
+      + "  el.dispatchEvent(new Event('input', { bubbles: true }));"
+      + "})()",
+  )
+  await sleep(300)
+  await s.evaluate("document.querySelector('[data-test=comment-submit]')?.click()")
+  await sleep(1600)
+  const mineRow = JSON.parse(await s.evaluate(commentRow(JSON.stringify('CDP 自评 ' + T))))
+  eq('自己发的评论出现在列表里', mineRow.found, true)
+  // ⚠️ demo 自己发的评论**不该**有举报入口：自己的内容不能举报自己
+  // （后端 80004 也会拒，界面就不该给这个入口）
+  eq('自己的评论没有「⋯」', mineRow.hasMore, false)
+  eq('自己的评论有「删除」（对照组：mine 判定本身是通的）', mineRow.hasDelete, true)
+
+  // 互动号发一条 → demo 看这条时就该有「⋯」
+  const cmPeer = await (await fetch(API + '/api/comment', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + peerToken },
+    body: JSON.stringify({ noteId: rNoteId, content: 'CDP 他评 ' + T }),
+  })).json()
+  eq('互动号评论成功', cmPeer?.code, 0)
+
+  await s.goto(BASE + '/#/note/' + rNoteId)
+  await s.waitFor("document.querySelector('[data-test=note-detail]')", '详情重新渲染', 20000)
+  await s.waitFor(
+    `!![...document.querySelectorAll('[data-test=comment-item]')]
+       .find((e) => e.textContent.includes(${JSON.stringify('CDP 他评 ' + T)}))`,
+    '互动号那条评论出现在列表里',
+    20000,
+  )
+  const otherRow = JSON.parse(await s.evaluate(commentRow(JSON.stringify('CDP 他评 ' + T))))
+  eq('别人的评论出现在列表里', otherRow.found, true)
+  eq('别人的评论有「⋯」（举报入口的第二个落点）', otherRow.hasMore, true)
+  eq('别人的评论没有「删除」（只有作者能删）', otherRow.hasDelete, false)
+
+  /* ---------- 清理 + 复原 ---------- */
+
+  await del('/api/note/' + rNoteId, { token: peerToken })
+  // 复原：重新发一篇图文笔记，把浏览器停回普通详情页（后续断言量的是它）
+  await s.goto(BASE + '/#/publish')
+  await s.waitFor("document.querySelector('[data-test=note-title]')", '回到发布页', 20000)
+  await setVal('[data-test=note-title]', '这是由 ui-note.mjs 发布的正文内容。')
+  await setVal('[data-test=note-content]', '这是由 ui-note.mjs 发布的正文内容。')
+  await setFiles('[data-test=note-file]', [pngA, pngB])
+  await s.waitFor(
+    "document.querySelectorAll('[data-test=note-previews] .cell').length === 2",
+    '图片就绪',
+    20000,
+  )
+  await s.evaluate("document.querySelector('.submit').click()")
+  await s.waitFor("location.hash.startsWith('#/note/')", '补发图文笔记成功', 25000)
+  await s.waitFor("document.querySelector('[data-test=note-detail]')", '详情渲染')
+}
+
 
 // ---- 8.4 P13：此前详情卡从无 padding（文字贴着描边），这里钉死
   const detailPad = await s.evaluate(

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { showConfirmDialog, showSuccessToast } from 'vant'
+import { showConfirmDialog, showSuccessToast, showToast } from 'vant'
 import { changeNoteStatus, collectNote, deleteNote, getNoteDetail, likeNote, uncollectNote, unlikeNote } from '@/api/note'
 import { followUser, unfollowUser } from '@/api/follow'
 import { createComment, deleteComment, likeComment, listComments, replyComment, unlikeComment } from '@/api/comment'
@@ -55,6 +55,11 @@ import { useUserStore } from '@/stores/user'
 import { formatDateTime } from '@/utils/datetime'
 
 const route = useRoute()
+import MoreSheet, { type MoreAction } from '@/components/MoreSheet.vue'
+import ReportSheet from '@/components/ReportSheet.vue'
+import { useReportSheet } from '@/composables/useReportSheet'
+import { blockUser } from '@/api/report'
+
 const router = useRouter()
 const userStore = useUserStore()
 
@@ -72,6 +77,72 @@ const followingAuthor = ref(false)
 const isMyNote = computed(
   () => !!note.value?.authorId && note.value.authorId === userStore.userInfo?.id,
 )
+
+/* ==================== P21：笔记的「⋯」举报 / 拉黑 ====================
+ *
+ * 对齐小红书（2026-10-08 查证）：举报与拉黑收在**右上角「⋯」的浮层**里。
+ * P18 只把举报做在作者主页上，笔记详情页一个入口都没有 ——
+ * 而「我看到一篇违规笔记想举报」这件事发生的地方就是详情页，不是 TA 的主页。
+ */
+
+const reportSheet = useReportSheet()
+const blockingAuthor = ref(false)
+
+/** 评论的「⋯」动作。不能举报自己的评论（后端 80004 会拒，但这里就不该给入口） */
+function commentActions(c: { id: string; mine?: boolean }): MoreAction[] {
+  if (c.mine) return []
+  return [{ key: 'report', label: '举报', danger: true, subname: '提交后由运营审核处理' }]
+}
+
+function onCommentMore(key: string, c: { id: string; content?: string }) {
+  if (key !== 'report') return
+  // 评论的正文可能有 1000 字，列表里全量展示会挤爆浮层 —— 截到 20 字足够辨认
+  const brief = (c.content ?? '').slice(0, 20) || '（空评论）'
+  void reportSheet.openReport(2, [{ id: c.id, title: brief }], '举报这条评论')
+}
+
+const noteActions = computed<MoreAction[]>(() => {
+  if (isMyNote.value) return []
+  return [
+    { key: 'report', label: '举报这篇笔记', danger: true, subname: '提交后由运营审核处理' },
+    {
+      key: 'block',
+      label: '拉黑作者',
+      danger: true,
+      subname: `拉黑后不再看到 ${note.value?.authorNickname} 的内容`,
+    },
+  ]
+})
+
+async function onNoteMore(key: string) {
+  if (!note.value) return
+  if (key === 'report') {
+    // 目标只有一个（这篇笔记），所以不需要「选内容」那一步 ——
+    // useReportSheet 在 items.length === 1 时会自动选中
+    void reportSheet.openReport(1, [{ id: note.value.id, title: note.value.title ?? '（无标题）' }], '举报这篇笔记')
+    return
+  }
+  if (key === 'block' && !blockingAuthor.value) {
+    blockingAuthor.value = true
+    try {
+      await blockUser(note.value.authorId)
+      showSuccessToast('已拉黑')
+      router.back()
+    } catch (e) {
+      // 80005 已拉黑：重复点不该报错，直接退回去看内容（他本来就该消失了）
+      if (e instanceof BizError && e.code === ErrorCode.ALREADY_BLOCKED) {
+        router.back()
+        return
+      }
+      showToast(e instanceof BizError ? e.message : '操作失败，请稍后重试')
+    } finally {
+      blockingAuthor.value = false
+    }
+  }
+}
+/** 有没有任何可显示的媒体（视频或图片）。P21：col-media 只在有内容时渲染 */
+const hasMedia = computed(() => !!note.value?.videoUrl || (note.value?.images?.length ?? 0) > 0)
+
 const isFollowingAuthor = computed(() => note.value?.authorFollowed === true)
 
 async function toggleFollowAuthor() {
@@ -552,7 +623,22 @@ onBeforeUnmount(() => {
     <header class="top">
       <button class="back" type="button" aria-label="返回" @click="router.back()">‹</button>
       <span class="brand">笔记详情</span>
+      <!--
+        「⋯」放顶栏而不是作者区：小红书是笔记**右上角**的「⋯」，
+        而作者区那一行已经放了关注/作者本人操作了，再塞两个会重演
+        UserView 那个「六个元素挤一行 flex」的坏（AGENTS P21 段）。
+      -->
+      <MoreSheet
+        v-if="!isMyNote"
+        :actions="noteActions"
+        label="这篇笔记的操作"
+        testid="note-more"
+        @select="onNoteMore"
+      />
     </header>
+
+    <!-- 举报弹窗（三个入口共用：这里 / 评论项 / 作者主页） -->
+    <ReportSheet />
 
     <p v-if="loading" class="hint">加载中…</p>
 
@@ -579,7 +665,14 @@ onBeforeUnmount(() => {
           靠 order 把图片提到全文之前（见样式里的 order 注释）→
           图片 → 标题 → 作者 → 正文 → 评论
       -->
-<div class="col-media">
+<!--
+  P21：加 v-if。`col-media` 原来**无条件渲染**，所以一篇既没有视频也没有图片的
+  笔记（5 篇 P6 遗留的无图文字笔记）会得到一个**完全空的**媒体块 ——
+  再叠加下面 .card:not(:has(.grid)) 的单栏兜底，用户看到的就是
+  「标题上面莫名其妙空一大块、图片也不显示」（2026-10-08 手测）。
+  空块不是「留白」，它是渲染错误。
+-->
+<div v-if="hasMedia" class="col-media">
       <!--
         视频。**放在图片区之前并用 v-if 排他**：`videoUrl` 存在时这篇是视频笔记
         （后端 publish 时 type=2 要求 videoUrl 非空），不该同时渲染图。
@@ -683,6 +776,19 @@ onBeforeUnmount(() => {
                 >
                   删除
                 </button>
+                <!--
+                  举报别人的评论。小红书是「长按评论 → 浮层 → 举报」，
+                  这里做成常驻的「⋯」：长按在桌面端没有对应手势，
+                  而评论那一行本来就已有「赞 / 回复 / 删除」三个按钮，
+                  再加一个宽度只有 44px 的「⋯」不会像 UserView 那样挤爆。
+                -->
+                <MoreSheet
+                  v-if="!c.mine"
+                  :actions="commentActions(c)"
+                  label="这条评论的操作"
+                  :testid="'comment-more-' + c.id"
+                  @select="(k: string) => onCommentMore(k, c)"
+                />
               </div>
 
               <!--

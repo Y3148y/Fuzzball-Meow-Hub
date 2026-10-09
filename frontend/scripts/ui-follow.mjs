@@ -379,14 +379,66 @@ try {
 
   const before = await profileNotes()
   s.check('前置：拉黑前能看到 TA 的笔记', before >= 1, `notes=${before}`)
-  s.check('作者页有「拉黑」按钮', await exists('user-block'))
-  s.check('拉黑按钮初始文案是「拉黑」', (await text('user-block')) === '拉黑',
-    await text('user-block'))
-  s.check('作者页有「举报」入口', await exists('user-report'))
+  // ⚠️ P21：拉黑与举报**从头部移进了右上角「⋯」的浮层**（对齐小红书）。
+  // 原来头部那一行 flex 要塞下「62 头像 + 昵称 + 用户名 + 关注 + 拉黑 + 举报」
+  // 六个元素，430px 下「拉黑」被压成上下两个「拉」「黑」并被卡片裁掉
+  // （2026-10-08 手测截图）。所以下面不再断言头部有那两个按钮。
+  s.check('作者页头部不再有「拉黑」按钮（P21 移进「⋯」）', await exists('user-block') === false)
+  s.check('作者页有「⋯」入口', await exists('user-more'))
+
+  // 点开浮层，验证「举报」「拉黑」两个动作都在里面
+  await click('user-more')
+  await s.waitFor(
+    "document.querySelectorAll('.van-action-sheet__item').length > 0",
+    '「⋯」浮层的动作项渲染出来（不能只等容器：Vant 懒渲染，容器一直在）',
+    10000,
+  )
+  const acts = JSON.parse(await s.evaluate(
+    `JSON.stringify([...document.querySelectorAll('.van-action-sheet__item')]
+       .map((e) => e.textContent.trim()))`,
+  ))
+  s.check('「⋯」里有「举报」动作', acts.some((a) => a.includes('举报')), JSON.stringify(acts))
+  s.check('「⋯」里有「拉黑」动作', acts.some((a) => a.includes('拉黑')), JSON.stringify(acts))
+  await s.evaluate("document.querySelector('.van-action-sheet__cancel').click()")
+  await sleep(600)
+  // ⚠️ 判据是「浮层不可见」，不是「容器还在不在」：
+  // Vant 用 v-show，容器**始终**在 DOM 里，拿存在性判「关闭」是恒真的 ——
+  // 那条断言当初等于没写。
+  // 也不能只 sleep 一个固定值：慢机器上不够、快机器上白等。所以在 Node 侧轮询到位。
+  let sheetHidden = false
+  for (let i = 0; i < 20; i++) {
+    const visible = await s.evaluate(
+      `(() => {
+         const el = document.querySelector('.van-action-sheet');
+         return !!el && getComputedStyle(el).display !== 'none';
+       })()`,
+    )
+    if (visible === false) {
+      sheetHidden = true
+      break
+    }
+    await sleep(250)
+  }
+  s.check('取消后浮层不可见（不是「容器消失」—— v-show 下容器一直在）', sheetHidden)
+  // ⚠️ 这里**刻意不**再断言「动作项从 DOM 里消失」。
+  // Vant 的 ActionSheet 是懒渲染 + 不销毁：关闭之后已渲染的 item 仍留在 DOM 里
+  // （只是父级 display:none）。断言它等于把测试绑在组件库的内部实现上 ——
+  // 哪天它换成销毁式渲染，这条断言就会假红，而产品行为一点没变。
+  // 「用户看得见吗」才是要钉的东西，而那是上面那条「浮层不可见」。
 
   // 点拉黑。成功后 router.back() 离开作者页 —— 这不是 bug，
   // 见 UserView.toggleBlock 的注释：留在页面上会让人以为「拉黑只是隐藏了内容」
-  await click('user-block')
+  // 拉黑现在从「⋯」浮层里点：开浮层 → 点带「拉黑」的那一项
+  await click('user-more')
+  await s.waitFor(
+    "document.querySelectorAll('.van-action-sheet__item').length > 0",
+    '「⋯」浮层的动作项渲染出来（不能只等容器：Vant 懒渲染，容器一直在）',
+    10000,
+  )
+  await s.evaluate(
+    `[...document.querySelectorAll('.van-action-sheet__item')]
+       .find((e) => e.textContent.includes('拉黑')).click()`,
+  )
   await s.waitFor(`location.hash !== '#/user/${peerId}'`, '拉黑后离开作者页', 10000)
 
   const blocked = await api('/api/user/block/list')
@@ -437,13 +489,24 @@ try {
 
   // ---- 举报：作者页 → 选内容 → 选原因 → 提交
   await s.goto(`${BASE}/#/user/${peerId}`)
-  await s.waitFor("document.querySelector('[data-test=user-report]')", '举报入口', 20000)
-  await click('user-report')
+  await s.waitFor("document.querySelector('[data-test=user-more]')", '「⋯」入口', 20000)
+  // P21：举报从头部那个「举报」按钮移进了「⋯」浮层
+  await click('user-more')
+  await s.waitFor(
+    "document.querySelectorAll('.van-action-sheet__item').length > 0",
+    '「⋯」浮层的动作项渲染出来（不能只等容器：Vant 懒渲染，容器一直在）',
+    10000,
+  )
+  await s.evaluate(
+    `[...document.querySelectorAll('.van-action-sheet__item')]
+       .find((e) => e.textContent.includes('举报')).click()`,
+  )
   await s.waitFor("!!document.querySelector('[data-test=report-sheet]')", '举报弹窗打开', 10000)
   await sleep(700)
   const sheet = await s.evaluate(`(() => JSON.stringify({
     reasons: document.querySelectorAll('[data-test=report-reason]').length,
-    targets: document.querySelectorAll('.sheet-item:not(.reason)').length,
+    // ⚠️ 选择器跟着 P21 改了：药丸形的理由按钮从 .reason 改叫 .sheet-pill
+    targets: document.querySelectorAll('.sheet-item:not(.sheet-pill)').length,
   }))()`)
   const sd = JSON.parse(sheet)
   s.check('举报弹窗列出 6 个原因（来自后端枚举，不是写死在前端）', sd.reasons === 6, sheet)
@@ -454,8 +517,9 @@ try {
   s.check('没选内容就点原因时弹窗不关闭', (await exists('report-sheet')) === true)
 
   if (sd.targets > 0) {
-    await s.evaluate("document.querySelector('.sheet-item:not(.reason)').click()")
+    await s.evaluate("document.querySelector('.sheet-item:not(.sheet-pill)').click()")
     await sleep(500)
+    s.check('选中内容后弹窗给出「已选择」回显', await exists('report-picked'))
     await s.evaluate("document.querySelector('[data-test=report-reason]').click()")
     await sleep(1500)
     // ⚠️ 举报去重是**永久**的（uk_report_once，且没有撤回接口），

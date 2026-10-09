@@ -14,6 +14,7 @@ import com.xiaoku.module.note.service.NoteInteractionService;
 import com.xiaoku.module.note.service.NoteQueryService;
 import com.xiaoku.module.note.support.NoteCounterStore;
 import com.xiaoku.module.note.vo.NoteVO;
+import com.xiaoku.module.notification.enums.NotificationType;
 import com.xiaoku.module.notification.service.NotificationService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -101,6 +102,18 @@ public class NoteInteractionServiceImpl implements NoteInteractionService {
         }
 
         counterStore.unlike(noteId, userId, () -> noteLikeMapper.selectUserIds(noteId));
+
+        // 撤回「XX 赞了你的笔记」：赞已经取消了，通知留着就是一条假的互动，
+        // 点进去看到的是一篇自己没有赞过的笔记（2026-10-08 手测实测到库里
+        // 4 条这样的脏通知）。⚠️ 放在 getDetail 之前 ——
+        // getDetail 对下架笔记会抛 20002，而本方法是 @Transactional，
+        // 异常会把上面已成功的删除**连带回滚**，通知撤回必须先执行。
+        NoteEntity note = noteMapper.selectById(noteId);
+        if (note != null) {
+            notificationService.retract(note.getUserId(), userId,
+                    NotificationType.NOTE_LIKE.code(), noteId);
+        }
+
         return noteQueryService.getDetail(noteId);
     }
 

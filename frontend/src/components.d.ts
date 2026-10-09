@@ -11,12 +11,15 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    MoreSheet: typeof import('./components/MoreSheet.vue')['default']
     NotificationBell: typeof import('./components/NotificationBell.vue')['default']
+    ReportSheet: typeof import('./components/ReportSheet.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
     SiteNav: typeof import('./components/SiteNav.vue')['default']
     TabBar: typeof import('./components/TabBar.vue')['default']
     ThemeToggle: typeof import('./components/ThemeToggle.vue')['default']
+    VanActionSheet: typeof import('vant/es')['ActionSheet']
     VanIcon: typeof import('vant/es')['Icon']
     VanLoading: typeof import('vant/es')['Loading']
     VanSwipe: typeof import('vant/es')['Swipe']

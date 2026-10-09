@@ -171,6 +171,79 @@ public class NotificationServiceImpl implements NotificationService {
         }
     }
 
+    /* ==================== 撤回（P21） ==================== */
+
+    @Override
+    public int retract(Long receiverId, Long actorId, Integer type, Long targetId) {
+        if (receiverId == null || actorId == null || type == null || targetId == null) {
+            return 0;
+        }
+        return afterCommit(() -> {
+            try {
+                int n = notificationMapper.deleteOne(receiverId, actorId, type, targetId);
+                if (n > 0) {
+                    log.info("撤回通知 receiver={} actor={} type={} target={}", receiverId, actorId, type, targetId);
+                }
+                return n;
+            } catch (Exception ex) {
+                // 与写入同一个理由：撤不掉不该让「取消点赞」失败
+                log.warn("撤回通知失败，已忽略 receiver={} actor={} type={}", receiverId, actorId, type, ex);
+                return 0;
+            }
+        });
+    }
+
+    @Override
+    public int retractByNoteId(Long noteId) {
+        if (noteId == null) {
+            return 0;
+        }
+        return afterCommit(() -> {
+            try {
+                return notificationMapper.deleteByNoteId(noteId);
+            } catch (Exception ex) {
+                log.warn("按笔记撤通知失败，已忽略 noteId={}", noteId, ex);
+                return 0;
+            }
+        });
+    }
+
+    @Override
+    public int retractByTarget(Integer type, Long targetId) {
+        if (type == null || targetId == null) {
+            return 0;
+        }
+        return afterCommit(() -> {
+            try {
+                return notificationMapper.deleteByTypeAndTarget(type, targetId);
+            } catch (Exception ex) {
+                log.warn("按对象撤通知失败，已忽略 type={} target={}", type, targetId, ex);
+                return 0;
+            }
+        });
+    }
+
+    /**
+     * 事务提交后再执行，并返回执行结果。
+     *
+     * <p>刻意与 {@link #push} 用同一套 afterCommit 约定：事务回滚了通知就不该被动过。
+     * 区别在于写入丢弃返回值、撤回要把它交给调用方 —— 调用方要拿它判断
+     * 「这条通知是我撤掉的，还是本来就没有」，从而决定要不要提示用户。
+     */
+    private int afterCommit(java.util.function.Supplier<Integer> action) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            return action.get();
+        }
+        int[] holder = new int[1];
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                holder[0] = action.get();
+            }
+        });
+        return holder[0];
+    }
+
     private static String brief(String content) {
         if (content == null) {
             return null;

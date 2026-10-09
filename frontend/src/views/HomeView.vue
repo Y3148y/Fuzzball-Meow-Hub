@@ -128,6 +128,12 @@ async function logout() {
 const coverRatio = ref<Record<string, string>>({})
 
 function onCoverLoad(item: NoteListItemVO, ev: Event) {
+  // ⚠️ P21：无封面（cover 为 null）时**不要**把图片的真实宽高比写进 --r。
+  // 兜底图是吉祥物（方图），写进去会让这张卡的高度与其它 3/4 卡不一致 ——
+  // 2026-10-08 手测的「关注搭子的笔记大小和其他不符」就是这个。
+  // 真正的问题是「这篇笔记没有封面」，不是「吉祥物不是 3/4」：
+  // 让这类卡保持 3/4，视觉上它就是一张普通卡，而不是一个比例异常的卡。
+  if (!item.cover) return
   const img = ev.target as HTMLImageElement
   const w = img.naturalWidth
   const h = img.naturalHeight

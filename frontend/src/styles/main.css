@@ -289,6 +289,149 @@ a {
   }
 }
 
+/* =====================================================================
+   举报 / 操作浮层（P21）
+
+   为什么从 UserView 的 scoped 样式搬到这里：
+   scoped 样式编译后是 `.sheet[data-v-xxx]`（特异性 0,2,0），
+   而**别的组件的 DOM 上根本没有那个 data-v 属性**，所以不是「优先级打架」
+   而是「根本选不中」。要在笔记详情页、作者主页、评论项复用，就必须提到全局。
+
+   顺带修一个它一直存在的毛病：原来 `.sheet-item` 用分隔线、`.reason`
+   是药丸形，两套形状混在同一个列表里。现在统一成「分隔线行」，
+   药丸形单独给 `.sheet-pill`。
+   ===================================================================== */
+
+.sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 90;
+  max-height: 72vh;
+  overflow-y: auto;
+  padding: var(--xk-space-6) var(--xk-space-4)
+    calc(var(--xk-space-6) + env(safe-area-inset-bottom, 0px));
+  border-top: var(--xk-stroke-w) solid var(--xk-stroke);
+  border-radius: var(--xk-radius-blob) var(--xk-radius-blob) 0 0;
+  background: var(--xk-surface);
+  box-shadow: var(--xk-shadow-hard);
+  /* 弹层内滚到边界时不要把底下页面带着一起滚（iOS 上尤其明显） */
+  overscroll-behavior: contain;
+}
+
+.sheet-title {
+  margin: 0 0 var(--xk-space-1);
+  font-size: var(--xk-fs-16);
+  font-weight: 700;
+}
+
+.sheet-sub,
+.sheet-hint {
+  margin: 0 0 var(--xk-space-2);
+  color: var(--xk-text-3);
+  font-size: var(--xk-fs-13);
+}
+
+.sheet-list {
+  list-style: none;
+  margin: 0 0 var(--xk-space-4);
+  padding: 0;
+}
+
+.sheet-item {
+  display: block;
+  width: 100%;
+  /* 热区 44px（P13 定的下限） */
+  min-height: 44px;
+  padding: var(--xk-space-3);
+  border: 0;
+  border-bottom: var(--xk-stroke-w) solid var(--xk-border);
+  background: none;
+  color: var(--xk-text);
+  font-size: var(--xk-fs-14);
+  text-align: left;
+  cursor: pointer;
+}
+
+/*
+ * ⚠️ nowrap 不能省：举报理由是「色情低俗」「恶意攻击」这类 2~4 字词，
+ * 容器一窄就被 CJK 逐字折行 —— 作者主页那三个按钮就是这么坏的
+ * （「拉黑」被拆成上下两字并被卡片裁掉，见 AGENTS P21 段）。
+ * 注意方向：这里要的是「不许折行」，与 flex 子项要 `min-width:0`
+ * 正好相反，两者的位置不能弄混。
+ */
+.sheet-item {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 药丸形：举报理由、确认按钮 */
+.sheet-pill {
+  border: var(--xk-stroke-w) solid var(--xk-border);
+  border-radius: 999px;
+  margin-bottom: var(--xk-space-2);
+  text-align: center;
+}
+
+.sheet-item.danger {
+  color: var(--xk-danger);
+}
+
+.sheet-cancel {
+  width: 100%;
+  min-height: 44px;
+  border: var(--xk-stroke-w) solid var(--xk-border);
+  border-radius: 999px;
+  background: var(--xk-surface-2);
+  color: var(--xk-text-2);
+  cursor: pointer;
+}
+
+/* =====================================================================
+   「⋯ 更多」触发按钮（P21）
+
+   小红书把「举报 / 拉黑」收在右上角「⋯」的浮层里，作者主页头部只留「关注」。
+   我们原来把两个文字链接平铺在头部那一行 flex 里，430px 下被压成两行并裁掉。
+   ===================================================================== */
+
+.more-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* 40px 是 P13 定的热区下限，再小就难点准 */
+  min-width: 40px;
+  min-height: 40px;
+  padding: 0 var(--xk-space-2);
+  border: var(--xk-stroke-w) solid var(--xk-stroke);
+  border-radius: 999px;
+  background: var(--xk-surface-2);
+  color: var(--xk-text-2);
+  font-size: var(--xk-fs-16);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.more-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.more-btn:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+
+/*
+ * ⚠️ 用「⋯」单字符（U+22EF）而不是三个点：三个 ASCII 点在某些字体下
+ * 会显得很散，而且更容易被当成可换行的文本拆开。
+ * letter-spacing: 0 显式写出来 —— 默认值不该依赖继承。
+ */
+.more-btn .glyph {
+  white-space: nowrap;
+  letter-spacing: 0;
+}
+
 /* ≥768px：过渡态，稍微拉宽 */
 @media (min-width: 768px) {
   .page {

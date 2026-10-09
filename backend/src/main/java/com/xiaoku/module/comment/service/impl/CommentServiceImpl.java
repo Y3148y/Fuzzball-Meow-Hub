@@ -14,6 +14,7 @@ import com.xiaoku.module.comment.mapper.CommentMapper;
 import com.xiaoku.module.comment.service.CommentQueryService;
 import com.xiaoku.module.comment.service.CommentService;
 import com.xiaoku.module.comment.vo.CommentVO;
+import com.xiaoku.module.notification.enums.NotificationType;
 import com.xiaoku.module.notification.service.NotificationService;
 import com.xiaoku.module.note.entity.NoteEntity;
 import com.xiaoku.module.note.mapper.NoteMapper;
@@ -141,6 +142,51 @@ public class CommentServiceImpl implements CommentService {
 
         // 一条 SQL 退掉"自己 + 子回复"的总和，不要循环调多次
         noteMapper.decreaseCommentCount(comment.getNoteId(), -(children + 1));
+
+        // 撤掉与这条评论相关的通知（P21）。
+        //
+        // ⚠️ 三类的 target_id 语义**不一样**，不能一把梭：
+        //
+        //   COMMENT_LIKE / COMMENT_REPLY → target_id = **commentId**
+        //       （「赞了你的评论」「回复了你的评论」，对象就是这条评论）
+        //       可以直接撤。
+        //
+        //   COMMENT → target_id = **noteId**（P15 的聚合语义：
+        //       同一个人在同一篇笔记上只留一条「XX 评论了你的笔记」，
+        //       因为 uk_notify_once 的四个列里 target_id 存的是 noteId）
+        //       所以**不能按 commentId 撤** —— 那永远匹配不到。
+        //       正确语义是「TA 在这篇笔记上的评论**全部**没了才撤」：
+        //       删掉其中一条但还剩别的，那条通知仍然成立。
+        notificationService.retractByTarget(NotificationType.COMMENT_LIKE.code(), commentId);
+        notificationService.retractByTarget(NotificationType.COMMENT_REPLY.code(), commentId);
+        retractCommentNotificationIfLastOne(comment.getNoteId(), userId);
+
+        // ⚠️ 子树的子回复不单独处理：它们是别人发的，通知发给的是「被回复的人」，
+        // 不是这里这个 userId。删子树会把那些通知留成死链 ——
+        // 彻底解法是删之前先把子树 id 查出来逐个撤，那要把删除路径从 1 条 SQL
+        // 变成 N 次调用。本轮不做，代价是「删掉一个别人回复我的楼」之后
+        // 那条回复通知点进去会看不到。这是有意接受的取舍，写在这里免得被当 bug 反复"修"。
+    }
+
+    /**
+     * 「XX 评论了你的笔记」是**聚合**通知，只有评论者在这篇笔记上一条都不剩时才撤回。
+     *
+     * <p>先查再撤的竞态可以接受：多留一条通知（下次点进去发现还有评论）与
+     * 误撤一条通知（对方明明还在评论却收不到了）相比，前者轻得多 ——
+     * 而这条路径本身就只在「删评论」这一低频动作里触发。
+     */
+    private void retractCommentNotificationIfLastOne(Long noteId, Long commenterId) {
+        long remaining = commentMapper.selectCount(Wrappers.<CommentEntity>lambdaQuery()
+                .eq(CommentEntity::getNoteId, noteId)
+                .eq(CommentEntity::getUserId, commenterId));
+        if (remaining > 0) {
+            return;
+        }
+        NoteEntity note = noteMapper.selectById(noteId);
+        if (note != null) {
+            notificationService.retract(note.getUserId(), commenterId,
+                    NotificationType.COMMENT.code(), noteId);
+        }
     }
 
     /**
@@ -191,6 +237,14 @@ public class CommentServiceImpl implements CommentService {
             throw new BizException(ErrorCodeEnum.NOT_LIKED_YET);
         }
         commentMapper.decreaseLikeCount(commentId);
+
+        // 撤回「XX 赞了你的评论」（P21）。取消赞了还留着通知，
+        // 对方点进来看到的是一条自己没有赞过的评论。
+        CommentEntity c = commentMapper.selectById(commentId);
+        if (c != null) {
+            notificationService.retract(c.getUserId(), userId,
+                    NotificationType.COMMENT_LIKE.code(), commentId);
+        }
         return commentQueryService.getOne(commentId);
     }
 

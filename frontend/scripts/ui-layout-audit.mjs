@@ -482,6 +482,27 @@ async function someNoteId(s) {
 }
 
 /** spec 断言（Track 4 计划 #3b/#4）：路由相关的关键尺寸 */
+/**
+ * 取一个**长用户名**的作者 id。
+ *
+ * <p>刻意不取 xiaoku_demo（11 字符）：它恰好短到不触发溢出，
+ * 而 2026-10-08 手测撞到的「@xk_ui_follow 压在关注钮下面」是 13 字符。
+ * 这是「体检覆盖面有洞」的又一处投影 —— 量了，但量的对象太温和。
+ */
+async function longNameAuthorId() {
+  // 直接登录它拿自己的 id。⚠️ 原来写的是 GET /api/user/follow/xk_ui_follow ——
+  // 那是**关注**接口（要 POST），GET 拿不到任何东西，返回空却是 HTTP 200，
+  // 于是断言报「id=」而真因（用错了接口）离症状隔了三行。
+  const r = await fetch('http://localhost:8088/api/user/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'xk_ui_follow', password: 'Xk@2026peer' }),
+  })
+  const j = await r.json()
+  if (j.code !== 0) return ''
+  return j.data?.userInfo?.id ?? j.data?.id ?? ''
+}
+
 function specChecks(s, label, w, r) {
   const sp = r.spec || {}
   // 全站通用：van-icon 名字必须真实存在（写错就是一个空盒子）
@@ -743,12 +764,23 @@ async function auditContrast(s) {
   await s.evaluate("document.documentElement.dataset.theme = 'light'")
 }
 
-const PAGE_LIST = (noteId) => [
+/*
+ * P21：**作者主页原来根本不在体检名单里**。
+ *
+ * 就是这个洞让「拉黑/举报被压成两行」「长用户名压住关注钮」一路活到
+ * 2026-10-08 手测才发现 —— 6 个页面 × 2 视口的几何体检从来没量过它。
+ * 加一条比事后修三个 bug 便宜得多。
+ */
+const PAGE_LIST = (noteId, authorId) => [
   ['首页', '#/'],
   ['详情页', noteId ? `#/note/${noteId}` : '#/'],
   ['搜索页', `#/search?keyword=${encodeURIComponent('周末')}`],
   ['我的', '#/profile'],
   ['发布页', '#/publish'],
+  // 作者主页：用 xk_ui_follow（13 字符）。⚠️ 必须用**长**的那个：
+  // P13 修过 ProfileView 的同名缺陷就是因为侧栏被压窄，而审计一直只量
+  // xiaoku_demo（11 字符）—— 短的那个恰好不溢出，洞就一直留着。
+  ['作者主页', authorId ? `#/user/${authorId}` : '#/'],
 ]
 
 function fmtReport(r) {
@@ -791,7 +823,9 @@ async function main() {
     await loginDemo(s)
 
     const noteId = await someNoteId(s)
-    const pages = PAGE_LIST(noteId)
+    const authorId = await longNameAuthorId()
+    s.check('能取到长用户名作者（xk_ui_follow）用于作者主页体检', !!authorId, `id=${authorId}`)
+    const pages = PAGE_LIST(noteId, authorId)
     for (const w of [DESKTOP, MOBILE]) {
       for (const [label, hash] of pages) {
         await auditOne(s, label, w, hash)

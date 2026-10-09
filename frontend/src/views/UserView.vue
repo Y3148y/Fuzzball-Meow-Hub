@@ -4,12 +4,15 @@ import { useRoute, useRouter } from 'vue-router'
 import { showSuccessToast, showToast } from 'vant'
 import { BizError } from '@/api/request'
 import { followUser, getUserFollowStatus, unfollowUser } from '@/api/follow'
-import { blockUser, listReportReasons, reportContent, unblockUser } from '@/api/report'
-import type { ReportReasonVO, ReportTarget } from '@/api/report'
+import { blockUser, unblockUser } from '@/api/report'
+import type { ReportTarget } from '@/api/report'
 import { getUserNotes } from '@/api/feed'
 import { ErrorCode } from '@/api/types'
 import type { FollowUserVO, NoteListItemVO } from '@/api/types'
 import { useUserStore } from '@/stores/user'
+import MoreSheet, { type MoreAction } from '@/components/MoreSheet.vue'
+import ReportSheet from '@/components/ReportSheet.vue'
+import { useReportSheet } from '@/composables/useReportSheet'
 
 const route = useRoute()
 const router = useRouter()
@@ -25,17 +28,37 @@ const notFound = ref(false)
 const errorMsg = ref('')
 const following = ref(false)
 
-/* ============ P18 拉黑与举报 ============ */
+/* ============ P18 拉黑与举报（P21 改了入口位置） ============ */
 
 const blocking = ref(false)
 const blocked = ref(false)
-const reportOpen = ref(false)
-const reasons = ref<ReportReasonVO[]>([])
-/** 举报弹窗里「要举报哪一条」的目标：后端只有「举报某条笔记」这一个入口，
- *  所以目标列表是本地从这个账号的笔记列表里拼的 */
-const reportTargets = ref<ReportTarget[]>([])
-/** 选好的目标；null 表示还没选内容（此时点原因要提示） */
-const pickedTarget = ref<ReportTarget | null>(null)
+const reportSheet = useReportSheet()
+
+/** 「⋯」浮层的动作项 */
+const moreActions = computed<MoreAction[]>(() =>
+  isSelf.value
+    ? []
+    : [
+        { key: 'report', label: '举报', danger: true, subname: '举报 TA 的某条笔记' },
+        {
+          key: 'block',
+          label: blocked.value ? '解除拉黑' : '拉黑',
+          danger: !blocked.value,
+          subname: blocked.value ? '解除后重新看到 TA 的内容' : 'TA 从你的世界里消失',
+        },
+      ],
+)
+
+function onMore(key: string) {
+  if (key === 'report') {
+    // 目标列表是本地从这个账号的笔记里拼的：后端只有「举报某条笔记」这一个入口。
+    // 注意是「这个账号的」笔记而不是「TA 的全部」—— 一次给 10 条够了，
+    // 再多就成翻页了，而举报本来也不是批量动作。
+    void reportSheet.openReport(1, notes.value.slice(0, 10) as ReportTarget[], `举报「${author.value?.nickname}」`)
+  } else if (key === 'block') {
+    void toggleBlock()
+  }
+}
 
 async function toggleBlock() {
   if (blocking.value) return
@@ -57,39 +80,6 @@ async function toggleBlock() {
     showToast(e instanceof BizError ? e.message : '操作失败，请稍后重试')
   } finally {
     blocking.value = false
-  }
-}
-
-async function openReport() {
-  reportOpen.value = true
-  reportTargets.value = notes.value.slice(0, 10)
-  pickedTarget.value = null
-  if (!reasons.value.length) {
-    try {
-      reasons.value = await listReportReasons()
-    } catch {
-      reasons.value = []
-      showToast('举报原因加载失败')
-    }
-  }
-}
-
-function pickTarget(_kind: 'note', t: ReportTarget) {
-  pickedTarget.value = t
-  showToast(`已选中：${t.title}`)
-}
-
-async function submitReport(r: ReportReasonVO) {
-  if (!pickedTarget.value) {
-    showToast('请先选择要举报的内容')
-    return
-  }
-  try {
-    await reportContent(1, pickedTarget.value.id, r.code)
-    reportOpen.value = false
-    showSuccessToast('已举报，我们会尽快处理')
-  } catch (e) {
-    showToast(e instanceof BizError ? e.message : '举报失败，请稍后重试')
   }
 }
 
@@ -154,6 +144,19 @@ onMounted(load)
     <header class="top">
       <button class="back" type="button" aria-label="返回" @click="router.back()">‹</button>
       <span class="brand">TA 的主页</span>
+      <!--
+        「⋯」放**顶栏**而不是头部那一行（对齐小红书：它的「⋯」在页面右上角）。
+        放头部的话，240px 的侧栏要塞下 头像62 + 昵称 + 用户名 + 关注75 + ⋯40
+        + 两个 gap28 = 205px，而可用只有 190px —— 用户名被压成负宽度后溢出
+        （P21 手测实测 overflow=27px）。而且「⋯」本来就不属于那一行。
+      -->
+      <MoreSheet
+        v-if="!isSelf"
+        :actions="moreActions"
+        label="TA 的操作"
+        testid="user-more"
+        @select="onMore"
+      />
     </header>
 
     <p v-if="loading" class="hint" data-test="user-loading">加载中…</p>
@@ -184,61 +187,22 @@ onMounted(load)
             关注是社交动作、拉黑是私人屏蔽，两者放在同一个视觉层级上
             会让人以为「拉黑」是「关注」的一部分。
           -->
-          <button
-            v-if="!isSelf"
-            class="blockbtn"
-            type="button"
-            :disabled="blocking"
-            data-test="user-block"
-            @click="toggleBlock"
-          >
-            {{ blocked ? '已拉黑' : '拉黑' }}
-          </button>
+          <!--
+            P21：拉黑与举报**移出头部**，收进右上角「⋯」浮层。
 
-          <button
-            v-if="!isSelf"
-            class="blockbtn"
-            type="button"
-            data-test="user-report"
-            @click="openReport"
-          >
-            举报
-          </button>
+            原来是两个 .blockbtn 文字链接平铺在这一行 flex 里，头部要塞下
+            「62px 头像 + 昵称 + 用户名 + 关注钮 + 拉黑 + 举报」六个元素 ——
+            430px 下 .names 被压到接近 0 宽，@xk_ui_follow（13 字符）直接压在
+            「已关注」钮下面，而「拉黑」「举报」被压扁后 CJK 逐字折行
+            （截图里变成上下两个「拉」「黑」并被卡片裁掉）。
+
+            查证小红书的做法（2026-10-08）：头部**只有「关注」**，
+            拉黑与举报都在右上角「⋯」的浮层里。所以这里是**删掉**而不是修 CSS。
+          -->
         </div>
 
-        <!--
-          举报弹窗。原因选项来自后端（固定枚举），**不要写死在前端**：
-          运营随时能加分类，而前端跟着发版才能改。
-        -->
-        <div v-if="reportOpen" class="sheet" data-test="report-sheet">
-          <p class="sheet-title">举报「{{ author.nickname }}」</p>
-          <p v-if="reportTargets.length" class="sheet-sub">选择要举报的内容：</p>
-          <ul v-if="reportTargets.length" class="sheet-list">
-            <li v-for="t in reportTargets" :key="'n' + t.id">
-              <button class="sheet-item" type="button" @click="pickTarget('note', t)">
-                笔记：{{ t.title }}
-              </button>
-            </li>
-          </ul>
-          <p v-if="reportTargets.length === 0" class="sheet-hint" data-test="report-no-target">
-            这个账号还没有可举报的笔记
-          </p>
-          <ul class="sheet-list">
-            <li v-for="r in reasons" :key="r.code">
-              <button
-                class="sheet-item reason"
-                type="button"
-                data-test="report-reason"
-                @click="submitReport(r)"
-              >
-                {{ r.text }}
-              </button>
-            </li>
-          </ul>
-          <button class="sheet-cancel" type="button" data-test="report-cancel" @click="reportOpen = false">
-            取消
-          </button>
-        </div>
+        <!-- 举报弹窗（三个入口共用：这里 / 笔记详情页 / 评论项） -->
+        <ReportSheet />
 
         <p v-if="author.bio" class="bio" data-test="user-bio">{{ author.bio }}</p>
 
@@ -280,93 +244,7 @@ onMounted(load)
 </template>
 
 <style scoped>
-/*
- * 拉黑/举报按钮：刻意用文字链接的视觉（无描边、meta 色）。
- * 理由：关注是社交动作、拉黑是私人屏蔽，两者的情绪完全不同，
- * 放在同一层级上会让人以为「拉黑」是「关注」的一个选项。
- */
-.blockbtn {
-  padding: 0 2px;
-  border: 0;
-  background: none;
-  color: var(--xk-text-3);
-  font-size: var(--xk-fs-13);
-  text-decoration: underline;
-  cursor: pointer;
-}
 
-.blockbtn:disabled {
-  opacity: 0.6;
-  cursor: progress;
-}
-
-/* 举报弹窗：底部抽屉（移动端友好），不用居中 modal ——
-   拇指够得到比「看起来正式」重要 */
-.sheet {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 90;
-  max-height: 72vh;
-  overflow-y: auto;
-  padding: 18px 16px calc(18px + env(safe-area-inset-bottom, 0px));
-  border-top: var(--xk-stroke-w) solid var(--xk-stroke);
-  border-radius: var(--xk-radius-blob) var(--xk-radius-blob) 0 0;
-  background: var(--xk-surface);
-  box-shadow: var(--xk-shadow-hard);
-  overscroll-behavior: contain;
-}
-
-.sheet-title {
-  margin: 0 0 4px;
-  font-size: var(--xk-fs-16);
-  font-weight: 700;
-}
-
-.sheet-sub,
-.sheet-hint {
-  margin: 0 0 8px;
-  color: var(--xk-text-3);
-  font-size: var(--xk-fs-13);
-}
-
-.sheet-list {
-  list-style: none;
-  margin: 0 0 12px;
-  padding: 0;
-}
-
-.sheet-item {
-  display: block;
-  width: 100%;
-  min-height: 44px;
-  padding: 10px 12px;
-  border: 0;
-  border-bottom: var(--xk-stroke-w) solid var(--xk-border);
-  background: none;
-  color: var(--xk-text);
-  font-size: var(--xk-fs-14);
-  text-align: left;
-  cursor: pointer;
-}
-
-.sheet-item.reason {
-  border: var(--xk-stroke-w) solid var(--xk-border);
-  border-radius: 999px;
-  margin-bottom: 8px;
-  text-align: center;
-}
-
-.sheet-cancel {
-  width: 100%;
-  min-height: 44px;
-  border: var(--xk-stroke-w) solid var(--xk-border);
-  border-radius: 999px;
-  background: var(--xk-surface-2);
-  color: var(--xk-text-2);
-  cursor: pointer;
-}
 /* .page 骨架统一在 main.css，这里重复写会用 0,2,0 特异性压掉全局断点 */
 
 .top {
@@ -437,6 +315,13 @@ onMounted(load)
   margin: 3px 0 0;
   color: var(--xk-text-3);
   font-size: var(--xk-fs-13);
+  /* ⚠️ P21 补的。ProfileView 同一段样式在 P13 就有了（那次是桌面侧栏被
+     全局 padding 从 112 压到 64px，@xiaoku_demo 溢出压掉了「编辑」按钮），
+     但 UserView 是同一套组件模式、元素还更多，当时**只修了一处**。
+     少了这三行，@xk_ui_follow（13 字符）会直接压在「关注」钮下面。 */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .follow {
@@ -579,7 +464,12 @@ onMounted(load)
 @media (min-width: 1024px) {
   .page {
     display: grid;
-    grid-template-columns: 240px minmax(0, 1fr);
+    /* 300px 而不是 240px：与 ProfileView 对齐（P13 那次就是因为 240 太窄，
+   * @xiaoku_demo 溢出压掉了「编辑」按钮）。UserView 是同一套头部结构，
+   * 元素还更多 —— 头像62 + 昵称 + 用户名 + 关注钮75 + 两个 gap28 = 165px，
+   * 240 减去左右 padding 各 18 + 边框 2 只剩 202px，昵称与用户名会被挤没。
+   */
+  grid-template-columns: 300px minmax(0, 1fr);
     grid-template-areas:
       'top   top'
       'who   feed';

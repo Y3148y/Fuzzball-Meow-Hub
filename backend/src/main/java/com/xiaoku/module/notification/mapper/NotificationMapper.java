@@ -2,6 +2,7 @@ package com.xiaoku.module.notification.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.xiaoku.module.notification.entity.NotificationEntity;
+import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -78,9 +79,50 @@ public interface NotificationMapper extends BaseMapper<NotificationEntity> {
               AND type = #{type}
               AND target_id = #{targetId}
             """)
-    int touchExisting(@Param("receiverId") Long receiverId,
-                      @Param("actorId") Long actorId,
-                      @Param("type") int type,
-                      @Param("targetId") Long targetId,
-                      @Param("content") String content);
+int touchExisting(@Param("receiverId") Long receiverId,
+                        @Param("actorId") Long actorId,
+                        @Param("type") int type,
+                        @Param("targetId") Long targetId,
+                        @Param("content") String content);
+
+    /* ==================== 撤回（P21） ==================== */
+
+    /**
+     * 撤掉唯一的那一条：条件就是 {@code uk_notify_once} 的四个列。
+     *
+     * <p>刻意<b>只按这四列</b>删，不加 {@code receiver_id} 之外的任何判断：
+     * 写入侧的去重维度与此完全一致，撤回必须与它对称 ——
+     * 少删会让「取消点赞了还收到通知」，多删会误伤别人的通知。
+     */
+    @Delete("""
+            DELETE FROM notification
+            WHERE receiver_id = #{receiverId}
+              AND actor_id = #{actorId}
+              AND type = #{type}
+              AND target_id = #{targetId}
+            """)
+    int deleteOne(@Param("receiverId") Long receiverId,
+                  @Param("actorId") Long actorId,
+                  @Param("type") int type,
+                  @Param("targetId") Long targetId);
+
+    /**
+     * 按笔记撤掉全部通知。
+     *
+     * <p>走 {@code idx_receiver_time} 的左前缀吗？—— **走不了**：
+     * {@code idx_receiver_time} 第一列是 {@code receiver_id}，而这里没有它，
+     * 所以是全表扫。通知表的写入只发生在互动发生的瞬间（低频），
+     * 删笔记更是低频，这个代价可以接受。真要优化就得加一条
+     * {@code idx_note_id}，而那会让每次写通知多维护一个索引 ——
+     * 为了一个低频读加高频写的成本，不划算。
+     */
+    @Delete("DELETE FROM notification WHERE note_id = #{noteId}")
+    int deleteByNoteId(@Param("noteId") Long noteId);
+
+    /** 按「类型 + 对象」撤。评论被删时用它，同时覆盖「赞评论」「回复」两类通知 */
+    @Delete("""
+            DELETE FROM notification
+            WHERE type = #{type} AND target_id = #{targetId}
+            """)
+    int deleteByTypeAndTarget(@Param("type") int type, @Param("targetId") Long targetId);
 }

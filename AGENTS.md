@@ -1746,6 +1746,12 @@ git log -1 --format="%ad" --date=iso -S'DeleteMapping' -- backend/src/main/java/
   （`target/*` + `!target/xiaoku-backend.jar`）
 - 临时 Dockerfile 放 `backend/Dockerfile.localtemp`，**别提交**
 
+⚠️ **还原 `.dockerignore` 别用 `Set-Content -Encoding UTF8`**：PowerShell 5.1 的
+`UTF8` 会**写 BOM**，于是第一行变成 `\ufefftarget/`（BOM 不在行首，`.dockerignore`
+的 `target/` 就匹配不到了），而 git diff 里只显示成 `-target/` / `+\ufefftarget/`
+—— 看起来像「内容没变却有 diff」。直接 `git checkout -- backend/.dockerignore`
+更快也更不容易出错。
+
 **仓库里的 `backend/Dockerfile` 与 `.dockerignore` 一个字都没改** —— 上面三条
 全是本机网络环境的问题，把镜像源写进仓库 Dockerfile 会污染所有人的构建。
 
@@ -1803,3 +1809,64 @@ docker exec xiaoku-prod-elasticsearch-1 sh -c "curl -s 'localhost:9200/xk_note/_
 
 笔记都走 `DELETE /api/note/{id}` 清掉了，ES 索引 `xk_note` 现在 0 篇
 （`docs.deleted` 计数会留着历史，属正常）。要彻底清账号得进 prod MySQL 手删。
+
+### 8.6 改后端时 `up -d --build frontend` 会**连带重建 backend** 而失败
+
+**现象**：只改了前端，跑 `docker compose -f deploy/docker-compose.prod.yml
+--env-file deploy/.env.prod up -d --build frontend`，结果 Maven 报错刷屏、
+构建失败 —— 而这次**只碰了前端**。
+
+**根因**：`frontend` 在 compose 里 `depends_on: backend`，`--build` 会把依赖图上
+的**全部**服务一起重建，于是也去跑 backend 的 `mvn package` 阶段，撞上 8.2 的
+墙②（容器内连不上 Maven Central）。**报错完全指向前端改动无关的东西。**
+
+**修法**：只改前端时单独构建 + 只重建前端容器：
+
+```powershell
+docker build -t xiaoku-frontend:latest frontend
+docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.prod `
+  up -d --no-deps --force-recreate frontend      # --no-deps 是关键
+```
+
+`--no-deps` 让 compose 不去碰 backend。这与 8.1 是同一条教训的另一半：
+**「只重建前端」在有依赖关系的 compose 里做不到，得显式加 `--no-deps`。**
+
+### 8.7 prod 验证别照抄 dev 的 DTO 字段名
+
+第一次跑 prod 探针，「举报笔记」两条断言红成 `100001 举报原因不能为空`。
+真因不是 prod 配错了，是**探针脚本把字段名写成了 `reason`（自由文本）**，
+而 `ReportCreateDTO` 实际是 `reasonCode`（`@Min(1) @Max(6)` 的枚举）+
+可选 `detail`。
+
+`100001` 来自 DTO 层的 `@Min/@Max/@NotNull`，**不进业务层** —— 与 P18 记的
+「补充说明超 200 字返回 100001 而不是 80003」是同一形状：**参数校验先于业务去重**。
+所以「字段名写错」的报错也永远是 `100001`，不会告诉你是哪个字段。
+
+**判据**：prod 探针报 `100001` 且 message 提到某个字段名时，先 `Read` 那个
+DTO 确认字段名与约束，**不要**怀疑 prod 的数据或配置 —— dev 契约测试
+之所以没暴露，是因为它用的是同一个 DTO（前端已经写对了）。
+
+### 8.8 往 prod MySQL 灌清理 SQL：临时表**不跨连接存活**
+
+第 5 节那套 `CREATE TEMPORARY TABLE _ct AS ...` + 后面十几条 `DELETE` 全靠它，
+但那是**同一个连接内**执行的。往 `docker exec -i ... mysql` 灌脚本时踩了两个坑：
+
+1. **`CREATE TEMPORARY TABLE` 之后的语句报 `Table '_p' doesn't exist`**：
+   临时表是**连接级**的，`mysql` 客户端每条语句可能重开连接。
+2. **把 `OR` 两侧各引用一次临时表报 1137 `Can't reopen table`**，
+   而且**报错之前那几条 DELETE 已经执行完了**（半截清理）——
+   别以为整段没生效。
+
+**最省事的解法：临时表换成「按前缀直接查 user 表 + 派生表物化」**，一条语句搞定，
+不依赖临时表存活：
+
+```sql
+DELETE FROM xiaoku_db.notification
+  WHERE actor_id   IN (SELECT id FROM (SELECT id FROM xiaoku_db.user WHERE username LIKE 'prod21%') k)
+     OR receiver_id IN (SELECT id FROM (SELECT id FROM xiaoku_db.user WHERE username LIKE 'prod21%') k);
+DELETE FROM xiaoku_db.user WHERE username LIKE 'prod21%';
+```
+
+灌多行 SQL 时用 `Set-Content -Encoding Ascii` 落盘再
+`Get-Content -Raw | docker exec -i ... mysql`（PowerShell 5.1 **不支持** `<` 重定向给
+原生命令，会报 `RedirectionNotSupported`）。

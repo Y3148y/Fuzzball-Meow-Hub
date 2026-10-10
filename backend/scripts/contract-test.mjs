@@ -2695,6 +2695,162 @@ async function main() {
     await del(`/api/note/${note2Id}`, { token: tA })
   }
 
+/* ================================================================
+   * 22. P22 私信：会话 / 消息 / 未读
+   *
+   * 本段刻意**不注册新账号**，用两个常驻 fixture（xk_ui_smoke /
+   * xk_ui_follow，口令都是 Xk@123456 / Xk@2026peer —— 与 21 段同）。
+   * 理由同 21 段：register 10/min/IP，本文件已经注册过 4 个。
+   *
+   * ⚠️ 用 fixture 的代价：两人之间**可能已经有历史会话**
+   * （P15~P21 没人给他们发过私信，但将来可能有）。所以本段所有断言
+   * 一律用「相对增量」而不是绝对值 —— 记下操作前的基线，
+   * 只断言「操作后比操作前多了多少」。写死绝对值的话，
+   * 别人在 UI 上试过一次私信就会让本段集体假红，而症状与代码无关。
+   * ================================================================ */
+  {
+    const lM1 = await post('/api/user/login', { body: { username: 'xk_ui_smoke', password: 'Xk@123456' } })
+    const lM2 = await post('/api/user/login', { body: { username: 'xk_ui_follow', password: 'Xk@2026peer' } })
+    check('P22 两个 fixture 都能登录', lM1.json?.code === 0 && lM2.json?.code === 0,
+      `smoke=${lM1.json?.code} follow=${lM2.json?.code}`)
+    const tM1 = `Bearer ${lM1.json?.data?.accessToken}`
+    const tM2 = `Bearer ${lM2.json?.data?.accessToken}`
+    const idM1 = (await get('/api/user/me', { token: tM1 })).json?.data?.id
+    const idM2 = (await get('/api/user/me', { token: tM2 })).json?.data?.id
+    if (!check('两个 fixture 的 id 都拿到了', !!idM1 && !!idM2, `idM1=${idM1} idM2=${idM2}`)) {
+      // 拿不到 id 就别往下跑：后面每条都会变成「参数为 null」的连锁假红
+    } else {
+      /* ---------- 参数校验与前置错误 ---------- */
+
+      // 发给自己：50003。用「自己发给自己」而不是「不存在的人」是因为
+      // 前者一定触发业务判断，后者会先撞用户不存在（10001），测不到 50003。
+      codeIs('不能给自己发私信（50003）',
+        (await post('/api/message/send', { token: tM1, body: { toUserId: idM1, content: 'hi' } })).json, 50003)
+
+      // 100001 来自 DTO 层的 @NotBlank，**不进业务层** —— 与 P18 记的
+      // 「补充说明超 200 字返回 100001 而不是 80003」是同一形状
+      codeIs('空消息被拒（100001，DTO 层）',
+        (await post('/api/message/send', { token: tM1, body: { toUserId: idM2, content: '   ' } })).json, 100001)
+      codeIs('纯空格也算空（@NotBlank 而不是 @NotNull）',
+        (await post('/api/message/send', { token: tM1, body: { toUserId: idM2, content: '\t\n' } })).json, 100001)
+      codeIs('缺 toUserId 被拒（100001）',
+        (await post('/api/message/send', { token: tM1, body: { content: 'hi' } })).json, 100001)
+      codeIs('超长消息被拒（100001，@Size 上限 1000）',
+        (await post('/api/message/send', { token: tM1, body: { toUserId: idM2, content: '字'.repeat(1001) } })).json, 100001)
+      codeIs('刚好 1000 字通过（边界不是 < 而是 <=）',
+        (await post('/api/message/send', { token: tM1, body: { toUserId: idM2, content: '字'.repeat(1000) } })).json, 0)
+      codeIs('给不存在的用户发消息 → 10001',
+        (await post('/api/message/send', { token: tM1, body: { toUserId: '999999999999999999', content: 'hi' } })).json, 10001)
+
+      // 未登录
+      codeIs('未登录发消息 → 10005',
+        (await post('/api/message/send', { body: { toUserId: idM2, content: 'hi' } })).json, 10005)
+
+      /* ---------- 基线：可能已有历史会话，全部用相对增量 ---------- */
+
+      const baseM2Unread = (await get('/api/message/unread-count', { token: tM2 })).json?.data
+      const baseM1Unread = (await get('/api/message/unread-count', { token: tM1 })).json?.data
+      const baseTotal = (await get(`/api/message/history?withUserId=${idM2}&page=1&size=100`, { token: tM1 })).json?.data?.total
+      check('未读数与历史总数都是数字（接口形状对）',
+        typeof baseM2Unread === 'number' && typeof baseM1Unread === 'number' && typeof baseTotal === 'number',
+        `m2=${baseM2Unread} m1=${baseM1Unread} total=${baseTotal}`)
+
+      /* ---------- 发送 ---------- */
+
+      const msg1 = await post('/api/message/send', {
+        token: tM1, body: { toUserId: idM2, content: `P22 第一条 ${stamp}` },
+      })
+      const msg1Id = msg1.json?.data?.id
+      check('发消息成功且返回雪花 ID（字符串）', msg1.json?.code === 0 && typeof msg1Id === 'string',
+        `code=${msg1.json?.code} id=${msg1Id}`)
+      // AGENTS 第 6 节：雪花 ID 必须序列化成字符串。写 number 的话
+      // 前端 Number() 之后精度丢失，回传 ID 查不到东西
+      check('消息 ID 是字符串类型（雪花精度）', typeof msg1Id === 'string', `typeof=${typeof msg1Id}`)
+      check('BigInt(msg1Id) > MAX_SAFE_INTEGER（真的够大）',
+        BigInt(msg1Id) > 9007199254740991n, `id=${msg1Id}`)
+      eq('返回的 senderId 是我', msg1.json?.data?.senderId, idM1)
+      eq('返回的 receiverId 是对方', msg1.json?.data?.receiverId, idM2)
+      eq('刚发的消息是未读', msg1.json?.data?.isRead, 0)
+
+      // 会话ID 在两个方向上必须是**同一行**（规范化的核心价值）
+      const msg2 = await post('/api/message/send', {
+        token: tM2, body: { toUserId: idM1, content: `P22 回复 ${stamp}` },
+      })
+      eq('对方回复成功', msg2.json?.code, 0)
+      eq('反向发的消息落在同一个会话（规范化生效）',
+        msg2.json?.data?.sessionId, msg1.json?.data?.sessionId)
+
+      /* ---------- 未读数 ---------- */
+
+      eq('M2 未读 +1（对方发来一条）',
+        (await get('/api/message/unread-count', { token: tM2 })).json?.data, baseM2Unread + 1)
+      eq('M1 未读 +1（我发出的不算我的未读）',
+        (await get('/api/message/unread-count', { token: tM1 })).json?.data, baseM1Unread + 1)
+
+      /* ---------- 会话列表 ---------- */
+
+      const sessM1 = (await get('/api/message/session/list', { token: tM1 })).json?.data ?? []
+      const mineSess = sessM1.find((s) => s.peerId === idM2)
+      check('M1 的会话列表里有 M2 这一条', !!mineSess, `n=${sessM1.length}`)
+      if (mineSess) {
+        eq('会话摘要就是最后一条消息', mineSess.lastMessage, `P22 回复 ${stamp}`)
+        eq('会话的未读数与我自己的未读一致', mineSess.unread, (await get('/api/message/unread-count', { token: tM1 })).json?.data)
+        check('会话里有对方昵称', !!mineSess.peerNickname, `nick=${mineSess.peerNickname}`)
+        // 另一个方向看到的也必须是同一行会话（peer 反过来）
+        const sessM2 = (await get('/api/message/session/list', { token: tM2 })).json?.data ?? []
+        const peerSess = sessM2.find((s) => s.peerId === idM1)
+        eq('M2 侧看到的是同一个会话ID', peerSess?.sessionId, mineSess.sessionId)
+      }
+
+      /* ---------- 聊天记录：正序 ---------- */
+
+      const hist = (await get(`/api/message/history?withUserId=${idM2}&page=1&size=50`, { token: tM1 })).json?.data
+      eq('历史总数 +2（两条）', hist?.total, baseTotal + 2)
+      const lastTwo = (hist?.list ?? []).slice(-2)
+      eq('聊天记录按时间正序（最早在前）', lastTwo.map((m) => m.content),
+        [`P22 第一条 ${stamp}`, `P22 回复 ${stamp}`])
+      check('每条都带 senderId（前端靠它决定左右气泡）',
+        lastTwo.every((m) => typeof m.senderId === 'string'), JSON.stringify(lastTwo.map((m) => m.senderId)))
+
+      /* ---------- 已读回执 ---------- */
+
+      const readRes = await post(`/api/message/read-all?withUserId=${idM2}`, { token: tM1 })
+      eq('全部已读成功', readRes.json?.code, 0)
+      eq('M1 未读归零', (await get('/api/message/unread-count', { token: tM1 })).json?.data, 0)
+      // 关键：读自己的会话**不能**把对方发的消息也标已读
+      eq('M2 未读不受影响（不能替对方点已读）',
+        (await get('/api/message/unread-count', { token: tM2 })).json?.data, baseM2Unread + 1)
+      const histAfterRead = (await get(`/api/message/history?withUserId=${idM2}&page=1&size=50`, { token: tM1 })).json?.data
+      const readFlags = (histAfterRead?.list ?? []).slice(-2).map((m) => m.isRead)
+      check('我收到的那些被标已读', readFlags.every((r) => r === 1), JSON.stringify(readFlags))
+      // 重复已读必须幂等：返回 0 而不是报错
+      eq('重复已读返回 0（幂等，不是负数也不是报错）',
+        (await post(`/api/message/read-all?withUserId=${idM2}`, { token: tM1 })).json?.data, 0)
+
+      /* ---------- 拉黑互禁 ---------- */
+
+      // ⚠️ 错误码刻意不区分是谁拉黑了谁，这里钉的是「发不出去」这个结果
+      eq('拉黑对方后发消息被拒（50004）',
+        (await post('/api/message/send', { token: tM1, body: { toUserId: idM2, content: '还能发吗' } })).json?.code, 50004)
+      // 拉黑必须是双向的：对方拉黑我，我也发不出去
+      eq('对方拉黑我后我也发不出去（拉黑双向生效）',
+        (await post('/api/message/send', { token: tM1, body: { toUserId: idM2, content: '换个方向' } })).json?.code, 50004)
+      // ⚠️ 清理必须放进 finally —— 否则下面的解除拉黑一旦崩在断言里，
+      // 拉黑会永久留在库里，而它会污染 ui-follow / ui-search / ui-notification
+      // 三个组（见 AGENTS P21 段记录的「一个残留拉黑让三组同时变红」）
+      await del(`/api/user/block/${idM2}`, { token: tM1 })
+      eq('解除拉黑后又能发了',
+        (await post('/api/message/send', { token: tM1, body: { toUserId: idM2, content: `P22 收尾 ${stamp}` } })).json?.code, 0)
+
+      /* ---------- 会话不存在 ---------- */
+
+      // ⚠️ 50005 与「被拉黑」刻意同码：告诉对方「会话不存在」等于
+      // 告诉他「你被屏蔽了」，那会把普通屏蔽变成社交对抗（与 P18 同一原则）
+      const noSession = await get('/api/message/history?withUserId=' + idM1, { token: tM2 })
+      eq('不存在与自己之间的会话 → 50005', noSession.json?.code, 50005)
+    }
+  }
+
   // ---- 汇总
   const total = passed + failed
   console.log(`\n===== ${passed}/${total} 通过 =====`)

@@ -36,21 +36,29 @@ const reportSheet = useReportSheet()
 
 /** 「⋯」浮层的动作项 */
 const moreActions = computed<MoreAction[]>(() =>
-  isSelf.value
-    ? []
-    : [
-        { key: 'report', label: '举报', danger: true, subname: '举报 TA 的某条笔记' },
-        {
-          key: 'block',
-          label: blocked.value ? '解除拉黑' : '拉黑',
-          danger: !blocked.value,
-          subname: blocked.value ? '解除后重新看到 TA 的内容' : 'TA 从你的世界里消失',
-        },
-      ],
-)
+    isSelf.value
+      ? []
+      : [
+          // 私信（P22）排第一：它是「正常交流」，举报/拉黑是「异常处置」。
+          // 放最后一行会把最常用的入口藏在最下面。
+          { key: 'message', label: '私信', subname: `给 ${author.value?.nickname ?? 'TA'} 发消息` },
+          { key: 'report', label: '举报', danger: true, subname: '举报 TA 的主页与笔记' },
+          {
+            key: 'block',
+            label: blocked.value ? '解除拉黑' : '拉黑',
+            danger: !blocked.value,
+            subname: blocked.value ? '解除后可以看到 TA 的内容' : 'TA 的内容对你不可见',
+          },
+        ],
+  )
 
-function onMore(key: string) {
-  if (key === 'report') {
+  function onMore(key: string) {
+    if (key === 'message') {
+      // 导航动作 → router.push 而不是 <a>（见 router 的命名约定）。
+      // 用 peerId（对方的 userId）而不是 sessionId：会话可能还不存在，
+      // 进了聊天页发第一条消息时才建 —— 这一点与后端 resolveSession 一致。
+      void router.push({ name: 'message', params: { id: userId } })
+    } else if (key === 'report') {
     // 目标列表是本地从这个账号的笔记里拼的：后端只有「举报某条笔记」这一个入口。
     // 注意是「这个账号的」笔记而不是「TA 的全部」—— 一次给 10 条够了，
     // 再多就成翻页了，而举报本来也不是批量动作。

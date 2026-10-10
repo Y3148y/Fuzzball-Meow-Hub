@@ -10,10 +10,12 @@ import type { NoteListItemVO, ProfilePatch } from '@/api/types'
 import { useUserStore } from '@/stores/user'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 import { useUnreadCount } from '@/composables/useUnreadCount'
+import { useMessageUnread } from '@/composables/useMessageUnread'
 
 const router = useRouter()
 const userStore = useUserStore()
 const { unread } = useUnreadCount()
+const { unread: messageUnread } = useMessageUnread()
 
 /*
  * 「我的笔记」——桌面端右侧瀑布用的就是这份数据。
@@ -278,6 +280,17 @@ class="xk-input area"
       <RouterLink class="link notify" to="/notification" data-test="me-notify-link">
         <span>通知</span>
         <span v-if="unread > 0" class="notify-badge" data-test="me-notify-unread">{{ unread }}</span>
+      </RouterLink>
+      <!--
+        私信入口（P22）。与通知并列一行，但用**独立的** useMessageUnread ——
+        两个数字来自两个接口、两个表、两种「未读」，合并会让两边都要传一个
+        「这次刷的是哪个」的 flag。
+      -->
+      <RouterLink class="link notify" to="/message" data-test="me-message-link">
+        <span>私信</span>
+        <span v-if="messageUnread > 0" class="notify-badge" data-test="me-message-unread">
+          {{ messageUnread > 99 ? '99+' : messageUnread }}
+        </span>
       </RouterLink>
         <RouterLink class="link" to="/blocks" data-test="me-blocks-link">黑名单</RouterLink>
         <!--

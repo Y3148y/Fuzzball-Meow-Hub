@@ -381,3 +381,41 @@ export interface NotificationVO {
   isRead: 0 | 1
   createTime: string
 }
+
+/* ================================================================
+ * 私信（P22）
+ * ================================================================ */
+
+/**
+ * 单条私信
+ *
+ * <p>{@code isRead} 是「**收件人**有没有读过」而不是发送方的回执视角 ——
+ * 小红书的「已读」是双向可见的那种语义；P22 只做接收侧。
+ */
+export interface MessageVO {
+  id: SnowflakeId
+  sessionId: SnowflakeId
+  senderId: SnowflakeId
+  receiverId: SnowflakeId
+  content: string
+  isRead: 0 | 1
+  createTime: string
+}
+
+/**
+ * 私信会话（会话列表的一行）
+ *
+ * <p>{@code unread} 是「**对方**发给我、我还没读」的条数 —— 与「我刚发的」
+ * 无关，所以列表里出现一个会话不代表里面有未读。
+ */
+export interface MessageSessionVO {
+  sessionId: SnowflakeId
+  peerId: SnowflakeId
+  /** 对方注销时后端回退成「已注销用户」，不会给 null */
+  peerNickname: string
+  peerAvatar: Nullable<string>
+  /** 最后一条消息摘要；会话还没发过消息时是 undefined（non_null） */
+  lastMessage?: string
+  lastTime?: string
+  unread: number
+}

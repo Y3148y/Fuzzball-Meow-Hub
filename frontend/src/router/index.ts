@@ -60,8 +60,26 @@ const routes: RouteRecordRaw[] = [
     path: '/notification',
     name: 'notification',
     component: () => import('@/views/NotificationView.vue'),
-    meta: { title: '通知', requiresAuth: true },
-  },
+meta: { title: '通知', requiresAuth: true },
+    },
+    {
+      // 私信会话列表（P22）。刻意**不挂 TabBar**：底部已经有 5 项
+      // （首页/关注/＋/搜索/我的），加第 6 个会把每项热区压到 40px 以下
+      // （P13 记过「热区不足 40px」那条 a11y 规矩）。入口放在
+      // 「我的」页的一行 + 作者主页「⋯」菜单里。
+      path: '/message',
+      name: 'message-list',
+      component: () => import('@/views/MessageListView.vue'),
+      meta: { title: '私信', requiresAuth: true },
+    },
+    {
+      // **参数是对方的 userId，不是 sessionId**。
+      // 会话 ID 是内部概念：让 URL 暴露它，别人分享的链接会指向别人的会话。
+      path: '/message/:id(\\d+)',
+      name: 'message',
+      component: () => import('@/views/MessageView.vue'),
+      meta: { title: '私信', requiresAuth: true },
+    },
   {
     // id 是雪花 ID，必须按字符串透传。这里写 :id(\\d+) 只是收窄非法路径，
     // 不要写成 :id(\\d{1,15}) —— 那样真笔记的 17~18 位 ID 反而进不来。

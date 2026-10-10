@@ -5,6 +5,7 @@ import { useUserStore } from '@/stores/user'
 import SiteNav from '@/components/SiteNav.vue'
 import TabBar from '@/components/TabBar.vue'
 import { useUnreadCount } from '@/composables/useUnreadCount'
+import { useMessageUnread } from '@/composables/useMessageUnread'
 
 // 根组件：负责布局与「冷启动恢复登录态」，具体页面由 router-view 承载
 const userStore = useUserStore()
@@ -18,14 +19,18 @@ onMounted(() => {
   void userStore.restore()
 })
 
-// 未读通知数统一在这里刷：桌面铃铛（在 SiteNav 内）与「我的」页的通知行共用
+// 未读数统一在这里刷：桌面铃铛（在 SiteNav 内）与「我的」页的通知行共用
 // 一份数据 —— 各自拉会变成两个请求 + 两份可能不一致的数字。
 const { refresh: refreshUnread } = useUnreadCount()
+// 私信未读（P22）是**另一个**接口、另一张表、另一种「未读」，
+// 刻意不与通知合并成一个 ref —— 合并后每次刷新都要传「这次刷哪个」的 flag。
+const { refresh: refreshMessageUnread } = useMessageUnread()
 
 watch(
   () => route.fullPath,
   () => {
     void refreshUnread()
+    void refreshMessageUnread()
   },
   { immediate: true },
 )

@@ -351,3 +351,70 @@ CREATE TABLE `user_block`
 ) ENGINE = InnoDB
     DEFAULT CHARSET = utf8mb4
     COLLATE = utf8mb4_general_ci COMMENT ='黑名单';
+
+-- ---------------------------------------------------------------------
+--  私信（P22）
+--
+--  有内容有关系，但没有「人和人」这一层 —— 整个产品偏内容广场。
+--  私信是关系链的最后一环。
+--
+--  两个刻意选择：
+--
+--  1) **会话用「较小ID + 较大ID」规范化**，而不是「发起方 + 接收方」。
+--     理由：A 给 B 发消息和 B 给 A 发消息**必须落在同一行会话**，
+--     否则会话列表会出现两条镜像记录，而唯一键 (user_id, peer_id)
+--     会因为方向不同而全部放行 —— 「先查再插」在两个方向同时发消息时
+--     两个事务都能查到不存在，各自插一行。这与 topic 的 uk_topic_name
+--     是同一个道理：**让唯一索引当裁判**，而不是在应用层 check-then-act。
+--     规范化之后 (min,max) 有序，(min,max) 与 (max,min) 物理上就是同一行。
+--
+--  2) **未读数存在会话行上（unread_count），不做实时 COUNT**。
+--     会话列表每页要显示「每人多少条未读」，实时 COUNT 要么 N+1
+--     （每行一次子查询），要么把全部消息 GROUP BY 一次再回内存聚合 ——
+--     后者与 messages 的数据量成正比，而会话列表是**最常被打开的页面**。
+--     冗余一列的代价（写放大 + 偶尔漂移）远小于读放大。
+--     漂移方向是安全的：**只会多不会少**（读消息失败时不清零，
+--     下次进会话页会再减一次），不会出现「有未读却显示已读」。
+-- ---------------------------------------------------------------------
+DROP TABLE IF EXISTS `message_session`;
+CREATE TABLE `message_session`
+(
+    `id`            BIGINT UNSIGNED NOT NULL COMMENT '会话ID（雪花）',
+    `user_low_id`   BIGINT UNSIGNED NOT NULL COMMENT '会话双方中 ID 较小的一方（规范化存储，见文件头注释）',
+    `user_high_id`  BIGINT UNSIGNED NOT NULL COMMENT '会话双方中 ID 较大的一方',
+    `last_message`  VARCHAR(200)    DEFAULT NULL COMMENT '最后一条消息摘要（列表直接展示，省一次 JOIN）',
+    `last_time`     DATETIME        DEFAULT NULL COMMENT '最后一条消息时间（会话列表排序键）',
+    `unread_low`    INT             NOT NULL DEFAULT 0 COMMENT '较小ID一方的未读数（对方发给我的）',
+    `unread_high`   INT             NOT NULL DEFAULT 0 COMMENT '较大ID一方的未读数',
+    `create_time`   DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `update_time`   DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    -- 规范化之后这一个唯一键就是「一对人只有一个会话」的保证
+    UNIQUE KEY `uk_session_pair` (`user_low_id`, `user_high_id`),
+    -- 会话列表：「我参与的所有会话，按最后一条消息倒序」走这个索引，
+    -- 两个方向各留一条（自己是 low / 自己是 high）
+    KEY `idx_low_time` (`user_low_id`, `last_time`),
+    KEY `idx_high_time` (`user_high_id`, `last_time`)
+) ENGINE = InnoDB
+    DEFAULT CHARSET = utf8mb4
+    COLLATE = utf8mb4_general_ci COMMENT ='私信会话';
+
+DROP TABLE IF EXISTS `message`;
+CREATE TABLE `message`
+(
+    `id`          BIGINT UNSIGNED NOT NULL COMMENT '雪花ID',
+    `session_id`  BIGINT UNSIGNED NOT NULL COMMENT '所属会话',
+    `sender_id`   BIGINT UNSIGNED NOT NULL COMMENT '发送者',
+    `receiver_id` BIGINT UNSIGNED NOT NULL COMMENT '接收者（恒为会话另一方）',
+    `content`     VARCHAR(1000)   NOT NULL COMMENT '消息正文（与评论同量级）',
+    `is_read`     TINYINT         NOT NULL DEFAULT 0 COMMENT '0未读 1已读',
+    `create_time` DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    -- 聊天记录分页：「这个会话里最新的 N 条」走它，不用 filesort。
+    -- 尾巴是 id 而不是单独一列时间，因为同一毫秒可能有多条（批量造数据时尤其明显）
+    KEY `idx_session_time` (`session_id`, `create_time`, `id`),
+    -- 总未读数角标：只 count 不取行
+    KEY `idx_receiver_unread` (`receiver_id`, `is_read`)
+) ENGINE = InnoDB
+    DEFAULT CHARSET = utf8mb4
+    COLLATE = utf8mb4_general_ci COMMENT ='私信消息';

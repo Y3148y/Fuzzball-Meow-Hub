@@ -1902,6 +1902,18 @@ docker exec xiaoku-prod-elasticsearch-1 sh -c "curl -s 'localhost:9200/xk_note/_
 笔记都走 `DELETE /api/note/{id}` 清掉了，ES 索引 `xk_note` 现在 0 篇
 （`docs.deleted` 计数会留着历史，属正常）。要彻底清账号得进 prod MySQL 手删。
 
+**P17~P22 的探针账号都已手删干净**，当前 prod 库里只剩上表那两个历史遗留的
+`prod_iktl*`（各 0 篇笔记）与 2 条演示举报。规律：
+**每轮探针的编号前缀（`prod17%` / `prod20%` / `prod21%` / `prod22%`）跑完立刻删**，
+用第 8.8 节那个「按前缀查 user 表 + 派生表物化」的一条语句即可 ——
+prod 是给人看界面的，别攒一堆 `prod22amv24zx97` 这种账号。
+
+**P22 的 prod 真调用已过 27 条**（走 nginx 18080）：规范化会话、未读 +1、
+已读幂等、拉黑双向互禁与解黑恢复。prod 部署顺序按 8.2 / 8.5 / 8.6：
+先灌 `message_session` + `message` 两张表（**只有 node 的 spawnSync 能让中文
+COMMENT 字节原样送达**），再单独 build backend 镜像、重建 backend 容器、
+**重启 nginx**（8.5：不重启会 502），最后前端 `--no-deps` 单独重建。
+
 ### 8.6 改后端时 `up -d --build frontend` 会**连带重建 backend** 而失败
 
 **现象**：只改了前端，跑 `docker compose -f deploy/docker-compose.prod.yml

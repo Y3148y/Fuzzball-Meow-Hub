@@ -1998,10 +1998,21 @@ docker exec xiaoku-prod-elasticsearch-1 sh -c "curl -s 'localhost:9200/xk_note/_
 prod 是给人看界面的，别攒一堆 `prod22amv24zx97` 这种账号。
 
 **P22 的 prod 真调用已过 27 条**（走 nginx 18080）：规范化会话、未读 +1、
-已读幂等、拉黑双向互禁与解黑恢复。prod 部署顺序按 8.2 / 8.5 / 8.6：
+已读幂等、拉黑双向互禁与解黑恢复。**P23 已部署**（纯后端，prod 真调用 11/11：
+造两条同龄笔记，一条 2 赞一条 0 赞，验证热度分排序 + SQL 真的执行了）。
+prod 部署顺序按 8.2 / 8.5 / 8.6：
 先灌 `message_session` + `message` 两张表（**只有 node 的 spawnSync 能让中文
 COMMENT 字节原样送达**），再单独 build backend 镜像、重建 backend 容器、
 **重启 nginx**（8.5：不重启会 502），最后前端 `--no-deps` 单独重建。
+
+⚠️ **验证排序的账号必须是「旁观者」，不能是作者本人**：`pageDiscover` 有
+`n.user_id != #{userId}`（发现流不回显自己的笔记）。用作者 A 的身份去看，
+A 自己发的高互动笔记**根本不出现在结果里**，症状是「高互动笔记没进流」——
+看起来像热度分没生效，真因隔了整屏。P23 第一次跑 prod 就踩了这个。
+
+⚠️ **计数是异步落库的**（P8 `NoteCounterFlushJob` 每 30s）：刚点赞完立刻查
+发现流，`note.like_count` 还是旧值，排序断言会**假红**。造完数据要等
+一次 flush 再断言，否则红的原因与代码无关。
 
 ### 8.6 改后端时 `up -d --build frontend` 会**连带重建 backend** 而失败
 

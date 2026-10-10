@@ -1617,14 +1617,34 @@ async function main() {
     check('已关注作者的笔记确实出现（对照：本次造过 ct2/ct3 的关注）',
       followedFlags.some((x) => x === 1), `flags=${followedFlags.join('')}`)
 
-    // 排序第二级：同一档内按互动量（赞+藏+评）非递增；第三级是时间，交给列表本身
-    const score = (n) => (n.likeCount ?? 0) + (n.collectCount ?? 0) + (n.commentCount ?? 0)
-    const scoreOf = (n) => score(n)
-    for (const seg of [list.filter((n) => n.authorFollowed), list.filter((n) => !n.authorFollowed)]) {
-      const scores = seg.map(scoreOf)
-      check('同一档内互动量非递增（互动量排序）',
-        scores.every((v, i) => i === 0 || scores[i - 1] >= v), `${scores.join(',')}`)
+    // 排序第二级：P23 起是**热度分**（见 FeedMapper.HOT_SCORE 的注释），
+    // 第三级才是时间。这里刻意**在测试侧把公式重算一遍**而不是只看互动量：
+    // 只断言「互动量非递增」会漏掉常数被改动的情况（公式与断言脱钩），
+    // 而重算等于把 (1+3赞+4藏+5评)/(天数+7)^0.5 这个形状钉死 ——
+    // 谁改了 FeedMapper 里的常数而没同步这里，这条会立刻红。
+    const hotScore = (n) => {
+      const days = (Date.now() - new Date(n.createTime).getTime()) / 3600000 / 24
+      return (1 + 3 * (n.likeCount ?? 0) + 4 * (n.collectCount ?? 0) + 5 * (n.commentCount ?? 0))
+        / Math.pow(days + 7, 0.5)
     }
+    for (const [label, seg] of [
+      ['已关注段', list.filter((n) => n.authorFollowed)],
+      ['未关注段', list.filter((n) => !n.authorFollowed)],
+    ]) {
+      const hs = seg.map(hotScore)
+      // 容忍 1e-9 浮点误差：排序键在 MySQL 侧是 DECIMAL，这里是 double
+      check(`${label}内热度分非递增（P23：(1+3赞+4藏+5评)/(天数+7)^0.5）`,
+        hs.every((v, i) => i === 0 || hs[i - 1] >= v - 1e-9),
+        `hot=${hs.map((v) => v.toFixed(3)).join(',')}`)
+    }
+    // 反向钉一条：互动量本身**不再**要求非递增 —— 允许更新的低互动内容
+    // 压过更老的高互动内容，这正是 P23 换排序键的目的。
+    // 若这条红，说明数据里互动量恰好单调，用例失去区分力（不是代码有问题）。
+    const followedRaw = list.filter((n) => n.authorFollowed)
+      .map((n) => (n.likeCount ?? 0) + (n.collectCount ?? 0) + (n.commentCount ?? 0))
+    check('互动量本身允许非递增（P23 的排序键已不是它）',
+      followedRaw.length <= 2 || !followedRaw.every((v, i) => i === 0 || followedRaw[i - 1] >= v),
+      `raw=${followedRaw.join(',')}`)
   }
   {
     // 这一条是这个流存在的**全部理由**：没关注任何人时关注流是空的，发现流必须仍有内容

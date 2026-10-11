@@ -256,6 +256,89 @@ try {
   )
   const vmsg = await s.evaluate("document.querySelector('.error')?.textContent?.trim() || ''")
   s.check('前端校验拦下非法用户名/过短密码', vmsg.includes('用户名'), vmsg)
+
+  /* ---------- P27：PWA 与下拉刷新 ---------- */
+  //
+  // ⚠️ 最重要的一条是「**开发时不得有 service worker**」——
+  // 它不是功能断言，而是**守住整套测试的有效性**。开发时注册 SW 会让
+  // 全部 571 条 CDP 测试打到缓存里的旧资源：改了一行 CSS 但测试量的是
+  // 上一轮的布局，症状是「刚改好的东西莫名其妙又坏了」，而真因在浏览器
+  // 缓存里，隔了整整一层。症状不会指向这里，所以必须显式钉住。
+
+  const swState = await s.evaluate(`(async () => {
+    const regs = 'serviceWorker' in navigator ? await navigator.serviceWorker.getRegistrations() : []
+    const keys = 'caches' in window ? await caches.keys() : []
+    return { regs: regs.length, cacheKeys: keys.length, keys }
+  })()`)
+  s.check('开发时**没有**注册 service worker（否则 CDP 会打到缓存资源）',
+    swState.regs === 0, `registrations=${swState.regs}`)
+  s.check('开发时**没有**建立任何缓存桶', swState.cacheKeys === 0, JSON.stringify(swState.keys))
+
+  // manifest 静态资源可达（生产才注册 SW，但 manifest 本身 dev 也应该能取到）
+  const mfOk = await s.evaluate(`(async () => {
+    try {
+      const r = await fetch('/manifest.json')
+      if (!r.ok) return { ok: false, status: r.status }
+      const j = await r.json()
+      return { ok: j.display === 'standalone' && Array.isArray(j.icons), icons: j.icons?.length }
+    } catch (e) { return { ok: false, err: String(e) } }
+  })()`)
+  s.check('manifest 可访问且结构正确（display=standalone + icons）',
+    mfOk.ok === true, JSON.stringify(mfOk))
+
+  // 下拉刷新：进首页后手动派发触摸序列，验证位移与 armed 状态
+  //
+  // ⚠️ 上面那段注册/校验的用例把页面停在**登录页**，而未登录访问 `#/` 会被
+  // 守卫弹回 `#/login` —— 于是 waitFor 等的是「首页的终态元素」，
+  // 超时报的是「首页终态」，与「页面根本不在首页」隔了好几行。
+  await loginDemo(s, BASE)
+  await s.goto(`${BASE}/#/`)
+  await s.waitFor("document.querySelector('[data-test=feed-item], [data-test=feed-empty]')", '首页终态', 20000)
+  s.check('首页初始不显示下拉指示器', !(await s.evaluate(`getComputedStyle(document.querySelector('[data-test=ptr]')).display !== 'none' && document.querySelector('[data-test=ptr]').getBoundingClientRect().height > 0`)))
+
+  // 模拟「在顶部向下拉」
+  const touch = (type, y) => s.evaluate(`(() => {
+    const t = new Touch({ identifier: 1, target: document.body, clientX: 200, clientY: ${y} })
+    const e = new TouchEvent('${type}', { bubbles: true, cancelable: true, touches: ${type === 'touchend' ? '[]' : '[t]'}, changedTouches: [t] })
+    window.dispatchEvent(e)
+  })()`)
+  await touch('touchstart', 100)
+  await touch('touchmove', 220)
+  await sleep(150)
+  const pulling = await s.evaluate(`(() => {
+    const el = document.querySelector('[data-test=ptr]')
+    if (!el) return null
+    return { h: Math.round(el.getBoundingClientRect().height), text: el.textContent.trim() }
+  })()`)
+  s.check('顶部向下拖会出现下拉指示器', pulling && pulling.h > 0, JSON.stringify(pulling))
+  s.check('位移不够阈值时不提示「松手刷新」（避免误导）',
+    pulling && !pulling.text.includes('松手'), JSON.stringify(pulling))
+
+  await touch('touchmove', 400)
+  await sleep(150)
+  const armedPull = await s.evaluate(`(() => {
+    const el = document.querySelector('[data-test=ptr]')
+    return { h: Math.round(el.getBoundingClientRect().height), text: el.textContent.trim() }
+  })()`)
+  s.check('拖过阈值后提示变成「松手刷新」',
+    armedPull.text.includes('松手'), JSON.stringify(armedPull))
+  s.check('指示器高度有上限（不会把内容拽飞）', armedPull.h <= 112, `h=${armedPull.h}`)
+
+  // 指示器不能挡点击
+  const pe = await s.evaluate(`getComputedStyle(document.querySelector('[data-test=ptr]')).pointerEvents`)
+  s.check('下拉指示器不拦截点击（pointer-events:none）', pe === 'none', `pointer-events=${pe}`)
+
+  await touch('touchend', 400)
+  await sleep(1200)
+  s.check('松手后指示器收起',
+    await s.evaluate(`document.querySelector('[data-test=ptr]').getBoundingClientRect().height < 5`))
+
+  // 离页后必须还原 overscroll-behavior —— 那是全局样式，不还原会污染整个应用
+  await s.goto(`${BASE}/#/profile`)
+  await s.waitFor("document.querySelector('[data-test=me-message-link]')", '「我的」页', 20000)
+  const obs = await s.evaluate(`document.body.style.overscrollBehaviorY`)
+  s.check('离开首页后还原 overscroll-behavior（全局样式不还原会污染全站）',
+    obs !== 'contain', `overscroll-behavior-y=${JSON.stringify(obs)}`)
 } catch (e) {
   ok = false
   s.check('用例执行', false, String(e.message ?? e))

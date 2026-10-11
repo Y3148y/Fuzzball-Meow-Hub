@@ -7,6 +7,7 @@ import { getDiscoverFeed, getFollowFeed } from '@/api/feed'
 import { ErrorCode } from '@/api/types'
 import type { NoteListItemVO } from '@/api/types'
 import { useUserStore } from '@/stores/user'
+import { usePullToRefresh } from '@/composables/usePullToRefresh'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 
 const router = useRouter()
@@ -43,6 +44,12 @@ const toggling = ref(new Set<string>())
 function isToggling(id: string) {
   return toggling.value.has(id)
 }
+
+/* ---------- P27 下拉刷新 ---------- */
+//
+// 刻意只挂在**首页**：详情页/发布页/私信页下拉刷新没有意义，
+// 而给每个页面都加会让「在页中间一拽就刷新」这种误触到处发生。
+const { pull, refreshing, armed } = usePullToRefresh(loadFeed)
 
 async function loadFeed() {
   // 记下这次请求是给哪个 tab 发的：请求在飞的时候用户可能又切了 tab，
@@ -150,8 +157,28 @@ onMounted(loadFeed)
 </script>
 
 <template>
-  <main class="page">
-    <header class="top">
+<main class="page">
+      <!--
+        下拉刷新指示器（P27）。
+        `position:fixed` + `pointer-events:none`：它跟着手指下移，
+        但**绝不能挡住任何点击** —— 放在文档流里的话它会把下面的内容顶下去，
+        而内容一变位置，用户点的就是另一个东西了。
+      -->
+      <div
+        v-show="pull > 0 || refreshing"
+        class="ptr"
+        :style="{ height: Math.max(pull, refreshing ? 44 : 0) + 'px' }"
+        data-test="ptr"
+        aria-hidden="true"
+      >
+        <span
+          class="ptr-dot"
+          :class="{ armed, spinning: refreshing }"
+          data-test="ptr-dot"
+        >{{ refreshing ? '刷新中' : armed ? '松手刷新' : '下拉刷新' }}</span>
+      </div>
+
+      <header class="top">
       <span class="brand">毛球喵社</span>
       <ThemeToggle />
     </header>
@@ -322,6 +349,60 @@ type="search"
 <style scoped>
 /* .page 的骨架（padding / gap / max-width / 桌面断点）统一在 main.css，
  * 这里不再重复一份 —— scoped 的 0,2,0 特异性会压过全局 0,1,0 的媒体查询。 */
+/* 下拉刷新指示器（P27）
+ *
+ * ⚠️ `pointer-events: none` 是**必需**的：它 position:fixed 盖在内容上，
+ * 不关掉点击的话，用户在指示器出现的那一瞬间点的任何东西都点不到。
+ * 同样不用 transform 动画 —— 位移直接绑在下拉量上，
+ * 加了过渡反而会有「手指已经停了、指示器还在追」的滞后感。
+ */
+.ptr {
+  position: fixed;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.ptr-dot {
+  font-size: var(--xk-fs-13);
+  color: var(--xk-text-2);
+  /* 透明度跟着下拉量走：拉得越多越清晰，像原生那样「逐渐显形」 */
+  opacity: 0.4;
+}
+
+.ptr-dot.armed { color: var(--xk-amber-text); font-weight: 600; opacity: 1; }
+
+.ptr-dot.spinning { color: var(--xk-amber-text); }
+
+/* 刷新中：转圈 */
+.ptr-dot.spinning::before {
+  content: '';
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 6px;
+  vertical-align: -1px;
+  border: 2px solid var(--xk-amber);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: ptr-spin 0.7s linear infinite;
+}
+
+@keyframes ptr-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* 尊重系统的「减少动态效果」设置（P13 那条无障碍原则的延伸） */
+@media (prefers-reduced-motion: reduce) {
+  .ptr-dot.spinning::before { animation: none; }
+}
+
 .top {
   display: flex;
   align-items: center;

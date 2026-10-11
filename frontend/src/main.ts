@@ -9,6 +9,7 @@ import { pinia } from './stores'
 // 2. 我们的 token 覆盖要压在 Vant 之后，全量引入的顺序是确定的
 import 'vant/lib/index.css'
 import './styles/main.css'
+import { registerServiceWorker } from './utils/serviceWorker'
 
 const app = createApp(App)
 
@@ -16,3 +17,7 @@ app.use(pinia)
 app.use(router)
 
 app.mount('#app')
+
+// P27：**生产构建才注册**。开发时注册会让 CDP 测试打到缓存里的旧资源，
+// 症状是「刚改好的东西莫名其妙又坏了」，而真因是浏览器缓存（见文件头注释）。
+registerServiceWorker()

@@ -425,7 +425,7 @@ const { markClean } = useUnsavedChanges(
 <ul v-if="previews.length" class="grid" data-test="note-previews">
           <li v-for="(src, i) in previews" :key="src" class="cell">
             <img :src="src" alt="预览图" />
-            <button class="rm" type="button" aria-label="移除" @click="removeAt(i)">×</button>
+            <button class="rm" type="button" :aria-label="`移除第 ${i + 1} 张图片`" :data-test="`note-remove-${i}`" @click="removeAt(i)">×</button>
             <!--
               裁剪入口（P25）。刻意是 **button 而不是包在 img 上**：整块图片做成
               点击热区会让「点图片=裁剪」与「点别处=聚焦输入框」互相打架，

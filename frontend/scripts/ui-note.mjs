@@ -1613,7 +1613,124 @@ await s.evaluate("document.querySelector('[data-test=img-next]').click()")
   await s.goto(`${BASE}/#/note/${longNoteIdForCrop}`)
   await s.waitFor("document.querySelector('[data-test=note-detail-content]')", '回到长正文笔记', 20000)
 
-  // ---- 16. 清理：删掉长正文笔记与纯文字笔记，本组自清
+  // ---- 16. P26 滤镜
+  //
+  // 核心断言不是「点了滤镜有反应」，而是**预览与导出逐像素一致**：
+  // 预览用 CSS filter，导出用 canvas 逐像素数学，两条路径各写一遍就一定会漂。
+  // 用户看到「预览很黄、发出去是白的」时不会怀疑滤镜，只会以为平台坏了。
+  await s.goto(`${BASE}/#/publish`)
+  await s.waitFor("document.querySelector('[data-test=note-title]')", '发布页就绪', 20000)
+  const fPng = writePng(dir, `filter-${cropStamp}.png`, 200, 140, { quadrant: true })
+  await setFiles('input[type=file]', [fPng])
+  await s.waitFor("document.querySelector('[data-test=note-crop-0]')", '图片进预览', 20000)
+
+  await s.evaluate("document.querySelector('[data-test=note-crop-0]').click()")
+  await s.waitFor("document.querySelector('[data-test=crop-tab-filter]')", '编辑器打开', 20000)
+  s.check('编辑器有「裁剪 / 滤镜」两个 tab',
+    (await exists('crop-tab-crop')) && (await exists('crop-tab-filter')))
+
+  await s.evaluate("document.querySelector('[data-test=crop-tab-filter]').click()")
+  await sleep(200)
+  s.check('切到滤镜 tab 后取景框消失（滤镜对整张图生效，不该有裁剪暗示）',
+    !(await exists('crop-box')), 'crop-box 仍在')
+  const filterCount = await s.evaluate("document.querySelectorAll('[data-test^=filter-]').length")
+  s.check('滤镜 tab 列出 6 套预设', filterCount === 6, `count=${filterCount}`)
+
+  // 选「黑白」，确认**预览真的变了**（<img> 上挂了 CSS filter）
+  await s.evaluate("document.querySelector('[data-test=filter-mono]').click()")
+  await sleep(250)
+  const previewFilterApplied = await s.evaluate(`getComputedStyle(document.querySelector('.pic')).filter`)
+  s.check('选中滤镜后预览实时生效（img 上挂了 CSS filter）',
+    previewFilterApplied.includes('grayscale'), `filter=${previewFilterApplied}`)
+
+  // ⚠️ **核心**：只用滤镜、不碰取景框 → 输出必须仍是**整张图**的尺寸。
+  // 「只想加个滤镜」却被静默裁一圈，是那种用户根本不会发现的坑。
+  await s.evaluate("document.querySelector('[data-test=crop-apply]').click()")
+  await s.waitFor("!document.querySelector('[data-test=crop-mask]')", '滤镜应用', 20000)
+  const filterDims = await s.evaluate(`(async () => {
+    const img = document.querySelector('[data-test=note-previews] img')
+    if (!img.complete) await img.decode()
+    return { w: img.naturalWidth, h: img.naturalHeight }
+  })()`)
+  s.check('只用滤镜不改变尺寸（不会被静默裁掉一圈）',
+    filterDims.w === 200 && filterDims.h === 140, JSON.stringify(filterDims))
+
+  // 滤镜真的改了像素：黑白图三通道应相等
+  const grayEq = await s.evaluate(`(async () => {
+    const img = document.querySelector('[data-test=note-previews] img')
+    if (!img.complete) await img.decode()
+    const c = document.createElement('canvas')
+    c.width = img.naturalWidth; c.height = img.naturalHeight
+    const g = c.getContext('2d')
+    g.drawImage(img, 0, 0)
+    const d = g.getImageData(0, 0, c.width, c.height).data
+    for (let i = 0; i < d.length; i += 4) {
+      if (Math.abs(d[i] - d[i+1]) > 3 || Math.abs(d[i+1] - d[i+2]) > 3) return { eq: false, i, rgb: [d[i], d[i+1], d[i+2]] }
+    }
+    return { eq: true }
+  })()`)
+  s.check('黑白滤镜真的改了像素（三通道相等）', grayEq.eq === true, JSON.stringify(grayEq))
+
+  // 预览 vs 导出：同一张图，CSS 滤镜结果与我们的逐像素数学逐点比较
+  const consistency = await s.evaluate(`(async () => {
+    const m = await import('/src/utils/filters.ts')
+    const W = 64, H = 64
+    const src = document.createElement('canvas')
+    src.width = W; src.height = H
+    const sg = src.getContext('2d')
+    const im = sg.createImageData(W, H)
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4
+      im.data[i] = (x * 4) % 256
+      im.data[i + 1] = (y * 4) % 256
+      im.data[i + 2] = ((x + y) * 2) % 256
+      im.data[i + 3] = 255
+    }
+    sg.putImageData(im, 0, 0)
+
+    const worst = []
+    for (const f of m.FILTERS) {
+      // ⚠️ 两条路径必须从**同一份未过滤**的像素出发 ——
+      // 之前 B 路径从已被 ctx.filter 处理过的 canvas 取，等于滤镜应用了两次，
+      // 于是连 brightness 都「差 14」，而 grayscale 因为「灰度再灰度还是灰度」
+      // 碰巧通过，掩盖了脚本自身的错。
+      const base = sg.getImageData(0, 0, W, H)
+      const a = document.createElement('canvas'); a.width = W; a.height = H
+      const ag = a.getContext('2d')
+      ag.filter = f.css
+      ag.drawImage(src, 0, 0)
+      ag.filter = 'none'
+      const via = ag.getImageData(0, 0, W, H).data
+      const mine = new ImageData(new Uint8ClampedArray(base.data), W, H)
+      m.applyFilterToPixels(mine, f.id)
+      let max = 0
+      for (let i = 0; i < mine.data.length; i += 4) {
+        for (let k = 0; k < 3; k++) {
+          const d = Math.abs(mine.data[i + k] - via[i + k])
+          if (d > max) max = d
+        }
+      }
+      worst.push({ id: f.id, label: f.label, max })
+    }
+    return worst
+  })()`)
+  const worstFilter = consistency.reduce((a, b) => (b.max > a.max ? b : a))
+  s.check('六套滤镜的预览与导出逐像素一致（maxDiff≤3）',
+    worstFilter.max <= 3, `最差=${worstFilter.label} maxDiff=${worstFilter.max} 全表=${JSON.stringify(consistency)}`)
+
+  // 清掉这张滤镜测试图，恢复到干净的发布页
+  s.check('滤镜后预览仍在（移除按钮存在）', await exists('note-remove-0'))
+  await s.evaluate("document.querySelector('[data-test=note-remove-0]').click()")
+  await sleep(200)
+  s.check('移除按钮能清掉预览图', !(await exists('note-previews')))
+
+  // ⚠️ 本段结束时页面停在**发布页**，而下面第 17 段清理要从**详情页**点删除。
+  // 不还原的话 `note-delete-btn` 是 null —— 报错「Cannot read properties of
+  // null」，与「页面走错了地方」毫无关系。
+  await s.goto(`${BASE}/#/note/${longNoteIdForCrop}`)
+  await s.waitFor("document.querySelector('[data-test=note-detail-content]')", '回到长正文笔记', 20000)
+
+  // ---- 17. 清理：删掉长正文笔记与纯文字笔记，本组自清
   const longNoteId = (await s.evaluate('location.hash')).split('/').pop()
   await s.evaluate("document.querySelector('[data-test=note-delete-btn]').click()")
   await s.waitFor("document.querySelector('.van-dialog')", '删除确认弹窗', 10000)

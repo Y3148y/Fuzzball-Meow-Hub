@@ -17,6 +17,7 @@
  * 少处理这一步 = 用户按「竖着」裁，出来是横的。
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { applyFilterToPixels, cssFilter, FILTERS } from '@/utils/filters'
 
 const props = defineProps<{
   /** 待裁剪的图片（原始 File） */
@@ -27,7 +28,34 @@ const emit = defineEmits<{
   (e: 'apply', payload: { blob: Blob; previewUrl: string }): void
 }>()
 
-/* ---------------- 裁剪框状态（归一化坐标 0..1） ---------------- */
+/* ---------------- 裁剪 / 滤镜（P26：同一个编辑器两个 tab） ---------------- */
+
+/**
+ * 当前 tab。
+ *
+ * <p>「裁剪」与「滤镜」放**同一个**弹窗而不是两个入口：它们改的是同一张图的
+ * 同一份像素，分成两个弹窗意味着「裁完想再调个滤镜」要退出重进一次。
+ */
+const tab = ref<'crop' | 'filter'>('crop')
+
+/**
+ * 裁剪框**是否被用户动过**。
+ *
+ * <p>⚠️ 这条是 P26 里最容易被忽略的一处：不跟踪它，「只想加个滤镜」的用户
+ * 会被静默裁掉一圈 —— 因为确定按钮走的是同一条渲染路径。
+ * 症状极隐蔽：图看起来「就是小了一圈」，而用户根本不知道自己裁过。
+ * 所以只有「用户真的调过取景框 / 选过比例 / 转过图」才裁。
+ */
+const cropTouched = ref(false)
+
+const filterId = ref('none')
+
+/** 预览用的 CSS filter（滤镜 tab 下贴在 img 上，实时且零像素开销） */
+const previewFilter = computed(() => (tab.value === 'filter' ? cssFilter(filterId.value) : 'none'))
+
+function pickFilter(id: string) {
+  filterId.value = id
+}
 const box = ref({ x: 0.1, y: 0.1, w: 0.8, h: 0.8 })
 const rotate = ref(0)
 const working = ref(false)
@@ -88,8 +116,11 @@ async function loadImage(file: File): Promise<void> {
       })
     }
     imgLoaded.value = true
-    // 换图才重置旋转（同图内旋转是用户的既有选择，见 resetBox 的注释）
+    // 换图才重置（同图内旋转是用户的既有选择，见 resetBox 的注释）
     rotate.value = 0
+    // 新图 = 新的起点，之前那张动过框不算数
+    cropTouched.value = false
+    filterId.value = 'none'
     resetBox()
     await nextTick()
     measure()
@@ -219,6 +250,8 @@ const boxStyle = computed(() => {
 
 function onDown(ev: PointerEvent, mode: DragMode) {
   ev.preventDefault()
+  // 拖框 = 真的要裁（而「点一下选比例」也算，见 pickRatio）
+  cropTouched.value = true
   drag.value = { mode, sx: ev.clientX, sy: ev.clientY, start: { ...box.value } }
   ;(ev.currentTarget as HTMLElement).setPointerCapture?.(ev.pointerId)
 }
@@ -298,6 +331,8 @@ function applyRatio() {
 
 function pickRatio(r: number) {
   ratio.value = r
+  // 点「自由」是**取消**比例约束，不等于想裁；但点具体比例（1:1 等）是明确要裁
+  if (r !== 0) cropTouched.value = true
   applyRatio()
 }
 
@@ -342,11 +377,14 @@ async function render(): Promise<Blob> {
   const fullW = swap ? natH : natW
   const fullH = swap ? natW : natH
 
-  // 裁剪框的像素位置（归一化 → 原图像素）
-  const sx = Math.round(box.value.x * fullW)
-  const sy = Math.round(box.value.y * fullH)
-  const sw = Math.max(1, Math.round(box.value.w * fullW))
-  const sh = Math.max(1, Math.round(box.value.h * fullH))
+  // ⚠️ 裁剪框的像素位置（归一化 → 原图像素）
+  // **没动过取景框时取整张**：见 cropTouched 的注释 ——
+  // 「只想加个滤镜」的用户不该被静默裁掉一圈，而那个症状几乎无法自查。
+  const doCrop = cropTouched.value || rotate.value !== 0
+  const sx = doCrop ? Math.round(box.value.x * fullW) : 0
+  const sy = doCrop ? Math.round(box.value.y * fullH) : 0
+  const sw = doCrop ? Math.max(1, Math.round(box.value.w * fullW)) : fullW
+  const sh = doCrop ? Math.max(1, Math.round(box.value.h * fullH)) : fullH
 
   const scale = Math.min(1, OUT_MAX / Math.max(sw, sh))
   const c = document.createElement('canvas')
@@ -362,6 +400,14 @@ async function render(): Promise<Blob> {
     sx - fullW / 2, sy - fullH / 2, sw, sh,
     (-sw * scale) / 2, (-sh * scale) / 2, sw * scale, sh * scale,
   )
+
+  // 滤镜在裁剪**之后**施加：先裁出内容再调色，
+  // 顺序反了的话边缘会带上取景框外被压暗的像素（比滤镜本身更难看）
+  if (filterId.value !== 'none') {
+    const data = g.getImageData(0, 0, c.width, c.height)
+    applyFilterToPixels(data, filterId.value)
+    g.putImageData(data, 0, 0)
+  }
   const blob = await new Promise<Blob | null>((res) => c.toBlob(res, 'image/jpeg', 0.92))
   if (!blob) throw new Error('toBlob failed')
   return blob
@@ -385,10 +431,10 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="mask" data-test="crop-mask" @click.self="emit('cancel')">
-    <div class="sheet" role="dialog" aria-label="裁剪图片">
+    <div class="sheet" role="dialog" aria-label="编辑图片">
       <header class="bar">
         <button type="button" class="linkbtn" data-test="crop-cancel" @click="emit('cancel')">取消</button>
-        <b>裁剪</b>
+        <b>编辑</b>
         <button
           type="button"
           class="linkbtn primary"
@@ -400,9 +446,35 @@ onBeforeUnmount(() => {
         </button>
       </header>
 
+      <!--
+        裁剪 / 滤镜 两个 tab。用 `role=tablist` + `aria-selected`：
+        切 tab 是**切换内容**而不是导航，a11y 上要读成 tab 才不会被读屏
+        当成「跳到另一个页面」。
+      -->
+      <div class="tabs" role="tablist" aria-label="编辑方式">
+        <button
+          type="button"
+          role="tab"
+          class="tab"
+          :class="{ on: tab === 'crop' }"
+          :aria-selected="tab === 'crop'"
+          data-test="crop-tab-crop"
+          @click="tab = 'crop'"
+        >裁剪</button>
+        <button
+          type="button"
+          role="tab"
+          class="tab"
+          :class="{ on: tab === 'filter' }"
+          :aria-selected="tab === 'filter'"
+          data-test="crop-tab-filter"
+          @click="tab = 'filter'"
+        >滤镜</button>
+      </div>
+
       <div ref="stageRef" class="stage">
-        <img v-show="imgLoaded" :src="cropSrc" alt="" class="pic" />
-        <div v-if="imgLoaded" class="box" :style="boxStyle" data-test="crop-box">
+        <img v-show="imgLoaded" :src="cropSrc" :style="{ filter: previewFilter }" alt="" class="pic" />
+        <div v-if="imgLoaded && tab === 'crop'" class="box" :style="boxStyle" data-test="crop-box">
           <span class="grid" aria-hidden="true" />
           <button class="mask-area" type="button" aria-label="移动裁剪框" @pointerdown="onDown($event, 'move')" @pointermove="onMove" @pointerup="onUp" />
           <button class="h nw" type="button" aria-label="左上角" @pointerdown="onDown($event, 'nw')" @pointermove="onMove" @pointerup="onUp" />
@@ -411,10 +483,16 @@ onBeforeUnmount(() => {
           <button class="h se" type="button" aria-label="右下角" @pointerdown="onDown($event, 'se')" @pointermove="onMove" @pointerup="onUp" />
         </div>
         <p v-else-if="error" class="err" role="alert">{{ error }}</p>
-        <p v-else class="hint">读取中…</p>
+        <p v-else-if="!imgLoaded" class="hint">读取中…</p>
       </div>
 
-      <div class="tools">
+      <!--
+        滤镜 tab：**不显示取景框**。
+        显示它会让用户以为「框外那圈也会被处理」，于是有人为了「不裁到脸」
+        特意把框挪开 —— 结果框本身成了一个假的裁剪暗示。
+        滤镜是对**整张**图生效的，界面上就不该出现取景框。
+      -->
+      <div v-if="tab === 'crop'" class="tools">
         <div class="ratios" role="group" aria-label="裁剪比例">
           <button
             v-for="r in RATIOS"
@@ -432,6 +510,26 @@ onBeforeUnmount(() => {
         <button class="chip" type="button" data-test="crop-rotate" @click="rotate90">
           旋转
         </button>
+      </div>
+
+      <div v-else class="tools">
+        <div class="filters" role="radiogroup" aria-label="滤镜">
+          <button
+            v-for="f in FILTERS"
+            :key="f.id"
+            type="button"
+            class="fchip"
+            :class="{ on: filterId === f.id }"
+            role="radio"
+            :aria-checked="filterId === f.id"
+            :data-test="`filter-${f.id}`"
+            @click="pickFilter(f.id)"
+          >
+            <!-- 缩略图用**同一张原图 + 各自的 CSS filter**，所见即所得 -->
+            <img :src="cropSrc" :style="{ filter: f.css }" alt="" class="fthumb" />
+            <span>{{ f.label }}</span>
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -463,6 +561,34 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   padding: var(--xk-space-3) var(--xk-card-pad);
   border-bottom: 1px solid var(--xk-stroke);
+}
+
+/* 裁剪 / 滤镜 切换（P26）
+ *
+ * 刻意做成**分段控件**而不是普通 chip 行：它是「同一件事的两种方式」，
+ * 视觉上要在同一组里，而普通 chip 会被读成「又一排可点的按钮」。
+ */
+.tabs {
+  display: flex;
+  gap: var(--xk-space-1);
+  padding: var(--xk-space-2) var(--xk-card-pad) 0;
+}
+
+.tab {
+  min-height: 40px;
+  padding: 0 var(--xk-space-4);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--xk-text-2);
+  font-size: var(--xk-fs-15);
+  cursor: pointer;
+}
+
+.tab.on {
+  border-bottom-color: var(--xk-amber);
+  color: var(--xk-amber-text);
+  font-weight: 600;
 }
 
 .linkbtn {
@@ -569,6 +695,45 @@ onBeforeUnmount(() => {
 }
 
 .ratios { display: flex; gap: var(--xk-space-2); flex-wrap: wrap; }
+
+/* 滤镜条（P26）：横向可滚，每项「缩略图 + 名字」 */
+.filters {
+  display: flex;
+  gap: var(--xk-space-3);
+  overflow-x: auto;
+  padding-bottom: var(--xk-space-2);
+  /* 滚动条不占布局高度，但 iOS 上仍需 momentum 滚动 */
+  -webkit-overflow-scrolling: touch;
+}
+
+.fchip {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: var(--xk-space-1);
+  border: 2px solid transparent;
+  border-radius: var(--xk-radius-blob-sm);
+  background: none;
+  color: var(--xk-text-2);
+  font-size: var(--xk-fs-12);
+  cursor: pointer;
+}
+
+.fchip.on {
+  border-color: var(--xk-amber);
+  color: var(--xk-amber-text);
+}
+
+.fthumb {
+  width: 56px;
+  height: 56px;
+  border-radius: 6px;
+  object-fit: cover;
+  background: var(--xk-surface-2);
+  display: block;
+}
 
 .chip {
   min-height: 40px;

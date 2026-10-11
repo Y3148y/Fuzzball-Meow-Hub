@@ -2415,3 +2415,14 @@ install 失败、SW 永远装不上**，所以只 precache 三个必定存在的
 `ui-smoke` 的注册/校验用例把页面停在**登录页**，而未登录访问 `#/` 会被守卫
 弹回 —— 于�� `waitFor` 超时报的是「首页终态」，与「页面根本不在首页」
 隔了好几行。补一次 `loginDemo` 才对。
+
+**P26/P27 已部署**（纯前端，`docker build` + `--no-deps --force-recreate frontend`，
+prod 真调用 **11/11**：`sw.js` 可访问且 **Content-Type 是 JS**（返回 text/plain
+会被浏览器**拒绝注册**，症状是「SW 装不上」）/ `sw.js` 对 `/api` 明确不碰 /
+`install`+`activate`+`fetch` 三个监听都在 / 发现流仍可用 / P24 的 manifest 与
+apple-touch-icon 仍挂载）。探针按 `prod2%` 清干净。
+
+验「prod 跑的是新前端」按 P24 段那条抓 chunk 查特征串：P26 的
+`PublishView-*.js` 含「裁剪这张图片」（P25）与滤镜预设「胶片」；P27 的
+`HomeView-*.js` 含「松手刷新」—— 三轮的特征串都在，说明前端重建没有把之前
+几轮的产物带掉。

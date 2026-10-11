@@ -47,6 +47,7 @@ import { publishNote, uploadImage } from '@/api/note'
 import { BizError } from '@/api/request'
 import { ErrorCode, NOTE_IMAGE_LIMIT } from '@/api/types'
 import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
+import ImageCropper from '@/components/ImageCropper.vue'
 import {
   CARD_TEMPLATES,
   defaultTemplateId,
@@ -186,6 +187,48 @@ function removeAt(i: number) {
   URL.revokeObjectURL(previews.value[i])
   files.value.splice(i, 1)
   previews.value.splice(i, 1)
+  errorMsg.value = ''
+}
+
+/* ---------- P25 裁剪 ---------- */
+
+/**
+ * 待裁剪的图片下标。
+ *
+ * <p>刻意**记下标**而不是记 File：apply 时要把裁完的结果**原位替换**掉原来
+ * 那张，而记 File 会丢位置。记下标也让「取消」变成真正的无操作。
+ */
+const cropAt = ref<number | null>(null)
+const cropFile = computed(() => (cropAt.value === null ? null : files.value[cropAt.value]))
+
+function openCropper(i: number) {
+  cropAt.value = i
+}
+
+/** 取消：什么都不改（预览本来就是 ObjectURL，没有副作用） */
+function onCropCancel() {
+  cropAt.value = null
+}
+
+/**
+ * 确定：用裁完的 Blob **原位替换**原图。
+ *
+ * <p>包成 File 是因为上游 {@code uploadImage(f)} 收 File，中间不再多包一层。
+ * 顺带把扩展名纠正成 .jpg —— 后端按 content type 白名单放行，jpg 比 webp
+ * 少一条「白名单里有但实际没有」的坑。
+ *
+ * <p>⚠️ 预览**必须**一起换：只换 File 不换 URL，用户点「确定」后看到的还是
+ * 裁剪前那张 —— 而 `submit()` 上传的是新 File，两边对不上，
+ * 症状是「界面没变但发出去的图裁了」。
+ */
+function onCropApply(payload: { blob: Blob }) {
+  const i = cropAt.value
+  cropAt.value = null
+  if (i === null || i >= files.value.length) return
+  const name = files.value[i].name.replace(/\.[^.]+$/, '') + '.jpg'
+  files.value[i] = new File([payload.blob], name, { type: 'image/jpeg' })
+  URL.revokeObjectURL(previews.value[i])
+  previews.value[i] = URL.createObjectURL(payload.blob)
   errorMsg.value = ''
 }
 
@@ -379,12 +422,26 @@ const { markClean } = useUnsavedChanges(
         <button type="button" data-test="pager-next" aria-label="下一页" @click="flipPage(1)">›</button>
       </div>
 
-      <ul v-if="previews.length" class="grid" data-test="note-previews">
-        <li v-for="(src, i) in previews" :key="src" class="cell">
-          <img :src="src" alt="待发布图片" />
-          <button class="rm" type="button" aria-label="移除" @click="removeAt(i)">×</button>
-        </li>
-      </ul>
+<ul v-if="previews.length" class="grid" data-test="note-previews">
+          <li v-for="(src, i) in previews" :key="src" class="cell">
+            <img :src="src" alt="预览图" />
+            <button class="rm" type="button" aria-label="移除" @click="removeAt(i)">×</button>
+            <!--
+              裁剪入口（P25）。刻意是 **button 而不是包在 img 上**：整块图片做成
+              点击热区会让「点图片=裁剪」与「点别处=聚焦输入框」互相打架，
+              误触率高。按钮小一点但语义明确，也满足 P13 的 40px 热区。
+            -->
+            <button
+              class="crop"
+              type="button"
+              aria-label="裁剪这张图片"
+              :data-test="`note-crop-${i}`"
+              @click="openCropper(i)"
+            >
+              <van-icon name="photograph" />
+            </button>
+          </li>
+        </ul>
 
       <!--
         视频入口。刻意做成「切到视频模式」而不是在同一个 input 里混选：
@@ -431,8 +488,20 @@ const { markClean } = useUnsavedChanges(
         <span>+ 添加图片</span>
       </label>
 
-      <p v-if="errorMsg" class="err" role="alert" data-test="note-error">{{ errorMsg }}</p>
-    </section>
+<p v-if="errorMsg" class="err" role="alert" data-test="note-error">{{ errorMsg }}</p>
+  </section>
+
+  <!--
+    裁剪浮层（P25）。挂在 main **外面**：它要盖住整个视口，
+    放在 section 里会被 section 的圆角与 overflow 裁掉边角
+    （P12-C 踩过「桌面媒体查询写在基础规则之前」的同类坑 —— 层叠上下文）。
+  -->
+  <ImageCropper
+    v-if="cropAt !== null"
+    :file="cropFile"
+    @cancel="onCropCancel"
+    @apply="onCropApply"
+  />
   </main>
 </template>
 
@@ -797,6 +866,44 @@ const { markClean } = useUnsavedChanges(
   line-height: 1;
   cursor: pointer;
 }
+
+/* 裁剪入口（P25）
+ *
+ * ⚠️ 热区 40px 而 `.rm` 只有 20px —— 这两个按钮在同一个 1:1 的小格子里，
+ * 40px 的裁剪钮和 20px 的删除钮摆一起会**互相压住**（间距不够）。
+ * 折中：视觉 24px，用一个**透明的 40px 热区**扩大可点范围
+ * （`::before` 撑开，不影响布局也不挡删除钮的点击）。
+ */
+.crop {
+  position: absolute;
+  left: 2px;
+  bottom: 2px;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-size: var(--xk-fs-13);
+  line-height: 1;
+  cursor: pointer;
+}
+
+/* 透明热区：从 24px 扩到 40px，不改变布局也不吃掉相邻按钮的点击 */
+.crop::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 40px;
+  height: 40px;
+  transform: translate(-50%, -50%);
+}
+
+.crop:active { background: rgba(0, 0, 0, 0.8); }
 
 .picker {
   display: block;

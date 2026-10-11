@@ -11,6 +11,7 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    ImageCropper: typeof import('./components/ImageCropper.vue')['default']
     MoreSheet: typeof import('./components/MoreSheet.vue')['default']
     NotificationBell: typeof import('./components/NotificationBell.vue')['default']
     ReportSheet: typeof import('./components/ReportSheet.vue')['default']

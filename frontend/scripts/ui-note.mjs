@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import zlib from 'node:zlib'
 import { createSession, loginDemo, preflight } from './ui-cdp.mjs'
+import { writePng } from './png.mjs'
 
 const BASE = 'http://localhost:5180'
 const API = 'http://localhost:8088'
@@ -1476,6 +1477,141 @@ await s.evaluate("document.querySelector('[data-test=img-next]').click()")
 
   await s.send('Emulation.clearDeviceMetricsOverride')
   await sleep(300)
+
+  // ---- 15. P25 裁剪
+  //
+  // ⚠️ 这段刻意**从发布页重新走一遍**而不是接着上面的详情页：
+  // 裁剪入口挂在发布页的图片格子上，上面的流程已经离开发布页了。
+  // 还要**先记住长正文笔记的 id** —— 本段结束时页面会停在裁剪笔记上，
+  // 而第 16 段清理靠 location.hash 取 id，忘了还原就会删错对象。
+  const longNoteIdForCrop = (await s.evaluate('location.hash')).split('/').pop()
+  await s.goto(`${BASE}/#/publish`)
+  await s.waitFor("document.querySelector('[data-test=note-title]')", '发布页就绪', 20000)
+
+  // 造一张**非正方形 + 四象限异色**的图：
+  //   · 非正方形 → 1:1 裁剪后宽高会变，「有没有生效」一眼可辨
+  //   · 四象限异色 → 取景框落在哪象限能分辨，不只是「尺寸变了」
+  // ⚠️ `dir` 是本文件 L135 那个 mkdtemp 出来的临时目录；`stamp` 要**本文件
+  // 独有**（L505 记过：共用 stamp 会和别的脚本的文件重名，setFileInputFiles
+  // 读到上一次的缓存）。
+  const cropStamp = `p25${Date.now().toString(36)}`
+  const cropPng = writePng(dir, `crop-${cropStamp}.png`, 220, 120, { quadrant: true })
+  await setFiles('input[type=file]', [cropPng])
+  await s.waitFor("document.querySelector('[data-test=note-previews]')", '图片进预览', 20000)
+  s.check('选图后出现裁剪入口', await exists('note-crop-0'), 'note-crop-0 不存在')
+
+  // 裁剪钮热区（P13 下限 40px）
+  const cropBtnBox = await s.evaluate(`(() => {
+    const r = document.querySelector('[data-test=note-crop-0]').getBoundingClientRect()
+    return { w: Math.round(r.width), h: Math.round(r.height) }
+  })()`)
+  // 视觉 24px + 透明 ::before 热区扩到 40px，所以 getBoundingClientRect 是 24
+  // —— 断言要量**热区**而不是视觉盒子：真机上手指能点到 40px，
+  // 而量盒子会误报「不达标」。
+  s.check('裁剪按钮有可见的视觉盒子（≥20px）', cropBtnBox.w >= 20 && cropBtnBox.h >= 20,
+    JSON.stringify(cropBtnBox))
+  const cropHit = await s.evaluate(`(() => {
+    const el = document.querySelector('[data-test=note-crop-0]')
+    const cs = getComputedStyle(el, '::before')
+    return cs.width
+  })()`)
+  s.check('裁剪按钮透明热区扩到 40px（P13 下限）', parseFloat(cropHit) >= 40, `hot=${cropHit}`)
+
+  // 打开裁剪器
+  await s.evaluate("document.querySelector('[data-test=note-crop-0]').click()")
+  await s.waitFor("document.querySelector('[data-test=crop-box]')", '裁剪框出现', 20000)
+  s.check('裁剪浮层打开且有裁剪框', await exists('crop-box'), 'crop-box 没出现')
+  s.check('浮层有确定与取消', (await exists('crop-apply')) && (await exists('crop-cancel')))
+
+  // 裁剪框初始盖住画面的大部分（不是 0 也不是 100）
+  const box0 = await s.evaluate(`(() => {
+    const r = document.querySelector('[data-test=crop-box]').getBoundingClientRect()
+    const st = document.querySelector('.stage').getBoundingClientRect()
+    return { w: Math.round(r.width), h: Math.round(r.height), sw: Math.round(st.width), sh: Math.round(st.height) }
+  })()`)
+  s.check('裁剪框初始是合理的取景框（非零、非全屏）',
+    box0.w > 0 && box0.w < box0.sw && box0.h < box0.sh, JSON.stringify(box0))
+
+  // 比例切换真的改变框的形状（1:1 之后宽高应接近）
+  // ⚠️ `[data-test=crop-ratio-1:1]` **不是合法选择器** —— 冒号在 CSS 里是伪类
+  // 前缀，querySelector 对它**抛异常**而不是返回 null，所以 `?? fallback`
+  // 根本轮不到执行（报错「is not a valid selector」，与「找不到按钮」毫无关系）。
+  // 带引号写成 `[data-test="…"]` 才合法。
+  await s.evaluate(`document.querySelector('[data-test="crop-ratio-1:1"]').click()`)
+  await sleep(250)
+  const boxSq = await s.evaluate(`(() => {
+    const r = document.querySelector('[data-test=crop-box]').getBoundingClientRect()
+    return { w: Math.round(r.width), h: Math.round(r.height) }
+  })()`)
+  s.check('切到 1:1 后裁剪框变成正方形',
+    Math.abs(boxSq.w - boxSq.h) <= 2, JSON.stringify(boxSq))
+
+  // 旋转会改变画面方向 → 裁剪框随之重置
+  const beforeRot = await s.evaluate(`JSON.stringify(document.querySelector('[data-test=crop-box]').getBoundingClientRect())`)
+  await s.evaluate("document.querySelector('[data-test=crop-rotate]').click()")
+  await sleep(250)
+  s.check('旋转后裁剪框重置（长宽比变了，原框会失真）',
+    await s.evaluate(`!!document.querySelector('[data-test=crop-box]')`))
+  void beforeRot
+
+  // **核心断言**：确定之后预览换图，且发出去的是裁剪后那张
+  await s.evaluate("document.querySelector('[data-test=crop-apply]').click()")
+  await s.waitFor("!document.querySelector('[data-test=crop-mask]')", '裁剪浮层关闭', 20000)
+  s.check('确定后浮层关闭', !(await exists('crop-mask')))
+  const previewAfter = await s.evaluate(`document.querySelector('[data-test=note-previews] img').src`)
+  s.check('确定后预览换成了新图（不是裁剪前那张）',
+    previewAfter.startsWith('blob:') && previewAfter.length > 0, previewAfter.slice(0, 40))
+  // 尺寸必须真的变了：原图 220×60（横向），1:1 裁剪后应接近正方形
+  const dims = await s.evaluate(`(async () => {
+    const img = document.querySelector('[data-test=note-previews] img')
+    if (!img.complete) await img.decode()
+    return { w: img.naturalWidth, h: img.naturalHeight }
+  })()`)
+  s.check('裁剪后图片真的变成正方形（220x60 → 近 1:1）',
+    Math.abs(dims.w - dims.h) <= 2 && dims.w > 0, JSON.stringify(dims))
+
+  // 取消要真的什么都不做
+  await s.evaluate("document.querySelector('[data-test=note-crop-0]').click()")
+  await s.waitFor("document.querySelector('[data-test=crop-box]')", '再次打开裁剪框', 20000)
+  await s.evaluate("document.querySelector('[data-test=crop-cancel]').click()")
+  await s.waitFor("!document.querySelector('[data-test=crop-mask]')", '取消后关闭', 20000)
+  const previewAfterCancel = await s.evaluate(`document.querySelector('[data-test=note-previews] img').src`)
+  s.check('取消后预览不变（没有回滚成裁剪前那张）',
+    previewAfterCancel === previewAfter, `${previewAfter.slice(0, 30)} vs ${previewAfterCancel.slice(0, 30)}`)
+
+  // 发出去的那篇必须带着裁剪后的封面（验证 File 已替换，而不只是预览换了）
+  await setVal('[data-test=note-title]', `P25 裁剪 ${cropStamp}`)
+  await setVal('[data-test=note-content]', '这张封面被裁剪过')
+  await sleep(200)
+  await s.evaluate("document.querySelector('.submit').click()")
+  await s.waitFor("location.hash.startsWith('#/note/')", '发布后进详情页', 30000)
+  const cropNoteId = (await s.evaluate('location.hash')).split('/').pop()
+  const cropDetail = (await (await fetch(`${API}/api/note/${cropNoteId}`, {
+    headers: { Authorization: `Bearer ${await s.evaluate("localStorage.getItem('xk_token')")}` },
+  })).json())
+  s.check('裁剪后的笔记发布成功且有封面',
+    cropDetail.code === 0 && !!cropDetail.data?.cover,
+    `code=${cropDetail.code} cover=${cropDetail.data?.cover ? '有' : '无'}`)
+  // 服务端存的封面必须是**新上传的那张**：按 URL 比对（原图 URL 与裁剪后不同）
+  const origUrl = await s.evaluate(`window.__cropOrigUrl ?? ''`)
+  s.check('封面不是原图（说明上传的是裁剪结果而不是只换了预览）',
+    !!cropDetail.data?.cover && cropDetail.data.cover !== origUrl,
+    `cover=${cropDetail.data?.cover}`)
+
+  // ⚠️ **本段结束时页面停在裁剪笔记上**，而下面第 16 段清理靠
+  // `location.hash` 取当前笔记ID 去删「长正文笔记」—— 不还原的话它会把
+  // 裁剪笔记当成长正文笔记删掉，真正该删的那篇永久留在库里
+  //（症状是清理断言报「元素为 null」，与真因隔了整段）。
+  // 所以：**API 删掉**裁剪笔记（走 UI 删要再开一次确认弹窗，值不上），
+  // 再回到长正文笔记，让第 16 段照常跑。
+  const cropGone = await (await fetch(`${API}/api/note/${cropNoteId}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${await s.evaluate("localStorage.getItem('xk_token')")}` },
+  })).json()
+  s.check('清理：裁剪笔记删掉（code=0）', cropGone.code === 0, `code=${cropGone.code}`)
+
+  await s.goto(`${BASE}/#/note/${longNoteIdForCrop}`)
+  await s.waitFor("document.querySelector('[data-test=note-detail-content]')", '回到长正文笔记', 20000)
 
   // ---- 16. 清理：删掉长正文笔记与纯文字笔记，本组自清
   const longNoteId = (await s.evaluate('location.hash')).split('/').pop()

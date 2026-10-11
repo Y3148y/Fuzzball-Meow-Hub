@@ -3,6 +3,21 @@
 给后续接手的人（和 AI 助手）看。这里只写**不看就会踩坑**的东西；
 设计意图和阶段规划在 `README.md`。
 
+## 0. 进度速查（2026-10-11）
+
+| | |
+|---|---|
+| 阶段 | **P0 → P24 已完成**（详见第 7 节各阶段小节） |
+| 测试 | 契约 **621** 条 · CDP **547** 条，全部绿 |
+| prod | `18080`，跑的是 P24（前后端均最新） |
+| 重建 prod 的坑 | 见第 8 节：8.2 镜像构建三道墙 / 8.5 nginx 缓存旧 IP / 8.6 `--no-deps` |
+| 上一次部署 | P24（纯前端）· 真调用 13/13 |
+| 待做 | 创作端图片裁剪 · service worker + 下拉刷新 |
+| 重启后 | 照 **2.0 节**那张顺序清单 |
+
+**最近三个阶段做了什么**：P22 私信（1 对 1，轮询）· P23 可解释热度分替换发现流排序 ·
+P24 PWA manifest + 笔记分享。
+
 ---
 
 ## 1. 命名约定（不要随便改）
@@ -103,6 +118,59 @@ GitHub 完全不认识 gitee.com 这个隐匿邮箱域名，于是 09-27 到 10-
 - Redis 容器绑定 **`127.0.0.1:6379`**（2026-10-05 补进 dev compose，理由见下面那条）
 - Elasticsearch `9250`、Kafka `9092`、后端 `8088`、前端 dev `5180`
 - 仓库根目录 `.env` 提供 `MYSQL_ROOT_PASSWORD`（**永不提交**）
+
+### 2.0 重启电脑后：一张顺序清单
+
+⚠️ **这一节是为「重启后把所有运行时状态拉回来」写的**。上面第 2 节记的
+是各零件的端口与前提，但**没有把它们串成顺序** —— 2026-10-11 因为没有这张表，
+Docker Desktop 整个停掉时绕了一圈才定位到 redis。**照下面这个顺序做**：
+
+```powershell
+# ① Docker Desktop 必须**手动启动**（不自启）
+#    C:\Program Files\Docker\Docker\Docker Desktop.exe
+#    引擎没起来时任何 docker 命令都报：
+#      cannot connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine
+#    起来之后先探测一次，别假设：
+docker version --format '{{.Server.Version}}'
+
+# ② dev 中间件。**redis 不能漏** —— 漏了后端起不来，
+#    而报错藏在 spring-boot-maven-plugin 那句 'Process terminated with exit code: 1'
+#    后面，真因在日志上方几百行的 Connection refused: 127.0.0.1:6379
+cd D:\IDEAprojects\red-book
+docker compose up -d redis mysql kafka elasticsearch
+docker ps --filter "name=xiaoku-"     # 四个都 Up(healthy) 才继续
+
+# ③ 后端 8088
+cd backend
+$env:JAVA_HOME = "E:\JDK17\jdk-17.0.1"; $env:Path = "$env:JAVA_HOME\bin;$env:Path"
+$env:XK_MYSQL_PASSWORD = (Select-String -Path ..\.env -Pattern "^MYSQL_ROOT_PASSWORD=(.*)$").Matches.Groups[1].Value
+.\mvnw.cmd -o -q spring-boot:run
+
+# ④ 前端 5180
+cd ..\frontend
+npm run dev
+
+# ⑤ prod（要跑 18080 才拉；不拉也不影响 dev）
+cd ..
+docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.prod up -d
+```
+
+**别假设 prod 会自己回来**：它的容器都带 `restart: unless-stopped`，
+Docker 起来后通常会自动重启，但 2026-10-11 那次是**全部手动起来的**。
+起完 Docker 先 `docker ps` 看一眼 `xiaoku-prod-*` 有没有，缺了就按 ⑤ 拉。
+
+**重启后想直接跑测试，还要确认这三样**：
+后端 8088、前端 5180、`xiaoku-redis` —— 缺任何一个的症状都长得不一样，
+但都表现为「测试大面积失败」而不是「环境问题」：
+`ui-*.mjs` 报「开发服务器没起来」是 5180 缺；契约测试报
+`10005 未登录`/`Bearer undefined` 是后端缺或 redis 缺。
+
+⚠️ **Docker Desktop 整个停掉时的症状**：四个中间件全没，`docker ps` 直接报
+`cannot connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine`。
+而后端起不来的报错**藏在** `spring-boot-maven-plugin` 那句
+`Process terminated with exit code: 1` 后面 —— 真正的原因在日志上方几百行：
+`Connection refused: 127.0.0.1:6379`。**看到 exit code: 1 先 `docker ps`
+确认引擎在不在**，再决定是起容器还是查代码。
 
 ⚠️ **dev 的 Redis 曾经是「借」来的**：dev compose 原来只有 mysql/kafka/es，
 而 `application.yml` 的 Redis 默认指向 `127.0.0.1:6379` —— 开发期实际由**另一个
@@ -2151,10 +2219,4 @@ prod 真调用 **13/13**：manifest/图标静态资源可访问且非空、maska
 从入口 JS 里正则出 `assets/NoteDetailView-[A-Za-z0-9_-]+\.js`，拉下来确认里面
 含本轮的文案（本轮是「链接已复制」）。比哈希差一个数量级的排查成本。
 
-⚠️ **Docker Desktop 整个停掉时的症状**：`xiaoku-redis` / `mysql` / `kafka` /
-`elasticsearch` 全没，`docker ps` 直接报
-`cannot connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine`。
-而后端起不来的报错**藏在** `spring-boot-maven-plugin` 那句
-`Process terminated with exit code: 1` 后面 —— 真正的原因在日志上方几百行：
-`Connection refused: 127.0.0.1:6379`。**看到 exit code: 1 先 `docker ps`
-确认引擎在不在**，再决定是起容器还是查代码。
+（「Docker Desktop 整个停掉时的症状」记在第 2.0 节，不在这里重复。）

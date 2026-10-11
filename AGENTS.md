@@ -2138,3 +2138,23 @@ headless Chrome 里 `navigator.clipboard.writeText` **权限默认被拒**
   移动网络下得不偿失（且分享出去的大图会占用户流量）。
 - **`useShare` 只接在笔记详情页**。作者主页/话题页的分享是「分享这个话题/这个人」，
   语义与「分享一条内容」不同，产品口径要单独定。
+
+**P24 已部署**（纯前端，`docker build` + `--no-deps --force-recreate frontend`，
+prod 真调用 **13/13**：manifest/图标静态资源可访问且非空、maskable 是 PNG 位图、
+`index.html` 挂了 `rel=manifest` 与 `apple-touch-icon`、笔记详情数据链路没被
+这次前端重建搞坏）。
+
+⚠️ **验「prod 跑的是新前端」不能只比入口 chunk 的哈希**：容器内自己跑
+`npm run build`，Vite 输出的内容哈希**不保证与本机 build 一致**（本机入口是
+`index-hrjK9BpF.js`，prod 是 `index-Dww1rGtA.js`，两边都是对的）。
+可靠做法是**抓 prod 实际提供的懒加载 chunk**再查特征串：
+从入口 JS 里正则出 `assets/NoteDetailView-[A-Za-z0-9_-]+\.js`，拉下来确认里面
+含本轮的文案（本轮是「链接已复制」）。比哈希差一个数量级的排查成本。
+
+⚠️ **Docker Desktop 整个停掉时的症状**：`xiaoku-redis` / `mysql` / `kafka` /
+`elasticsearch` 全没，`docker ps` 直接报
+`cannot connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine`。
+而后端起不来的报错**藏在** `spring-boot-maven-plugin` 那句
+`Process terminated with exit code: 1` 后面 —— 真正的原因在日志上方几百行：
+`Connection refused: 127.0.0.1:6379`。**看到 exit code: 1 先 `docker ps`
+确认引擎在不在**，再决定是起容器还是查代码。

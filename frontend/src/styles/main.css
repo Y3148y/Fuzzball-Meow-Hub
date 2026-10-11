@@ -394,27 +394,43 @@ a {
 
    小红书把「举报 / 拉黑」收在右上角「⋯」的浮层里，作者主页头部只留「关注」。
    我们原来把两个文字链接平铺在头部那一行 flex 里，430px 下被压成两行并裁掉。
+
+   ⚠️ P28 改动（用户反馈"每条评论的 ⋯ 圆形按钮太突兀"）：这里原来是
+   **带描边带底色的胶囊**（border + background + border-radius:999px），
+   在每条评论右侧立一个圆点，密集评论下就是一排小圆饼。
+   改成**只有「⋯」这个字符**，不画任何框。
+
+   热区**没有**用 ::before 撑 —— 试过，不行。40px 伪元素居中放在 20px 盒子里，
+   两侧各伸出 10px，于是 (a) 元素自身 scrollW 30 > clientW 20 被布局审计判成
+   溢出；(b) 顺带把父级顶栏撑出 10px。两个症状都指向「布局坏了」，
+   与「我只是加了个热区」隔了整整一层。
+
+   所以热区直接放在**盒子本身**：min-width/height 保持 40px，与 P28 之前
+   完全相同的占位，**布局零变化**。看起来是裸的「⋯」，手指目标仍是 40px。
    ===================================================================== */
 
 .more-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  /* 40px 是 P13 的热区下限，无障碍触控最小标准 */
   min-width: 40px;
   min-height: 40px;
-  padding: 0 var(--xk-space-2);
-  border: var(--xk-stroke-w) solid var(--xk-stroke);
-  border-radius: 999px;
-  background: var(--xk-surface-2);
-  color: var(--xk-text-2);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--xk-text-3);
   font-size: var(--xk-fs-16);
   line-height: 1;
   cursor: pointer;
+  transition: color 0.12s ease, transform 0.12s ease;
+}
+
+.more-btn:hover:not(:disabled) {
+  color: var(--xk-text);
 }
 
 .more-btn:active:not(:disabled) {
-  transform: translateY(1px);
+  transform: scale(0.9);
 }
 
 .more-btn:disabled {

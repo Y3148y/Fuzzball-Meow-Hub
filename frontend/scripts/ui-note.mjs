@@ -821,11 +821,17 @@ async function setVal(sel, value) {
     return JSON.stringify({
       flexDir: cs.flexDirection,
       inputW: Math.round(input.width),
-      // 行1 通栏：输入框左右都顶到栏的内容边缘
+      // 行1 = 输入 + 发表，两个 flex 兄弟
       inputLeftGap: Math.round(input.left - (br.left + padL)),
+      // 输入框右侧到行右缘的距离（含发表钮宽），用来验证钮贴右缘
       inputRightGap: Math.round((br.right - padR) - input.right),
+      // 钮的右缘到行右缘 —— 贴齐应为 0
+      sendRightGap: Math.round((br.right - padR) - send.right),
+      sendLeftOfRow: send.left < input.left,
       sendW: Math.round(send.width), sendH: Math.round(send.height),
-      sendLeftGap: Math.round(send.left - (br.left + padL)),
+      // 负数 = 两者重叠（P21 的老 bug 就是这个）
+      gap: Math.round(send.left - input.right),
+      baseDelta: Math.round(Math.abs(input.bottom - send.bottom)),
       keysBelowInput: Math.round(keys.top - input.bottom),
       keysRightGap: Math.round((br.right - padR) - keys.right),
       // 栏高由 ResizeObserver 实测写进 --bar-h，.page 的 padding-bottom 靠它
@@ -836,21 +842,41 @@ async function setVal(sel, value) {
     })
   })()`)
   const tr = JSON.parse(twoRow)
-  s.check('吸底栏是两行（行1 输入通栏 + 行2 动作行）',
+  s.check('吸底栏是两行（行1 输入+发表，行2 三键）',
     tr.flexDir === 'column', `flex-direction=${tr.flexDir}`)
-  s.check('行1 输入框通栏（430 视口 ≥380px，旧版只有 ~170px）',
-    tr.inputW >= 380 && Math.abs(tr.inputLeftGap) <= 2 && Math.abs(tr.inputRightGap) <= 2,
-    `w=${tr.inputW}px Δleft=${tr.inputLeftGap} Δright=${tr.inputRightGap}`)
-  s.check('行2 发表钮 44×44 且贴栏左缘',
-    tr.sendW >= 44 && tr.sendH >= 44 && Math.abs(tr.sendLeftGap) <= 2,
-    `${tr.sendW}x${tr.sendH} Δleft=${tr.sendLeftGap}`)
-  s.check('行2 三键在输入框下方一行、右缘与输入框对齐',
+  // ⚠️ P28 规格（用户反馈"把发送按钮挪到文本框右边"）：
+  // 行1 变成「输入 + 发表」并排，所以「输入框通栏」这条旧规格**已经不成立**
+  // —— 输入框右侧让给了按钮。真正要钉的是三件事：
+  //   ① 两者**不重叠**（gap ≥ 0）—— 这正是 P21 那个"输入时遮挡"bug 的钉子
+  //   ② 发送钮贴行右缘、尺寸够热区、底边与输入框齐平
+  //   ③ 输入框宽度不能被挤回旧版的 ~170px
+  s.check('行1 输入框与发表钮**不重叠**（P21「输入时遮挡」的回归钉子）',
+    tr.gap >= 0, `gap=${tr.gap}px（负数=重叠）`)
+  s.check('行1 发表钮在输入框右侧、≥44×44 贴行右缘',
+    tr.sendLeftOfRow === false && tr.sendW >= 44 && tr.sendH >= 44 && Math.abs(tr.sendRightGap) <= 2,
+    `${tr.sendW}x${tr.sendH} Δright=${tr.sendRightGap} rightOfInput=${!tr.sendLeftOfRow}`)
+  s.check('发表钮底边与输入框底边齐平（不悬空不压行）',
+    tr.baseDelta <= 2, `Δbase=${tr.baseDelta}px`)
+  s.check('行1 输入框宽度 ≥300px（430 视口实测 336；旧版挤到 ~170px）',
+    tr.inputW >= 300 && Math.abs(tr.inputLeftGap) <= 2,
+    `w=${tr.inputW}px Δleft=${tr.inputLeftGap}`)
+  s.check('行2 三键在输入框下方一行、右缘与发表钮对齐',
     tr.keysBelowInput >= 0 && tr.keysBelowInput < 24 && Math.abs(tr.keysRightGap) <= 2,
     `below=${tr.keysBelowInput}px Δright=${tr.keysRightGap}px`)
-  s.check('发表钮是纯图标钮（有 aria-label，不靠「发表」两个字占位）',
-    tr.sendText === '' &&
-      (await s.evaluate("!!document.querySelector('[data-test=comment-submit]').getAttribute('aria-label')")),
+  s.check('发表钮有可见文字「发送」（纯图标看不出是什么按钮）',
+    tr.sendText === '发送',
     `text="${tr.sendText}"`)
+
+  /*
+    ---- P28 评论「⋯」的断言不在这里
+
+    ⚠️ `MoreSheet` 的渲染条件是 `v-if="!c.mine"` —— 而 ui-note 全程是
+    **当前账号给自己的笔记评论**，所以每条评论都是自己的，`⋯` 一个都不渲染。
+    「在自己的东西上有没有多余操作」正是 P18/P21 定的产品口径，不是 bug。
+
+    这组断言在 `ui-interaction.mjs`（那里是 xk_ui_interact 在 demo 的笔记下
+    评论，`!c.mine` 成立）。踩过一次：断言写在这里 → miss:true → 白红三条。
+  */
   s.check('--bar-h 与吸底栏实测高度一致，.page 留白跟着它（输入框长高也不遮挡）',
     Math.abs(tr.barH - tr.barVar) <= 2 && Math.abs(tr.pagePad - tr.barH) <= 2,
     `barH=${tr.barH} --bar-h=${tr.barVar} pagePad=${tr.pagePad}`)
@@ -1044,6 +1070,8 @@ async function setVal(sel, value) {
       secWidth: Math.round(sr.width),
       flexDir: cs.flexDirection,
       inputFull: Math.abs(input.width - br.width) <= 2,
+      // 行1 是「输入 + 发表」并排，所以钮在输入框**右边**：负数 = 在左边（错）
+      gap: Math.round(send.left - input.right),
       keysBelowInput: Math.round(keys.top - input.bottom),
       sendW: Math.round(send.width), sendH: Math.round(send.height),
       keysRightOfSend: Math.round(keys.left - send.right),
@@ -1059,10 +1087,10 @@ async function setVal(sel, value) {
     `below=${db.belowComments} Δleft=${db.leftAlign} sameWidth=${db.widthMatch}`)
   s.check('桌面评论区与操作栏都在左栏（照片那一栏），不在正文栏',
     db.leftIsPhotoCol === true && db.notInTextCol === true, `secW=${db.secWidth} ${JSON.stringify(db)}`)
-  s.check('桌面操作栏也是两行：行1 输入通栏，行2 发表 + 三键',
-    db.flexDir === 'column' && db.inputFull === true && db.keysBelowInput >= 0
-      && db.keysBelowInput < 24 && db.sendW >= 44 && db.sendH >= 44 && db.keysRightOfSend > 0,
-    `dir=${db.flexDir} inputFull=${db.inputFull} below=${db.keysBelowInput} send=${db.sendW}x${db.sendH} keys-send=${db.keysRightOfSend}`)
+  s.check('桌面操作栏也是两行：行1 输入+发表并排，行2 三键',
+    db.flexDir === 'column' && db.gap >= 0 && db.keysBelowInput >= 0
+      && db.keysBelowInput < 24 && db.sendW >= 44 && db.sendH >= 44 && db.keysRightOfSend < 0,
+    `dir=${db.flexDir} gap=${db.gap} below=${db.keysBelowInput} send=${db.sendW}x${db.sendH} keys-send=${db.keysRightOfSend}`)
   s.check('桌面正文 17px / 标题 24px（注意力回到正文）',
     db.contentFont >= 17 && db.titleFont >= 24, `content=${db.contentFont} title=${db.titleFont}`)
   const counter0 = await s.evaluate(

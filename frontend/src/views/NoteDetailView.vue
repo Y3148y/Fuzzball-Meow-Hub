@@ -886,14 +886,12 @@ onBeforeUnmount(() => {
       -->
       <div ref="barEl" class="actionbar" data-test="action-bar">
         <!--
-          行1 = 输入。通栏（移动端整条 406px），不再被三键挤成 170px
-          （那是"不方便操作"的根因：pill 里只剩约 10 个汉字的位置）。
-          发表按钮原来绝对定位在胶囊右下角，右侧只靠 padding 让位 56px
-          —— 恰好等于按钮宽度，textarea 超过 max-height 内部滚动后，
-          滚出来的行直接走到按钮底下（用户反馈的"输入时遮挡"）。
-          搬进行2 之后让位不需要了，按钮热区也能做到 44×44。
+          行1 = 输入 + 发表（flex 兄弟，不是绝对定位覆盖）。
+          输入框 flex:1 吃掉剩余宽度，按钮 flex:0 保住热区，
+          两者**不重叠** —— 这正是 P21 踩过的那个坑的正解。
         -->
-        <div class="bar-input">
+        <div class="bar-row">
+          <div class="bar-input">
           <div v-if="replyTarget" class="replying" data-test="comment-replying">
             回复 @{{ replyTarget.nickname }}
             <button type="button" data-test="comment-cancel-reply" @click="cancelReply">取消</button>
@@ -912,8 +910,20 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <!-- 行2 = 动作行：左边发送，右边三键 -->
-        <div class="bar-actions">
+          <!--
+            发表按钮**重新挪回输入框右侧**（用户反馈 2026-10-11）。
+            ⚠️ P21 曾经特意把它搬进行2，理由是它原来**绝对定位**压在胶囊
+            右下角，只靠 padding-right: 56px 让位，而 56px 恰好等于按钮
+            宽度 —— textarea 超过 max-height 内部滚动后，滚出来的行直接
+            走到按钮底下（"输入时遮挡"）。
+
+            这次的问题是**摆放方式**而不是摆放位置：改成 flex 兄弟节点后
+            （输入 flex:1、按钮 flex:0），胶囊自动收窄、两者根本不重叠，
+            P21 那个 bug 从根上不存在。而写在输入框右边也符合直觉 ——
+            "写完顺手点发送"是大多数人的动作顺序。
+
+            可见文字「发送」而不是纯图标：图标看不出这是什么按钮。
+          -->
           <button
             class="c-send"
             type="button"
@@ -923,10 +933,12 @@ onBeforeUnmount(() => {
             data-test="comment-submit"
             @click="submitComment"
           >
-            <van-icon name="arrow" />
+            发送
           </button>
+        </div>
 
-          <div class="bar-keys">
+        <!-- 行2 = 三键（赞 / 藏 / 评），贴右缘 -->
+        <div class="bar-keys">
             <!--
               点赞/收藏是真按钮，评论那一格只是跳转到评论区的锚点。
               aria-pressed 把「当前是否已点赞」暴露给读屏软件，
@@ -973,7 +985,6 @@ onBeforeUnmount(() => {
               <van-icon name="chat-o" />
               <span class="num" data-test="note-comment-count">{{ note.commentCount }}</span>
             </button>
-          </div>
         </div>
       </div>
         </div>
@@ -1707,31 +1718,40 @@ ref="contentEl"
 }
 
 /*
- * 行2 动作行：左边发送、右边三键。发表按钮原来绝对定位压在胶囊右下角
- * （30px 高、热区不足 40px），搬出来后才做得成 44×44 的圆形。
- * 配色改用品牌 token：旧版是硬编码 #f5a623 底 + 白字 = 2.03:1（AA 要 4.5），
- * --xk-amber 底 + --xk-amber-ink 字是 9.69:1，与 .xk-btn 同一套。
+ * 行1：输入 + 发表，两个 flex 兄弟。
+ * 输入 flex:1 吃掉剩余宽度、min-width:0 防止 flex 内 textarea 溢出
+ * （SiteNav 搜索框前科），按钮 flex:0 保住热区 —— 两者不重叠。
  */
-.bar-actions {
+.bar-row {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--xk-space-3);
-  min-height: 44px;
+  align-items: flex-end;
+  gap: var(--xk-space-2);
 }
 
+.bar-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/*
+ * 发送是**动作**不是导航 → button。
+ * 可见文字「发送」而不是纯图标（用户反馈：图标看不出这是什么）。
+ * 配色用品牌 token：旧版硬编码 #f5a623 底 + 白字 = 2.03:1（AA 要 4.5），
+ * --xk-amber 底 + --xk-amber-ink 字是 9.69:1，与 .xk-btn 同一套。
+ * 高度 44 与输入胶囊同高，两者底边齐平。
+ */
 .c-send {
   flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 44px;
-  height: 44px;
+  min-height: 44px;
+  padding: 0 var(--xk-space-4);
   border: 0;
   border-radius: 999px;
   background: var(--xk-amber);
   color: var(--xk-amber-ink);
-  font-size: 20px;
+  font: inherit;
+  font-size: var(--xk-fs-15);
+  font-weight: 600;
+  white-space: nowrap;
   cursor: pointer;
   transition: transform 0.12s ease, opacity 0.12s ease;
 }
@@ -1758,6 +1778,8 @@ ref="contentEl"
 
 .bar-keys {
   flex: 0 0 auto;
+  /* 行2 只剩三键，贴右缘（与输入框右缘对齐） */
+  align-self: flex-end;
   display: flex;
   align-items: center;
   gap: var(--xk-space-3);

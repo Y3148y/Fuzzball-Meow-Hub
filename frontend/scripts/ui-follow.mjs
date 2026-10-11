@@ -320,6 +320,45 @@ try {
       )
     }
     s.check('为列表页准备：已处于关注状态', (await text('user-follow')) === '已关注')
+
+    /*
+      ---- P28「⋯」去掉胶囊外壳（同一组件，作者主页这里无条件渲染）
+
+      用户反馈"每条评论的 ... 圆形按钮做的很突兀"。修的是全局 `.more-btn`：
+      原来是带描边带底色的胶囊（border-radius:999px + border + background），
+      密集出现就是一排小圆饼。改成只有「⋯」字符，不画任何框。
+
+      **热区不让**：P13 的下限是 40px。解法照搬 P25 裁剪钮 —— 视觉元素保持小，
+      用 `::before` 撑一个透明的 40×40 热区，布局完全不受影响。
+
+      为什么在作者主页断言而不在评论行：`MoreSheet` 的渲染条件是
+      `v-if="!c.mine"`，而 ui-note / ui-interaction 全程都在**给自己的**东西
+      评论，一个都不渲染；库里也没有天然带他人评论的 fixture
+      （xk_ui_follow 的 5 篇笔记下没有他人评论，唯一有的是手动测试数据、
+      会被删，不能进测试）。同一个组件、同一条 CSS，在无条件渲染的地方量
+      才是可靠的。评论行「他人评论才出 ⋯」这个行为由 P21 举报/拉黑用例覆盖。
+    */
+    const more = JSON.parse(await s.evaluate(`(() => {
+      const el = document.querySelector('.more-btn')
+      if (!el) return JSON.stringify({ miss: true })
+      const cs = getComputedStyle(el)
+      const r = el.getBoundingClientRect()
+      return JSON.stringify({
+        border: cs.borderTopWidth,
+        bg: cs.backgroundColor,
+        radius: cs.borderRadius,
+        w: Math.round(r.width), h: Math.round(r.height),
+        hasAria: !!el.getAttribute('aria-label'),
+      })
+    })()`))
+    s.check('「⋯」无边框无底色（不再是突兀的圆饼）',
+      !more.miss && more.border === '0px' && more.bg === 'rgba(0, 0, 0, 0)',
+      JSON.stringify(more))
+    s.check('「⋯」热区仍 ≥40×40（去掉圆圈不能让热区）',
+      !more.miss && more.w >= 40 && more.h >= 40,
+      `热区=${more.w}x${more.h}`)
+    s.check('「⋯」有 aria-label（去掉圆圈后读屏仍知道这是什么）',
+      !more.miss && more.hasAria, JSON.stringify(more))
   }
 
   async function rowHasNick(nick) {
@@ -541,8 +580,22 @@ try {
 }
 
 } catch (e) {
-  s.check('用例执行到底', false, String(e.message))
-} finally {
-  const allOk = await s.close()
-  process.exit(allOk ? 0 : 1)
-}
+    s.check('用例执行到底', false, String(e.message))
+  } finally {
+    /*
+      ⚠️ 排空 finallyCleanup —— 这一步以前**漏了**，于是每跑一次就漏一条拉黑。
+      后果不是「本组下次红」，而是**别的组红**：user_block 是双向生效的
+      （P18），拉黑之后被拉黑者的笔记对**所有人**不可见，于是关注流空、
+      搜不到、作者主页笔记列表空 —— 每组症状都指向自己的功能，
+      没有一条提到拉黑（AGENTS P21 已记过一次「三个组同时变红」，
+      当时归因于「手测点过」，现在知道是这个洞）。
+
+      顺序：先排空再 close()。清理是浏览器内的 fetch，
+      s.close() 之后执行就静默失败（fetch 被拒/页面已销毁），而且**不报错**。
+    */
+    for (const fn of finallyCleanup) {
+      try { await fn() } catch (e) { /* 清理失败不该盖掉测试结果 */ }
+    }
+    const allOk = await s.close()
+    process.exit(allOk ? 0 : 1)
+  }

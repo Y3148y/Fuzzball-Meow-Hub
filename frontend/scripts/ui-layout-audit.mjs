@@ -194,22 +194,32 @@ export const AUDIT_EXPR = `(() => {
       spec.barHeight = Math.round(bb.height)
       spec.barBorder = parseFloat(bs.borderTopWidth) || 0
       spec.vh = innerHeight
-      // 两行结构：行1 输入通栏，行2 发表 + 三键
+      // P28：行1 变成「输入 + 发表」并排（flex 兄弟，不重叠），行2 三键
       const inp = bar.querySelector('[data-test=comment-input]')
       const snd = bar.querySelector('[data-test=comment-submit]')
       const kb = bar.querySelector('.bar-keys')
+      const row = bar.querySelector('.bar-row')
+      // ⚠️ 贴边要对齐 **.bar-row 的右缘**，不是 .actionbar 的 border box ——
+      // 后者含左右各 12px 内边距（P21 给吸底栏加的），差值就是 24px，
+      // 而症状是「断言差 12」，看着像布局没贴齐，其实是我比错了参照物。
+      if (row) spec.rowRight = Math.round(row.getBoundingClientRect().right)
       if (inp) {
         const r = inp.getBoundingClientRect()
         spec.inputW = Math.round(r.width)
         spec.inputTop = Math.round(r.top)
         spec.inputBottom = Math.round(r.bottom)
+        spec.inputRight = Math.round(r.right)
       }
       if (snd) {
         const r = snd.getBoundingClientRect()
         spec.sendW = Math.round(r.width)
         spec.sendH = Math.round(r.height)
         spec.sendLeft = Math.round(r.left)
+        spec.sendRight = Math.round(r.right)
       }
+      // 输入框右侧到发表钮左侧的间隙。**负数 = 两者重叠**，
+      // 这正是 P21「输入时遮挡」那个 bug 的回归钉子（见 AGENTS P21 段）。
+      if (inp && snd) spec.sendGap = spec.sendLeft - spec.inputRight
       if (kb) {
         const r = kb.getBoundingClientRect()
         spec.keysTop = Math.round(r.top)
@@ -592,11 +602,15 @@ function specChecks(s, label, w, r) {
         sp.barTop >= sp.commentsBottom - 4 && Math.abs(sp.barLeft - sp.commentsLeft) <= 2
           && Math.abs(sp.barWidth - sp.commentsWidth) <= 2,
         `barTop=${sp.barTop} commentsBottom=${sp.commentsBottom} barLeft=${sp.barLeft} commentsLeft=${sp.commentsLeft} barW=${sp.barWidth} commentsW=${sp.commentsWidth}`)
-      s.check('桌面操作栏也是两行：行1 输入通栏，行2 发表 + 三键',
-        sp.barDir === 'column' && Math.abs(sp.inputW - sp.barWidth) <= 2
+      // ⚠️ P28 规格：行1 不再是「输入通栏」，而是「输入 + 发表」并排。
+      // 真正要钉的是**不重叠**（P21「输入时遮挡」的回归钉子）+
+      // 发表钮在输入框右侧且贴行右缘 + 三键仍在其下一行。
+      s.check('桌面操作栏两行：行1 输入+发表并排不重叠，行2 三键',
+        sp.barDir === 'column' && sp.sendGap >= 0
           && sp.keysTop >= sp.inputBottom - 2 && sp.keysTop < sp.inputBottom + 24
-          && sp.sendW >= 44 && sp.sendH >= 44 && sp.keysRight > sp.sendLeft,
-        `dir=${sp.barDir} inputW=${sp.inputW} barW=${sp.barWidth} keysTop=${sp.keysTop} inputBottom=${sp.inputBottom} send=${sp.sendW}x${sp.sendH}`)
+          && sp.sendW >= 44 && sp.sendH >= 44
+          && Math.abs(sp.sendRight - sp.rowRight) <= 2,
+        `dir=${sp.barDir} gap=${sp.sendGap} keysTop=${sp.keysTop} inputBottom=${sp.inputBottom} send=${sp.sendW}x${sp.sendH} sendRight=${sp.sendRight} rowRight=${sp.rowRight}`)
       s.check('桌面正文 17px（注意力回到正文）', sp.contentFontD >= 17, `fs=${sp.contentFontD}px`)
       s.check('桌面标题 24px', sp.titleFontD >= 24, `fs=${sp.titleFontD}px`)
     } else {
@@ -604,13 +618,16 @@ function specChecks(s, label, w, r) {
         sp.barPos === 'fixed' && sp.barBottom >= sp.vh - 2 && sp.barBottom <= sp.vh + 1,
         `pos=${sp.barPos} bottom=${sp.barBottom} vh=${sp.vh}`)
       s.check('移动端操作栏顶部有发丝线（与内容分层）', sp.barBorder > 0, `border=${sp.barBorder}px`)
-      s.check('移动端吸底栏两行、输入框通栏（≥380px，旧版只有 ~170px）',
-        sp.barDir === 'column' && sp.inputW >= 380
+      // 输入框让出右侧给按钮，宽度从 406 降到 ~336（实测）。规格跟着改成
+      // 「不重叠 + 宽度仍 ≥300」，而不是继续钉 380 —— 那是通栏时代的产物。
+      s.check('移动端吸底栏两行、输入框与发表钮并排不重叠（输入 ≥300px）',
+        sp.barDir === 'column' && sp.sendGap >= 0 && sp.inputW >= 300
           && sp.keysTop >= sp.inputBottom - 2 && sp.keysTop < sp.inputBottom + 24,
-        `dir=${sp.barDir} inputW=${sp.inputW} keysTop=${sp.keysTop} inputBottom=${sp.inputBottom}`)
-      s.check('移动端发表钮 44×44 贴栏左缘', sp.sendW >= 44 && sp.sendH >= 44
-        && Math.abs(sp.sendLeft - (sp.barLeft + 12)) <= 2,
-        `send=${sp.sendW}x${sp.sendH} sendLeft=${sp.sendLeft} barLeft=${sp.barLeft}`)
+        `dir=${sp.barDir} gap=${sp.sendGap} inputW=${sp.inputW} keysTop=${sp.keysTop} inputBottom=${sp.inputBottom}`)
+      s.check('移动端发表钮 ≥44×44 且在输入框右侧、贴行右缘',
+        sp.sendW >= 44 && sp.sendH >= 44 && sp.sendGap >= 0
+          && Math.abs(sp.sendRight - sp.rowRight) <= 2,
+        `send=${sp.sendW}x${sp.sendH} gap=${sp.sendGap} sendRight=${sp.sendRight} rowRight=${sp.rowRight}`)
     }
     // 三键降权（截图反馈）：无边框、无底色、可见文字只剩数字、热区 ≥40 —— 双视口同一把尺
     const keys = sp.keys || []

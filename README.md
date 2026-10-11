@@ -1565,3 +1565,53 @@ Druid 的 wall filter 默认拒绝带注释的 SQL —— 本项目的 SQL 注�
 - **`user_follow.status` 是废弃列却仍被排序的 EXISTS 依赖**：现在 12 行确实
   都是 1，但哪天有写入路径忘了维护，排序会**静默**变成「已关注不优先」，
   症状是「发现流里我关注的人不见了」。
+
+### P24 移动端手感：manifest + 分享
+
+**先量后选**：动手前量了三个候选的真实使用量，结论推翻了直觉 ——
+**视频有 0 条数据**（`LocalVideoStorage` 早就写好了，但全库 `video_url` 全是
+NULL，功能从未被人用过）。给一个没人用的功能做转码是投机，所以 P24 不做视频。
+
+**① manifest（可安装）**：`public/manifest.json` + `icons/`（192 / 512 /
+maskable-512）。图标由 `scripts/gen-pwa-icons.mjs` 生成 —— `public/` 里只有
+webp 吉祥物，而 manifest 的 icon 需要 PNG，**maskable 更是必须位图**（SVG 在
+多数平台不被接受）。maskable 的主体比普通 icon **再缩一圈**（pad 0.28 vs
+0.16）：系统会裁掉边缘 10% 安全区，直接拿普通 icon 当 maskable 用，Android 上
+会切掉小哭猫的脸。
+
+⚠️ **刻意不注册 service worker**：那会引入一整套缓存失效问题（HTML 缓存住旧
+版本、547 条 CDP 测试全部打到缓存的旧资源），而收益是「离线可用」——
+**这是一个必须联网的社区产品**。manifest 本身不依赖 SW。
+
+**② 分享**：原生分享面板 → 复制链接降级，收在一层 `composables/useShare.ts`。
+
+#### 两个被 TypeScript 抓出来的真 bug
+
+- **漏 `await` 导致三元恒真**：`return copy(target) ? 'copied' : 'failed'` ——
+  `copy()` 返回 `Promise<boolean>`，而 **Promise 对象永远为真**，于是复制失败
+  也会提示「链接已复制」，用户点开发现是旧地址。TS2801 把它报成类型错误，
+  实际是运行时 bug。
+- **`navigator.clipboard` 在 lib.dom 里声明成非可选**，所以
+  `navigator.clipboard?.writeText &&` 会被判成恒真（TS2801）—— 而运行时它
+  **真的**可能不存在（非安全上下文的老 Safari、Firefox 的非 HTTPS 页）。
+  用**局部交叉类型**收窄成可选，而不是删掉判断。
+
+#### CDP 那两条断言为什么要**替身**而不是真调
+
+headless Chrome 里 `navigator.clipboard.writeText` **权限默认被拒**（reject，
+`execCommand('copy')` 兜底也返回 false），实测 toast 弹的是「复制失败，请手动
+复制地址栏」；而 `navigator.share` 会弹**浏览器原生对话框**，`Page.navigate`
+会卡住等它。
+
+所以两条能力都换成可控替身：**断言我们打算分享/复制什么**，而不是断言浏览器
+允不允许。把「复制失败」当成「分享失败」断言，等于**把 bug 钉成契约**。
+
+CDP **547 条**（+10，ui-note 123→133），契约仍 **621**（纯前端）。
+
+#### 已知取舍
+
+- **没有 service worker**，因此不能离线、也不能「加到主屏后秒开」。
+- **没有下拉刷新**：iOS 的 `overscroll-behavior` 与 PWA 一起才完整，单独做会在
+  Android 上与系统刷新打架。留到 SW 那轮一起做。
+- **分享不带图片**：Web Share API 的 `files` 需要 `canShare({files})` 为真，
+  而那要求先 fetch 成 `File` 对象 —— 对 9 张图的笔记是 9 次请求。

@@ -58,6 +58,7 @@ const route = useRoute()
 import MoreSheet, { type MoreAction } from '@/components/MoreSheet.vue'
 import ReportSheet from '@/components/ReportSheet.vue'
 import { useReportSheet } from '@/composables/useReportSheet'
+import { useShare } from '@/composables/useShare'
 import { blockUser } from '@/api/report'
 
 const router = useRouter()
@@ -86,6 +87,7 @@ const isMyNote = computed(
  */
 
 const reportSheet = useReportSheet()
+const { shareWithToast } = useShare()
 const blockingAuthor = ref(false)
 
 /** 评论的「⋯」动作。不能举报自己的评论（后端 80004 会拒，但这里就不该给入口） */
@@ -113,6 +115,21 @@ const noteActions = computed<MoreAction[]>(() => {
     },
   ]
 })
+
+/**
+ * 分享这篇笔记（P24）
+ *
+ * <p>摘要取标题 + 首句正文（正文可能有上千字，原生分享面板会被截断到
+ * 一两行，全塞进去反而看不到）。链接用**绝对地址**：分享出去的链接
+ * 被别人打开时不在我们的 origin 里，相对地址会 404。
+ */
+function onShare() {
+  if (!note.value) return
+  const title = note.value.title ?? '毛球喵社'
+  const body = (note.value.content ?? '').replace(/\s+/g, ' ').trim()
+  const brief = body.length > 40 ? body.slice(0, 40) + '…' : body
+  void shareWithToast(title, brief ? `${title} — ${brief}` : title, window.location.href)
+}
 
 async function onNoteMore(key: string) {
   if (!note.value) return
@@ -623,6 +640,15 @@ onBeforeUnmount(() => {
     <header class="top">
       <button class="back" type="button" aria-label="返回" @click="router.back()">‹</button>
       <span class="brand">笔记详情</span>
+      <button
+        class="share-btn"
+        type="button"
+        aria-label="分享这篇笔记"
+        data-test="note-share"
+        @click="onShare"
+      >
+        <van-icon name="share-o" />
+      </button>
       <!--
         「⋯」放顶栏而不是作者区：小红书是笔记**右上角**的「⋯」，
         而作者区那一行已经放了关注/作者本人操作了，再塞两个会重演

@@ -539,6 +539,91 @@ async function setVal(sel, value) {
   /* ---------- 笔记级「⋯」 ---------- */
 
   s.check('别人的笔记顶栏有「⋯」入口', await exists('note-more'))
+
+  /* ---------- P24 分享 ---------- */
+  // ⚠️ 两处**刻意绕开真实能力**，因为 headless Chrome 里两条都走不通，
+  // 而症状都会伪装成「分享功能没实现」：
+  //
+  // ① navigator.share —— 调它会弹**浏览器原生对话框**，Page.navigate 会卡住
+  //    等它（P12 段记过要注册 Page.javascriptDialogOpening 自动 accept）。
+  // ② navigator.clipboard —— headless 下 clipboard-write 权限默认被拒，
+  //    writeText 直接 reject，连 execCommand('copy') 兜底也返回 false。
+  //    实测结果是 toast 弹「复制失败，请手动复制地址栏」—— 那是一条
+  //    **降级提示**，把它当成「分享失败」断言就是把 bug 钉成契约。
+  //
+  // 所以两个都换成可控的替身：**断言我们打算复制什么**，而不是断言
+  // 浏览器允不允许复制。后者是环境属性，不是产品行为。
+  await s.evaluate(`
+    window.__xkShare = { native: null, copied: null };
+    Object.defineProperty(navigator, 'share', {
+      configurable: true,
+      get() {
+        return async (payload) => { window.__xkShare.native = payload; };
+      },
+    });
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: async (t) => { window.__xkShare.copied = t; },
+        readText: async () => window.__xkShare.copied ?? '',
+      },
+    });
+  `)
+
+  s.check('分享按钮存在', await exists('note-share'))
+  s.check('分享按钮有 aria-label（读屏能念出来）',
+    await s.evaluate(`!!document.querySelector('[data-test=note-share]')?.getAttribute('aria-label')`))
+  const shareBox = await s.evaluate(`(() => {
+    const r = document.querySelector('[data-test=note-share]').getBoundingClientRect()
+    return { w: Math.round(r.width), h: Math.round(r.height), tag: document.querySelector('[data-test=note-share]').tagName }
+  })()`)
+  s.check('分享按钮热区 ≥40px（P13 下限）', shareBox.h >= 40 && shareBox.w >= 40, JSON.stringify(shareBox))
+  s.check('分享按钮是 <button> 不是装饰元素', shareBox.tag === 'BUTTON', `tag=${shareBox.tag}`)
+  // 顶栏只有一个 right 区域：分享与「⋯」不能互相压住
+  const overlapShare = await s.evaluate(`(() => {
+    const a = document.querySelector('[data-test=note-share]')
+    const b = document.querySelector('[data-test=note-more]')
+    if (!a || !b) return null
+    const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect()
+    return !(ra.right <= rb.left || rb.right <= ra.left || ra.bottom <= rb.top || rb.bottom <= ra.top)
+  })()`)
+  s.check('分享与「⋯」不重叠（顶栏挤爆过一次）', overlapShare === false, `overlap=${overlapShare}`)
+
+  await s.evaluate("document.querySelector('[data-test=note-share]').click()")
+  // 优先走原生分享面板（它存在时）
+  await s.waitFor(
+    "window.__xkShare.native !== null || window.__xkShare.copied !== null",
+    '分享走到某条分支',
+    8000,
+  )
+  const usedNative = await s.evaluate(`window.__xkShare.native !== null`)
+  s.check('分享优先用原生面板（有 navigator.share 时）', usedNative, 'native=null')
+
+  const payload = await s.evaluate(`JSON.stringify(window.__xkShare.native ?? { url: window.__xkShare.copied, text: '' })`)
+  const parsed = JSON.parse(String(payload))
+  const sharedUrl = String(parsed.url ?? '')
+  s.check('分享出去的是这篇笔记的**绝对地址**',
+    sharedUrl.startsWith('http') && sharedUrl.includes('#/note/'),
+    `url=${sharedUrl.slice(0, 70)}`)
+  s.check('分享内容含笔记标题', String(parsed.title ?? '').length > 0, `title=${String(parsed.title ?? '').slice(0, 30)}`)
+
+  // 摘掉原生能力后再点一次，验证**复制降级**这条路也通
+  await s.evaluate(`
+    Object.defineProperty(navigator, 'share', { configurable: true, get() { return undefined; } });
+    window.__xkShare.copied = null;
+  `)
+  await s.evaluate("document.querySelector('[data-test=note-share]').click()")
+  await s.waitFor(
+    "document.body.textContent.includes('链接已复制')",
+    '无原生分享时降级为复制并提示',
+    8000,
+  )
+  s.check('无原生分享时降级为复制链接并提示', true)
+  const copied = await s.evaluate(`window.__xkShare.copied`)
+  s.check('复制的内容是这篇笔记的绝对地址（相对地址分享出去别人打不开）',
+    typeof copied === 'string' && copied.startsWith('http') && copied.includes('#/note/'),
+    `copied=${String(copied).slice(0, 70)}`)
+
   await s.evaluate("document.querySelector('[data-test=note-more]').click()")
   // 等**动作项**而不是容器：Vant 的 ActionSheet 是懒渲染，容器一直在 DOM 里
   await s.waitFor(

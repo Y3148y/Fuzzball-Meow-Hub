@@ -198,7 +198,7 @@ cd backend && node scripts/contract-test.mjs
 # 换地址：XK_API_BASE=http://ip:8088 node scripts/contract-test.mjs
 
 # 前端（需前端 5180 + 后端 8088 同时在跑）
-# → 31 + 8 + 123 + 26 + 67 + 46 + 19 + 9 + 26 + 23 + 20 + 139 = 537 条
+# → 31 + 8 + 133 + 26 + 67 + 46 + 19 + 9 + 26 + 23 + 20 + 139 = 547 条
 cd frontend && npm run test:ui
 
 # 单跑某一组：:smoke / :refresh / :note / :profile / :interaction / :follow /
@@ -2074,3 +2074,67 @@ DELETE FROM xiaoku_db.user WHERE username LIKE 'prod21%';
 灌多行 SQL 时用 `Set-Content -Encoding Ascii` 落盘再
 `Get-Content -Raw | docker exec -i ... mysql`（PowerShell 5.1 **不支持** `<` 重定向给
 原生命令，会报 `RedirectionNotSupported`）。
+
+### P24 移动端手感：manifest + 分享（本 commit）
+
+CDP **547 条**（537 + 10，ui-note 123→133），契约仍 **621**（纯前端）。
+
+**先量后选**：动手前量了三个候选的真实使用量，结论推翻了直觉 ——
+**视频有 0 条数据**（`LocalVideoStorage` 早就写好了，但全库 `video_url` 全是 NULL，
+功能从未被人用过）。给一个没人用的功能做转码是投机，所以 P24 不做视频。
+
+#### manifest（可安装）
+
+`public/manifest.json` + `icons/`（192 / 512 / maskable-512）。图标由
+`scripts/gen-pwa-icons.mjs` 生成 —— `public/` 里只有 webp 吉祥物，而 manifest
+的 icon 需要 PNG，**maskable 更是必须位图**（SVG 在多数平台不被接受）。
+maskable 的主体比普通 icon **再缩一圈**（pad 0.28 vs 0.16）：系统会裁掉边缘
+10% 安全区，直接拿普通 icon 当 maskable 用，Android 上会切掉小哭猫的脸。
+
+⚠️ **刻意不注册 service worker**：那会引入一整套缓存失效问题（HTML 缓存住旧
+版本、537 条 CDP 测试全部打到缓存的旧资源），而收益是「离线可用」——
+**这是一个必须联网的社区产品**。manifest 本身不依赖 SW，它只影响「可安装」与启动画面。
+
+#### 分享（`composables/useShare.ts`）
+
+原生分享面板 → 复制链接降级。集中一层而不是每次调用处各写一遍，因为降级链条有
+三个坑：
+
+1. `navigator.share` 只在**安全上下文**里存在，且**桌面 Chrome/Edge/Firefox
+   都没有** —— 「有没有它」不能靠 UA 判断，必须 `typeof navigator.share === 'function'`。
+2. 调 `navigator.share` 必须在**用户手势的同一 tick**里发起，一旦中间 await 过
+   一次，iOS 会抛 `NotAllowedError` —— 而症状是「点了没反应」，与真因隔了两层。
+3. `AbortError`（用户点取消）**不算失败**：这时降级到复制反而是错的，他明确不要分享。
+
+#### 两个被 TypeScript 抓出来的真 bug
+
+1. **漏 `await` 导致三元恒真**：`return copy(target) ? 'copied' : 'failed'` ——
+   `copy()` 返回 `Promise<boolean>`，而 **Promise 对象永远为真**，于是复制失败
+   也会提示「链接已复制」，用户点开发现是旧地址。TS2801 把它报成类型错误，
+   实际是运行时 bug。
+2. **`navigator.clipboard` 在 lib.dom 里声明成非可选**，所以
+   `navigator.clipboard?.writeText &&` 与 `if (navigator.clipboard)` 都会被判成
+   恒真（TS2801）—— 而运行时它**真的**可能不存在（非安全上下文的老 Safari、
+   Firefox 的非 HTTPS 页）。用**局部交叉类型**收窄成可选，而不是删掉判断。
+
+#### CDP 那两条断言为什么要**替身**而不是真调
+
+headless Chrome 里 `navigator.clipboard.writeText` **权限默认被拒**
+（reject，`execCommand('copy')` 兜底也返回 false），实测 toast 弹的是
+「复制失败，请手动复制地址栏」。而 `navigator.share` 会弹**浏览器原生对话框**，
+`Page.navigate` 会卡住等它。
+
+所以两条能力都换成可控替身：**断言我们打算分享/复制什么**，而不是断言浏览器
+允不允许。把「复制失败」当成「分享失败」断言，等于**把 bug 钉成契约**。
+这条与 P12 记的「自动 accept 原生对话框」是同一个坑的两面。
+
+### P24 已知取舍
+
+- **没有 service worker**，因此不能离线、也不能做「加到主屏后秒开」。见上。
+- **没有下拉刷新**：iOS 的 `overscroll-behavior` 与 PWA 一起才完整，
+  单独做会在 Android 上与系统刷新打架。留到 SW 那轮一起做。
+- **分享不带图片**：Web Share API 的 `files` 需要 `canShare({files})` 为真，
+  而那要求先 fetch 成 `File` 对象 —— 对 9 张图的笔记是 9 次请求，
+  移动网络下得不偿失（且分享出去的大图会占用户流量）。
+- **`useShare` 只接在笔记详情页**。作者主页/话题页的分享是「分享这个话题/这个人」，
+  语义与「分享一条内容」不同，产品口径要单独定。

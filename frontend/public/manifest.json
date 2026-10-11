@@ -1,0 +1,45 @@
+{
+  "name": "毛球喵社 Fuzzball-Meow-Hub",
+  "short_name": "毛球喵社",
+  "description": "小红书风格的社区后端：笔记、话题、搜索与社交闭环",
+  "lang": "zh-CN",
+  "dir": "ltr",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f4f6fb",
+  "theme_color": "#f4f6fb",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "发布笔记",
+      "short_name": "发布",
+      "url": "/#/publish"
+    },
+    {
+      "name": "私信",
+      "short_name": "私信",
+      "url": "/#/message"
+    }
+  ]
+}

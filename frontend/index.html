@@ -18,6 +18,19 @@
       content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
     />
     <meta name="theme-color" content="#f4f6fb" />
+      <!--
+        PWA（P24）。⚠️ **刻意不注册 service worker**：那会引入一整套缓存失效
+        问题（HTML 缓存住旧版本、CDP 537 条测试全部打到缓存的旧资源），
+        收益是「离线可用」—— 而这是一个必须联网的社区产品。
+        manifest 本身不依赖 SW：它只影响「可安装」与启动画面。
+        图标由 scripts/gen-pwa-icons.mjs 生成（canvas 画吉祥物 → PNG）。
+      -->
+      <link rel="manifest" href="/manifest.json" />
+      <!-- iOS 不认 manifest 里的图标，apple-touch-icon 要单独给 -->
+      <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+      <meta name="apple-mobile-web-app-capable" content="yes" />
+      <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+      <meta name="apple-mobile-web-app-title" content="毛球喵社" />
     <!-- translate=no：品牌名/代码标识不参与浏览器自动翻译，否则会被拆成怪词 -->
     <meta name="description" translate="no" content="毛球喵社 Fuzzball-Meow-Hub —— 笔记社区，个人学习项目" />
     <title>毛球喵社 Fuzzball-Meow-Hub</title>

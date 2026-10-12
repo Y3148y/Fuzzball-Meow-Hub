@@ -28,16 +28,32 @@ function mentionNodes(content: string, mentions?: MentionVO[]) {
   // 于是整个 @提及 渲染成纯文本 —— 而且**界面看不出异常**，
   // 只是那一段字不会跳而已。（后端 NoteMentionVO 只回 id + nickname，
   // 没有 username，所以这张表只能在前端用 mentionNodes 自己补。）
-  const byName = new Map<string, MentionVO>()
+  // ⚠️ P30：同名昵称**允许存在**，所以表的值是**数组**而不是单个 mention。
+  // 两个都叫「改名了」而都 @ 了时，按出现顺序分配（先到先得）。
+  // 整条规则：同一个 mention 用过一次就从桶里取走，避免第二次 @ 同名的人
+  // 又渲染成第一个人的链接 —— 那会点进错误的主页。
+  const byName = new Map<string, MentionVO[]>()
+  const push = (key: string | undefined | null, m: MentionVO) => {
+    if (!key) return
+    const arr = byName.get(key)
+    if (arr) {
+      if (!arr.some((x) => x.id === m.id)) arr.push(m)
+    } else {
+      byName.set(key, [m])
+    }
+  }
   for (const m of mentions) {
-    if (m.nickname) byName.set(m.nickname, m)
-    if (m.username) byName.set(m.username, m)
+    // 两个键都要建：P30 起新内容写的是**昵称**，而**历史数据**写的是用户名，
+    // 只建昵称键的话老笔记里的 @ 全部渲染成纯文本 —— 界面看不出异常。
+    push(m.nickname, m)
+    push(m.username, m)
   }
   const re = /@([^\s@]{1,32})/g
   const out: { text: string; userId?: string }[] = []
   let last = 0
   for (let mt = re.exec(content); mt; mt = re.exec(content)) {
-    const hit = byName.get(mt[1])
+    const bucket = byName.get(mt[1])
+    const hit = bucket?.shift()
     if (!hit) continue
     if (mt.index > last) out.push({ text: content.slice(last, mt.index) })
     out.push({ text: '@' + hit.nickname, userId: hit.id })
@@ -383,18 +399,33 @@ async function loadMoreComments() {
 }
 
 async function submitComment() {
-  if (!note.value || !canSubmit.value) return
-  submittingComment.value = true
-  try {
-    const content = draft.value.trim()
-    if (replyTarget.value) {
-      await replyComment(note.value.id, content, replyTarget.value.id)
-    } else {
-      await createComment({ noteId: note.value.id, content })
-    }
-    draft.value = ''
-    replyTarget.value = null
-    showSuccessToast('发表成功')
+      if (!note.value || !canSubmit.value) return
+      submittingComment.value = true
+      try {
+        const content = draft.value.trim()
+        // ⚠️ mentionUserIds 必须在 draft 清空**之前**取：它按「正文里还留着
+        // 那段 @」过滤，清空后就全被滤掉了。
+        const mentionUserIds = mention.mentionUserIds()
+        let created
+        if (replyTarget.value) {
+          created = await replyComment(note.value.id, content, replyTarget.value.id, mentionUserIds)
+        } else {
+          created = await createComment({ noteId: note.value.id, content, mentionUserIds })
+        }
+        // P30：把「打了 @ 但没生效」变成一句明确的话。
+        // 后端返回的 mentions 就是权威答案 —— 不需要额外字段，
+        // 也不用为了「重名/拼错/已注销」三种情况各加一个错误码。
+        const missed = mention.unresolvedMentions(created?.mentions ?? [])
+        draft.value = ''
+        mention.resetPicked()
+        replyTarget.value = null
+        showSuccessToast('发表成功')
+        if (missed.length) {
+          // ⚠️ 必须**在成功提示之后**弹：Vant 的 toast 同一时刻只保留一个，
+          // 后弹的会顶掉先弹的。反过来写的话，用户只看到「发表成功」，
+          // 那条「没 @ 到人」等于没提示 —— 而这正是它存在的理由。
+          showToast(`${missed.map((t) => '@' + t).join('、')} 没 @ 到人，请从候选里选`)
+        }
     // 回到第一页，否则在第 3 页发完评论会看不到自己刚发的那条
     commentPage.value = 1
     await Promise.all([loadComments(), refreshCounters()])
@@ -1715,10 +1746,17 @@ ref="contentEl"
 }
 
 .bar-input {
+  /* ⚠️ P30 补：@ 候选面板是 position:absolute，它需要一个定位参照系。
+   * 漏了这一行，参照系会一路上浮 —— 桌面端 .actionbar 是 position:static
+   * （P25 撤掉吸底壳），于是面板的参照系落到**初始包含块（整个视口）**，
+   * `bottom: calc(100% + 4px)` 把它推到视口顶边之外，**完全看不见**。
+   * 症状是「DOM 里有这个元素、CDP 断言全绿、用户就是看不到」——
+   * 而那条 CDP 断言当时只查了 querySelector 存不存在。 */
+  position: relative;
   display: flex;
   flex-direction: column;
   width: 100%;
-  min-width: 0; /* flex 容器里的输入框不写这条会溢出（SiteNav 搜索框前科） */
+  min-width: 0; /* flex 内 textarea 溢出（SiteNav 搜索框前科） */
 }
 
 .replying {

@@ -250,6 +250,8 @@ export interface NotePublishDTO {
   type?: number
   imageUrls?: string[]
   videoUrl?: string
+  /** 正文 @ 了谁（P30）—— 服务端不从文本解析，昵称允许重复 */
+  mentionUserIds?: SnowflakeId[]
 }
 
 /** 上传单张图片的返回体 */
@@ -329,6 +331,17 @@ export interface CommentCreateDTO {
   content: string
   /** 回复某条评论时传，被回复的父评论 ID；发一级评论不传 */
   parentId?: SnowflakeId
+  /**
+   * 这条评论 @ 了谁（P30）
+   *
+   * <p>服务端**不从正文里解析 @** —— 昵称允许重复，解析文本就得在重名时
+   * 挑一个，而挑错人比不 @ 更糟。这里传的是前端选择器确定的 id，
+   * 正文里的 `@昵称` 只是给人看的装饰。
+   *
+   * <p>前端提交前会过滤掉「正文里已经被删掉」的那几���，所以把 @ 删掉
+   * 不会误发提及。
+   */
+  mentionUserIds?: SnowflakeId[]
 }
 
 /**

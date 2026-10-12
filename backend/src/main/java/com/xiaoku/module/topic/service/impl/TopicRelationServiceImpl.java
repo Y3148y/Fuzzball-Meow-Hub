@@ -26,13 +26,13 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Objects;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import com.xiaoku.module.user.entity.UserEntity;
 
 /**
  * 话题/提及的解析与落库
@@ -78,14 +78,13 @@ public class TopicRelationServiceImpl implements TopicRelationService {
             Pattern.compile("#([^\\s#@\uFF0C\u002C\u3002\u002E\u3001\uFF1B\u003B\uFF01\u0021\uFF1F\u003F\uFF1A\u003A]{1,20})");
 
     /**
-     * 提及：{@code @} 后跟 3~32 个字母数字下划线
+     * 一篇笔记最多提及几个人
      *
-     * <p>3 位起是因为用户名最短 3 位（注册校验一致）；字符集与
-     * {@code RegisterDTO} 的 {@code ^[a-zA-Z0-9_]+$} 保持一致，
-     * 两处不一致就会出现「前端认为提到了人、后端解析不出来」。
+     * <p><b>P30 起不再有「提及」的正则</b>：@ 的对象由前端选择器提交
+     * userId，服务端不解析正文。原因见类注释 —— 昵称允许重复，解析文本
+     * 就得在重名时挑一个，而挑错人比不 @ 更糟。
      */
-    private static final Pattern MENTION_PATTERN =
-            Pattern.compile("@([a-zA-Z0-9_]{3,32})");
+
 
     /** 一篇笔记最多几个话题：再多就是标签堆砌，对读者没有价值 */
     public static final int MAX_TOPICS = 5;
@@ -104,11 +103,13 @@ public class TopicRelationServiceImpl implements TopicRelationService {
     private final NoteTopicMapper noteTopicMapper;
     private final NoteMentionMapper noteMentionMapper;
     private final UserQueryService userQueryService;
+    private final com.xiaoku.module.user.mapper.UserMapper userMapper;
     private final NotificationService notificationService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public void replaceRelations(NoteEntity note, String title, String content) {
+    public void replaceRelations(NoteEntity note, String title, String content,
+                                 List<Long> mentionUserIds) {
         Long noteId = note.getId();
         if (noteId == null) {
             return;
@@ -131,8 +132,8 @@ public class TopicRelationServiceImpl implements TopicRelationService {
             noteTopicMapper.insert(row);
         }
 
-        List<Long> mentionUserIds = resolveMentionUserIds(content, note.getUserId());
-        for (Long userId : mentionUserIds) {
+List<Long> mentionIds = sanitizeMentionIds(mentionUserIds, note.getUserId());
+        for (Long userId : mentionIds) {
             NoteMentionEntity row = new NoteMentionEntity();
             row.setNoteId(noteId);
             row.setCommentId(COMMENT_ID_FOR_NOTE);
@@ -174,40 +175,19 @@ public class TopicRelationServiceImpl implements TopicRelationService {
         }
     }
 
-    /**
-     * 解析并解析成真实用户 id
-     *
-     * <p>不存在的用户名安静忽略；自己@自己直接去掉（自己提醒自己没意义，
-     * 而且会给「提我」通知发一条）。
-     */
-    public List<Long> resolveMentionUserIds(String content, Long authorId) {
-        Set<String> names = new LinkedHashSet<>();
-        if (content != null && !content.isBlank()) {
-            Matcher m = MENTION_PATTERN.matcher(content);
-            while (m.find() && names.size() < MAX_MENTIONS) {
-                names.add(m.group(1));
-            }
+    @Override
+    public void removeCommentRelations(Long commentId) {
+        if (commentId == null) {
+            return;
         }
-        if (names.isEmpty()) {
-            return List.of();
-        }
-        Map<String, Long> found = userQueryService.findIdsByUsernames(new ArrayList<>(names));
-        List<Long> ids = new ArrayList<>();
-        for (String n : names) {
-            Long uid = found.get(n);
-            if (uid != null && !uid.equals(authorId) && !ids.contains(uid)) {
-                ids.add(uid);
-            }
-            if (ids.size() >= MAX_MENTIONS) {
-                break;
-            }
-        }
-        return ids;
+        noteMentionMapper.delete(Wrappers.<NoteMentionEntity>lambdaQuery()
+                .eq(NoteMentionEntity::getCommentId, commentId));
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public void replaceCommentMentions(Long noteId, Long commentId, String content, Long authorId) {
+    public void replaceCommentMentions(Long noteId, Long commentId, Long authorId,
+                                        List<Long> mentionUserIds, String content) {
         if (noteId == null || commentId == null) {
             return;
         }
@@ -216,8 +196,8 @@ public class TopicRelationServiceImpl implements TopicRelationService {
         noteMentionMapper.delete(Wrappers.<NoteMentionEntity>lambdaQuery()
                 .eq(NoteMentionEntity::getCommentId, commentId));
 
-        List<Long> mentionUserIds = resolveMentionUserIds(content, authorId);
-        for (Long uid : mentionUserIds) {
+        List<Long> ids = sanitizeMentionIds(mentionUserIds, authorId);
+        for (Long uid : ids) {
             NoteMentionEntity row = new NoteMentionEntity();
             row.setNoteId(noteId);
             row.setCommentId(commentId);
@@ -226,16 +206,48 @@ public class TopicRelationServiceImpl implements TopicRelationService {
             notificationService.notifyCommentMention(uid, authorId, noteId, commentId, content);
         }
         log.info("评论提及关系已写入 noteId={} commentId={} mentions={}",
-                noteId, commentId, mentionUserIds.size());
+                noteId, commentId, ids.size());
     }
 
-    @Override
-    public void removeCommentRelations(Long commentId) {
-        if (commentId == null) {
-            return;
+    /**
+     * 清洗前端传来的 @ 对象列表（P30）
+     *
+     * <p>三件事，顺序有讲究：
+     * <ol>
+     *   <li><b>去掉自己</b> —— 自己 @ 自己没意义，而且会给「提我」发一条通知；</li>
+     *   <li><b>去重</b> —— 同一个人的 id 在 Set 里天然唯一，但前端可能把
+     *       「同一人 @ 两次」传成两条（文本里有两个 {@code @昵称}）；</li>
+     *   <li><b>校验存在且可用</b> —— 用户可能打好字才遇到对方注销/禁用。
+     *       这里<b>静默丢弃</b>而不是抛异常：为了一个已经注销的人
+     *       发不出评论是很糟的体验，而且用户完全看不出原因。</li>
+     * </ol>
+     *
+     * <p>限长在这里兜底一遍：DTO 上的 {@code @Size} 只管元素个数，
+     * 这里是第二道防线 —— service 可能被别的调用方直接用。
+     */
+    private List<Long> sanitizeMentionIds(List<Long> raw, Long authorId) {
+        if (raw == null || raw.isEmpty()) {
+            return List.of();
         }
-        noteMentionMapper.delete(Wrappers.<NoteMentionEntity>lambdaQuery()
-                .eq(NoteMentionEntity::getCommentId, commentId));
+        List<Long> distinct = raw.stream()
+                .filter(Objects::nonNull)
+                .filter(id -> authorId == null || !id.equals(authorId))
+                .distinct()
+                .limit(MAX_MENTIONS)
+                .toList();
+        if (distinct.isEmpty()) {
+            return List.of();
+        }
+        List<Long> alive = userMapper.selectBatchIds(distinct).stream()
+                .filter(u -> u.getDeleted() == null || u.getDeleted() == 0)
+                .filter(u -> u.getStatus() == null || u.getStatus() == 1)
+                .map(UserEntity::getId)
+                .toList();
+        if (alive.size() < distinct.size()) {
+            log.warn("@ 对象里有 {} 个不可用（已注销/禁用/不存在），已静默丢弃",
+                    distinct.size() - alive.size());
+        }
+        return alive;
     }
 
     @Override

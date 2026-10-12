@@ -176,7 +176,7 @@ onMounted(load)
           <img class="avatar" src="/mascot/m02.webp" alt="" width="62" height="62" />
           <div class="names">
             <h1 class="nickname" data-test="user-nickname">{{ author.nickname }}</h1>
-            <p class="username" data-test="user-username">@{{ author.username }}</p>
+            <!-- P30：用户名不再展示给人看（决策：username 退回为纯登录标识）。历史上这里是唯一的用户名出口。 -->
           </div>
           <button
             v-if="!isSelf"

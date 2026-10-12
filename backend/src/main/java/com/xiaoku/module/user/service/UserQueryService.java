@@ -6,6 +6,7 @@ import com.xiaoku.common.exception.BizException;
 import com.xiaoku.common.result.ErrorCodeEnum;
 import com.xiaoku.module.user.converter.UserConverter;
 import com.xiaoku.module.user.entity.UserEntity;
+import com.xiaoku.module.follow.entity.UserFollowEntity;
 import com.xiaoku.module.user.mapper.UserBlockMapper;
 import com.xiaoku.module.user.mapper.UserMapper;
 import com.xiaoku.module.user.vo.UserPickVO;
@@ -16,7 +17,10 @@ import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashSet;
+import java.util.stream.Stream;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -42,6 +46,7 @@ public class UserQueryService {
 
     private final UserMapper userMapper;
     private final UserBlockMapper userBlockMapper;
+    private final com.xiaoku.module.follow.mapper.UserFollowMapper userFollowMapper;
 
     /**
      * 按 id 读用户信息，走 Redis 缓存。
@@ -170,8 +175,13 @@ public class UserQueryService {
      */
     public List<UserPickVO> searchForMention(String keyword, Long viewerId, int limit) {
         String kw = keyword == null ? "" : keyword.trim();
+        int cap = Math.max(1, Math.min(limit, 20));
+        // ⚠️ 空关键词**不能**返回空列表（P30 修的真缺陷）：
+        // 用户刚敲出 `@` 就停住是最常见的动作，此时就该看到候选 ——
+        // 小红书正是这样。返回空列表的症状是「敲了 @ 什么都没��」，
+        // 而当时的 CDP 用例敲的是 `@xk_ui_inte`（带前缀），永远走不到这里。
         if (kw.isEmpty()) {
-            return List.of();
+            return listMentionSuggestions(viewerId, cap);
         }
         List<Long> hidden = viewerId == null
                 ? List.of()
@@ -183,7 +193,7 @@ public class UserQueryService {
                 .eq(UserEntity::getDeleted, 0)
                 .eq(UserEntity::getStatus, 1)
                 .ne(UserEntity::getId, viewerId)
-                .last("LIMIT " + Math.max(1, Math.min(limit, 20))));
+                .last("LIMIT " + cap));
         if (!hidden.isEmpty()) {
             rows = rows.stream().filter(u -> !hidden.contains(u.getId())).toList();
         }
@@ -193,5 +203,64 @@ public class UserQueryService {
                 .nickname(u.getNickname())
                 .avatar(u.getAvatar())
                 .build()).toList();
+    }
+
+    /**
+     * 「我关注的人 + 我的粉丝」，按粉丝数降序（P30：敲出 @ 时的默认候选）
+     *
+     * <p><b>为什么是这两个集合</b>：用户最可能 @ 的就是认识的人，而认识的人
+     * 只可能出现在「我关注的」或「关注我的」里。全站热门是陌生人，@ 陌生人的
+     * 动机远弱于 @ 熟人。
+     *
+     * <p><b>为什么按粉丝数排序</b>：一个新人粉丝数 0，列表尾部就是新认识的人；
+     * 而信息流里常见的人粉丝多 —— 这与用户「我认识谁」的直觉一致。
+     *
+     * <p><b>去重</b>：互相关注的人在两个集合里各出现一次，不去重会出现
+     * 连续两行同名同头像，看起来像 bug。
+     *
+     * <p><b>排除拉黑（双向）</b>：同 {@code searchForMention} 的理由 ——
+     * 藏了的人不该从候选里冒出来。
+     */
+    private List<UserPickVO> listMentionSuggestions(Long viewerId, int limit) {
+        if (viewerId == null) {
+            return List.of();
+        }
+        List<Long> following = userFollowMapper.selectList(Wrappers.<UserFollowEntity>lambdaQuery()
+                        .select(UserFollowEntity::getFollowId)
+                        .eq(UserFollowEntity::getUserId, viewerId))
+                .stream().map(UserFollowEntity::getFollowId).toList();
+        List<Long> fans = userFollowMapper.selectList(Wrappers.<UserFollowEntity>lambdaQuery()
+                        .select(UserFollowEntity::getUserId)
+                        .eq(UserFollowEntity::getFollowId, viewerId))
+                .stream().map(UserFollowEntity::getUserId).toList();
+
+        List<Long> ids = new ArrayList<>(new LinkedHashSet<>(
+                Stream.concat(following.stream(), fans.stream())
+                        .filter(Objects::nonNull)
+                        .filter(id -> !id.equals(viewerId))
+                        .toList()));
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        List<Long> hidden = userBlockMapper.selectHiddenUserIds(viewerId);
+        ids = ids.stream().filter(id -> !hidden.contains(id)).toList();
+
+        return userMapper.selectList(Wrappers.<UserEntity>lambdaQuery()
+                        .select(UserEntity::getId, UserEntity::getUsername,
+                                UserEntity::getNickname, UserEntity::getAvatar)
+                        .in(UserEntity::getId, ids)
+                        .eq(UserEntity::getDeleted, 0)
+                        .eq(UserEntity::getStatus, 1)
+                        .orderByDesc(UserEntity::getFansCount)
+                        .orderByAsc(UserEntity::getId)
+                        .last("LIMIT " + limit))
+                .stream()
+                .map(u -> UserPickVO.builder()
+                        .id(u.getId())
+                        .username(u.getUsername())
+                        .nickname(u.getNickname())
+                        .avatar(u.getAvatar())
+                        .build())
+                .toList();
     }
 }

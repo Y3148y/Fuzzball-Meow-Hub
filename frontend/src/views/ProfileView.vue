@@ -155,7 +155,7 @@ async function logout() {
           <h1 class="nickname" data-test="me-nickname">
             {{ userStore.userInfo?.nickname || '加载中…' }}
           </h1>
-          <p class="username" data-test="me-username">@{{ userStore.userInfo?.username }}</p>
+          <!-- P30：用户名不再展示给人看 —— 界面上只有昵称，用户不必记两个名字。 -->
         </div>
         <button
           v-if="!editing"

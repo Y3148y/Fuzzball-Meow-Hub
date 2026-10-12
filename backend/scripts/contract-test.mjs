@@ -2027,14 +2027,21 @@ async function main() {
   {
     const unique = 'T' + stamp
     const TOPIC = '探店' + unique
-
+    // P30：正文里的 @ 不再由服务端解析文本，而是由前端提交 id；
+    // 所以契约测试也必须像真实前端一样传 id，否则正文提及会静默失效。
+    const { json: lkFollow } = await post('/api/user/login', { body: { username: 'xk_ui_follow', password: 'Xk@2026peer' } })
+    const xkUiFollowId = (await get('/api/user/me', { token: `Bearer ${lkFollow?.data?.accessToken}` })).json?.data?.id
+    if (!check('候选 fixture 的 id 拿到了（P30：提及靠它）', !!xkUiFollowId, `id=${xkUiFollowId}`)) {
+      // 拿不到就不能继续：否则提及断言会因为没有对象而全部失效
+    } else {
     const { json: p1 } = await post('/api/note/publish', {
       token: auth,
       body: {
         type: 1,
         title: `标题带 #${TOPIC} 的话题`,
-        content: `正文又写了一遍 #${TOPIC}，还有一个 #很长很长的话题名字，和 @xk_ui_follow 的互动`,
+        content: `正文又写了一遍 #${TOPIC}，还有一个 #很长很长的话题名字，和 @关注搭子 的互动`,
         imageUrls: [imageUrl],
+      mentionUserIds: [xkUiFollowId],
       },
     })
     codeIs('带话题的笔记发布成功', p1, 0)
@@ -2392,6 +2399,8 @@ async function main() {
 
     await del(`/api/note/${note?.data?.id}`, { token: auth })
     eq('删除后详情返回 20001', (await get(`/api/note/${note?.data?.id}`, { token: auth })).json?.code, 20001)
+    }
+
   }
 
 /* ================================================================
@@ -2980,7 +2989,8 @@ const lastTwo = (hist?.list ?? []).slice(-2)
         const unreadBefore = (await get('/api/notification/unread-count', { token: tB })).json?.data ?? 0
         const cm = await post('/api/comment', {
           token: tA,
-          body: { noteId: bNoteId, content: `P29 契约：同问，@xk_ui_follow 这个怎么弄？` },
+          // ⚠️ P30：同上，评论里的 @ 也必须传 id。手打的 @ 不产生提及。
+      body: { noteId: bNoteId, content: `P29 契约：同问，@关注搭子 这个怎么弄？`, mentionUserIds: [idB] },
         })
         const commentId = cm.json?.data?.id
         check('P29 在他人笔记下评论并 @ 对方', cm.json?.code === 0,

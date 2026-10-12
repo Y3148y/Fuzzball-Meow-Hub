@@ -23,7 +23,19 @@ const props = defineProps<{
   /** 光标位置（textarea 的 selectionStart） */
   caret: number
 }>()
-const emit = defineEmits<{ (e: 'pick', username: string): void; (e: 'close'): void }>()
+/**
+ * 选中时把 **id 和要插入的文字**一起抛出去（P30）
+ *
+ * <p>为什么插入昵称而不是用户名：用户名从此不再展示给用户（决策），
+ * 用户输入框里出现 `@xk_ui_follow` 本身就是一种暴露。
+ *
+ * <p>为什么必须带 id：昵称允许重复，服务端解析文本就得在重名时挑一个，
+ * 而挑错人比不 @ 更糟。**正文只是外观，id 才是事实。**
+ */
+const emit = defineEmits<{
+  (e: 'pick', user: { id: string; text: string }): void
+  (e: 'close'): void
+}>()
 
 const candidates = ref<UserPickVO[]>([])
 const loading = ref(false)
@@ -99,7 +111,7 @@ function move(delta: number) {
 }
 
 function pick(u: UserPickVO) {
-  emit('pick', u.username)
+  emit('pick', { id: String(u.id), text: u.nickname })
 }
 
 function onKey(e: KeyboardEvent): boolean {
@@ -140,7 +152,12 @@ onBeforeUnmount(() => clearTimeout(timer))
       <img v-if="u.avatar" class="av" :src="u.avatar" :alt="`${u.nickname} 的头像`" width="28" height="28" />
       <span v-else class="av av-ph" aria-hidden="true" />
       <span class="nm">{{ u.nickname }}</span>
-      <span class="un">@{{ u.username }}</span>
+      <!--
+        P30：这里原来有一行灰色的 @用户名。
+        **刻意去掉** —— 用户名从此不再展示给人看（决策：username 退回为
+        纯登录标识）。留着它会让用户在选人时又看见那个「要记住的名字」，
+        与 P30 的目的正好相反。
+      -->
     </button>
   </div>
 </template>

@@ -13,7 +13,7 @@ import { useMentionPicker } from '@/composables/useMentionPicker'
  * 症状是「输入时看见话题、发布后详情页没有」。
  */
 const TOPIC_RE = /#([^\s#@\uFF0C\u002C\u3002\u002E\u3001\uFF1B\u003B\uFF01\u0021\uFF1F\u003F\uFF1A\u003A]{1,20})/g
-const MENTION_RE = /@([a-zA-Z0-9_]{3,32})/g
+const MENTION_RE = /@([^\s@，,。.、；;！!？?：:]{1,32})/g
 const MAX_TOPICS = 5
 
 function detectTopics(text: string) {
@@ -40,10 +40,22 @@ const pickedTopics = computed(() => [
   ...detectTopics(title.value),
   ...detectTopics(content.value),
 ].filter((n, i, a) => a.indexOf(n) === i).slice(0, MAX_TOPICS))
+/**
+ * 预览只列「正文里打了 @ 的词」，**不代表它会生效**。
+ *
+ * <p>⚠️ P30 起真正的提及由选择器提交的 id 决定，手打的 @ 不生效。
+ * 这里刻意**不**改成「只列已选中的」—— 那样用户就看不到自己打的 @ 了，
+ * 而看不到正是「我以为 @ 了却没 @ 到」的根源之一。真正生效与否由发布后的
+ * toast 明确告知（「没 @ 到人，请从候选里选」）。
+ *
+ * <p>正则改了这里也要改 {@link TOPIC_RE} 旁边那段注释：正文里的 @
+ * 现在插的是**昵称**（可能是中文），旧正则只认拉丁字符，
+ * 于是从候选里选了「关注搭子」却一个 chip 都不显示 —— 而界面看不出异常。
+ */
 const pickedMentions = computed(() => detectMentions(content.value))
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { showSuccessToast } from 'vant'
+import { showSuccessToast, showToast } from 'vant'
 import { uploadVideo } from '@/api/note'
 import { publishNote, uploadImage } from '@/api/note'
 import { BizError } from '@/api/request'
@@ -279,16 +291,22 @@ async function submit() {
       }
     }
 
-    const note = await publishNote({
-      title: title.value.trim(),
-      content: content.value.trim(),
-      imageUrls: urls,
-    })
-    showSuccessToast('发布成功')
+      const created = await publishNote({
+        title: title.value.trim(),
+        content: content.value.trim(),
+        imageUrls: urls,
+        mentionUserIds: mention.mentionUserIds(),
+      })
+      // P30：把「打了 @ 但没生效」变成一句明确的话（后端返回的 mentions 是权威答案）
+      const missed = mention.unresolvedMentions(created.mentions ?? [])
+      showSuccessToast('发布成功')
+      if (missed.length) {
+        showToast(`${missed.map((t) => '@' + t).join('、')} 没 @ 到人，请从候选里选`)
+      }
     // 已经存进库了，跳转前先清 dirty —— 否则这次跳转自己会把自己拦下
     markClean()
     // 详情页要用笔记 ID 跳转，id 是 string（雪花 ID 不能转 Number）
-    await router.push(`/note/${note.id}`)
+    await router.push(`/note/${created.id}`)
   } catch (e) {
     if (e instanceof BizError) {
       // 20004 已经在文案里说清了，单独提示更贴近用户预期
@@ -700,6 +718,9 @@ const { markClean } = useUnsavedChanges(
  * 显式摆到标签那一行的右端。不动模板，也就不会影响 data-test 选择器。
  */
 .field {
+  /* ⚠️ P30 补：@ 候选面板需要定位参照系，漏了这行它会飘到视口外。
+   * 详见 NoteDetailView 里 .bar-input 的同款注释。 */
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   grid-template-rows: auto auto;

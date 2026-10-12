@@ -26,6 +26,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import com.xiaoku.common.util.IdListUtil;
 
 @Slf4j
 @Service
@@ -105,7 +106,8 @@ public class CommentServiceImpl implements CommentService {
          * 笔记作者，而 @ 提及发给**正文里被点名的人** —— 被 @ 的人既不是回复对象
          * 也未必是笔记作者时，收到的那条必须是 MENTION 类型。
          */
-        topicRelationService.replaceCommentMentions(noteId, comment.getId(), comment.getContent(), userId);
+        topicRelationService.replaceCommentMentions(noteId, comment.getId(), userId,
+                IdListUtil.parse(dto.getMentionUserIds()), comment.getContent());
 
         /*
          * 通知：回复要给「被回复的人」，非回复要给「笔记作者」。

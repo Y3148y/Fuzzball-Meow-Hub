@@ -160,7 +160,8 @@ try {
   await s.goto(`${BASE}/#/user/${peerId}`)
   await s.waitFor("document.querySelector('[data-test=user-follow]')", '作者主页', 20000)
   s.check('作者主页展示昵称', (await text('user-nickname')) === PEER.nickname)
-  s.check('作者主页展示用户名', (await text('user-username')) === `@${PEER.username}`)
+  s.check('作者主页不再展示用户名（P30）',
+    (await s.evaluate("!document.querySelector('[data-test=user-username]')")) === true)
   s.check('作者笔记列表里有测试笔记', await authorHasNote())
 
   await click('user-follow')

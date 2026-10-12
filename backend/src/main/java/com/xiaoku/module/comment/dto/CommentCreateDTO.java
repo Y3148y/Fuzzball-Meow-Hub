@@ -5,6 +5,8 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 
+import java.util.List;
+
 @Data
 @Schema(description = "发表评论请求")
 public class CommentCreateDTO {
@@ -40,4 +42,23 @@ public class CommentCreateDTO {
     /** 父评论ID，不传或传 0 表示发一级评论。同样是字符串理由 */
     @Schema(description = "父评论ID，不传表示发一级评论")
     private String parentId;
+
+    /**
+     * 这条评论 @ 了谁（用户ID列表，P30）
+     *
+     * <p><b>为什么不从正文里解析 @</b>：昵称**允许重复**，解析文本就必须在
+     * 「两个都叫『改名了』」时挑一个 —— 而挑错人比不 @ 更糟（通知发给了
+     * 完全无关的人）。小红书的做法是**选人那一刻 userId 就定了**，正文里那个
+     * {@code @昵称} 只是给人看的装饰。我们对齐这一点：
+     * <b>正文只是外观，id 才是事实</b>。
+     *
+     * <p>代价：手打「@昵称」不会产生提及（前端会明确提示，不是静默失败）；
+     * 粘贴别人笔记里的 @ 也不会。前端提交前会过滤掉「正文里已被删掉」的 id，
+     * 所以用户把 @ 删了不会误发提及。
+     *
+     * <p>上限 10，与正文提及沿用同一个 {@code MAX_MENTIONS}。
+     */
+    @Schema(description = "这条评论 @ 了谁（用户ID列表；正文里的 @ 只是外观，这里才是事实）")
+    @Size(max = 10, message = "一条评论最多 @ 10 个人")
+    private List<String> mentionUserIds;
 }

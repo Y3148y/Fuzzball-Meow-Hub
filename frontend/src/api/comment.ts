@@ -33,8 +33,8 @@ export function createComment(data: CommentCreateDTO) {
 }
 
 /** 回复某条评论。parentId 传被回复的那条评论 ID */
-export function replyComment(noteId: string, content: string, parentId: string) {
-  return post<CommentVO>('/comment', { noteId, content, parentId }, { idempotent: true })
+export function replyComment(noteId: string, content: string, parentId: string, mentionUserIds?: string[]) {
+  return post<CommentVO>('/comment', { noteId, content, parentId, mentionUserIds }, { idempotent: true })
 }
 
 /** 删除评论。删根评论会连它的子树一起删 */

@@ -525,51 +525,119 @@ s.check('删除后详情页评论计数归零（子树一起退掉）', (await n
       s.check('候选里带回对方 userId（渲染链接要用）', !!peerId, `id=${peerId}`)
 
       // 只打一个 @，**停下来** —— 这正是手测反馈描述的动作
-      await setValue('[data-test=comment-input]', '这个 @' + PEER.username.slice(0, 4))
+      /*
+        ---- P30：几何断言（这一段以前是假绿的）----
+
+        旧版断言是 waitFor("document.querySelector('[data-test=mention-picker]')")
+        —— 只查元素在不在 DOM 里。而 P30 之前面板的真 bug 是
+        **.bar-input 缺 position:relative**，桌面端参照系上浮到初始包含块，
+        面板被推到视口之外：**元素存在、断言全绿、用户就是看不见**。
+
+        这就是「看着绿、其实钉不住任何东西」的典型。以后任何浮层/面板类断言
+        都不能只查 querySelector 存不存在，必须量 getBoundingClientRect()。
+      */
+      const measurePicker = () => s.evaluate(`(() => {
+        const el = document.querySelector('[data-test=mention-picker]')
+        const input = document.querySelector('[data-test=comment-input]')
+        if (!el) return JSON.stringify({ miss: true })
+        const r = el.getBoundingClientRect()
+        const ir = input.getBoundingClientRect()
+        return JSON.stringify({
+          top: Math.round(r.top), bottom: Math.round(r.bottom),
+          left: Math.round(r.left), right: Math.round(r.right),
+          w: Math.round(r.width), h: Math.round(r.height),
+          vh: innerHeight,
+          inputLeft: Math.round(ir.left), inputRight: Math.round(ir.right),
+          opts: [...el.querySelectorAll('[data-test^=mention-opt-]')].map(o => o.dataset.test),
+        })
+      })()`)
+
+      // ① 敲 @ 之后**不打任何字**就该有候选（小红书就是这样）。
+      //    旧版完全没覆盖：旧用例敲的是带前缀的 @xk_ui_inte，
+      //    而后端对空关键词返回空列表 —— 于是「敲完 @ 什么都不出」。
+      await setValue('[data-test=comment-input]', '这个 @')
       await s.waitFor("document.querySelector('[data-test=mention-picker]')", '候选面板弹出', 15000)
-      s.check('输入 @ 后弹出候选面板（原来什么都没有）', true)
+      const m0 = JSON.parse(await measurePicker())
+      s.check('敲出 @ 立刻就有候选（不打任何字，小红书就是这样）',
+        !m0.miss && m0.opts.length > 0, JSON.stringify(m0))
+      // ② **可见性**：矩形必须在视口内且有面积。
+      //    这一条直接对应「用户说看不到面板」—— 元素存在不等于看得见。
+      s.check('候选面板真的看得见（在视口内且有面积，不只是在 DOM 里）',
+        !m0.miss && m0.w > 0 && m0.h > 0 && m0.bottom > 0 && m0.top < m0.vh,
+        JSON.stringify(m0))
+      // ③ 横向与输入框对齐（不能是通栏，也不能飘到别处）
+      s.check('候选面板横向与输入框对齐（不是通栏、没有飘到别处）',
+        !m0.miss && Math.abs(m0.left - m0.inputLeft) <= 2
+        && Math.abs(m0.right - m0.inputRight) <= 2,
+        JSON.stringify(m0))
 
-      const opts = await s.evaluate(`[...document.querySelectorAll('[data-test^=mention-opt-]')].map(e => e.dataset.test)`)
-      s.check('候选里有搭子这一条', (opts ?? []).some(o => o === 'mention-opt-' + PEER.username),
-        JSON.stringify(opts))
-
-      // ⚠️ **按昵称**也要能搜到：用户记得的是昵称，不是那串拉丁用户名
+      // ④ 按昵称搜（用户记得的是昵称，不是拉丁用户名）
       await setValue('[data-test=comment-input]', '这个 @' + peerNick.slice(0, 2))
       await s.waitFor(
-        `document.querySelector('[data-test=mention-opt-${PEER.username}]')`,
+        "document.querySelector('[data-test=mention-opt-" + PEER.username + "]')",
         '按昵称搜出候选', 15000)
-      s.check('按**昵称**也能搜到（用户记得的是昵称，不是用户名）', true)
+      s.check('按昵称也能搜到', true)
 
-      // 选中后要**替换**掉已输入的片段，而不是追加
-      await click(`mention-opt-${PEER.username}`)
+      // ⑤ 选中后插入的是**昵称**（P30 起用户名不再展示给人看），且**替换**已有片段
+      await click('mention-opt-' + PEER.username)
+      await s.waitFor("!document.querySelector('[data-test=mention-picker]')", '选中后面板收起', 10000)
+      const draftNow = await s.evaluate("document.querySelector('[data-test=comment-input]').value")
+      s.check('选中后插入的是昵称（用户名不再暴露），且替换掉已输入的那段',
+        draftNow === '这个 @' + peerNick + ' ', '实际="' + draftNow + '"')
+
+      // ⑥ 手打中文昵称：评论发得出去，但**不产生提及**，且**有明确提示**
+      //    —— 这是「静默失败 → 有反馈」那条决策的验收点
+      await setValue('[data-test=comment-input]', '手打的 @' + peerNick + ' 请看')
+      await s.waitFor("!document.querySelector('[data-test=mention-picker]')", '手打后面板不弹', 8000)
+      // ⚠️ 必须等**评论数 +1**，不能只等 `comment-item` 存在：
+      // 上一段那条还在列表里，`waitFor('comment-item')` 会**立刻**通过，
+      // 于是下面读到的是旧列表 —— 症状是「断言在说谎而代码是对的」。
+      // 这与 P11「同拍短读」的坑是同一类：读异步结果前先等它落定。
+const before6 = (await s.evaluate(
+        `document.querySelectorAll('[data-test=comment-item]').length`)) ?? 0
+      await click('comment-submit')
       await s.waitFor(
-        `!document.querySelector('[data-test=mention-picker]')`, '选中后面板收起', 10000)
-      const draftNow = await s.evaluate(`document.querySelector('[data-test=comment-input]').value`)
-      s.check('选中后插入 @用户名，且替换掉刚输入的那段（不追加成 @关@xxx）',
-        draftNow === `这个 @${PEER.username} `,
-        `实际="${draftNow}"`)
+        `document.querySelectorAll('[data-test=comment-item]').length === ${before6 + 1}`,
+        '手打的那条评论真的发出去', 20000)
+      const manual = await s.evaluate(`(() => {
+        // ⚠️ 必须取**最后一条**：上一段用候选发的评论还在列表里，而它
+        // 是有链接的。querySelector 取第一条就会把上一段的成果当成
+        // 「手打也产生了提及」—— 断言在测自己的历史数据。
+        const items = [...document.querySelectorAll('[data-test=comment-item]')]
+        const c = items[items.length - 1]
+        const toast = document.querySelector('.van-toast')?.textContent?.trim() ?? ''
+        return { hasLink: !!c?.querySelector('[data-test=comment-content] a'), toast }
+      })()`)
+      s.check('手打「@昵称」不产生提及（正文只是外观，id 才是事实）',
+        manual.hasLink === false, JSON.stringify(manual))
+      s.check('手打没生效时给出明确提示（不是静默失败）',
+        manual.toast.includes('没 @ 到人'), 'toast="' + manual.toast + '"')
 
-      // 发出去，验证渲染成链接（评论正文复用笔记正文的 mentionNodes）
+      await s.evaluate("document.querySelector('[data-test=comment-delete-btn]')?.click()")
+      await s.waitFor("document.querySelector('.van-dialog')", '删除确认', 10000)
+      await s.evaluate("document.querySelector('.van-dialog__confirm').click()")
+      await s.waitFor("document.querySelector('[data-test=comment-empty]')", '删回空态', 20000)
+
+      // ⑦ 再走一遍「候选选中 → 真提及」的完整链路（这次是正路）
+      await setValue('[data-test=comment-input]', '候选 @' + peerNick.slice(0, 2))
+      await s.waitFor("document.querySelector('[data-test=mention-opt-" + PEER.username + "]')", '再出候选', 15000)
+      await click('mention-opt-' + PEER.username)
+      await s.waitFor("!document.querySelector('[data-test=mention-picker]')", '选中', 10000)
       await click('comment-submit')
       await s.waitFor("document.querySelector('[data-test=comment-item]')", '评论出现', 20000)
       const linkOk = await s.evaluate(`(() => {
         const a = document.querySelector('[data-test=comment-content] a')
         return a ? { href: a.getAttribute('href'), text: a.textContent.trim() } : null
       })()`)
-      s.check('评论里的 @ 渲染成可点链接（点得进对方主页）',
+      s.check('候选选中的 @ 渲染成可点链接（点得进对方主页）',
         !!linkOk && linkOk.href === '#/user/' + peerId && linkOk.text === '@' + peerNick,
         JSON.stringify(linkOk))
-      // ⚠️ 断言**文本是昵称**而不是用户名，这是有意的：正文里写的是
-      // `@xk_ui_interact`（机器能解析的唯一标识），但给人看的应该是
-      // 「@互动搭子」。mentionNodes 第 43 行就是干这个替换的。
-      // 我第一版断言写成了用户名，红了 —— 改的是断言而不是实现。
 
-      // 清理：这条评论不能留，它会长期给 demo 刷通知
-      await s.evaluate(`document.querySelector('[data-test=comment-delete-btn]')?.click()`)
+      await s.evaluate("document.querySelector('[data-test=comment-delete-btn]')?.click()")
       await s.waitFor("document.querySelector('.van-dialog')", '删除确认', 10000)
-      await s.evaluate(`document.querySelector('.van-dialog__confirm').click()`)
+      await s.evaluate("document.querySelector('.van-dialog__confirm').click()")
       await s.waitFor("document.querySelector('[data-test=comment-empty]')", '删回空态', 20000)
-      s.check('清理：@ 提及的评论已删除', true)
+      s.check('清理：候选提及的评论已删除', true)
     }
   } catch (e) {
   s.check('用例执行到底', false, String(e.message))

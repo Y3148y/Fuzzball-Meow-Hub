@@ -63,10 +63,12 @@ try {
     '昵称加载完成',
   )
   s.check('显示昵称', (await s.evaluate("document.querySelector('[data-test=me-nickname]').textContent.trim()")) === ORIG_NICK)
-  s.check(
-    '显示用户名',
-    (await s.evaluate("document.querySelector('[data-test=me-username]').textContent.trim()")) === '@xiaoku_demo',
-  )
+  s.check('显示昵称', (await s.evaluate("document.querySelector('[data-test=me-nickname]').textContent.trim()")) === ORIG_NICK)
+  // P30：用户名不再展示给人看（退回为纯登录标识）。
+  // 旧版这里断言的是「我的页面上能看到用户名」，
+  // 现在要钉的是**不要再看到它**。
+  s.check('「我的」页不再展示用户名（P30）',
+    (await s.evaluate("!document.querySelector('[data-test=me-username]')")) === true)
   const stats = await s.evaluate(
     "[...document.querySelectorAll('.stats .stat dd')].map(e=>e.textContent.trim()).join(',')",
   )

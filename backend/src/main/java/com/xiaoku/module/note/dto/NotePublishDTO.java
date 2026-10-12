@@ -1,5 +1,6 @@
 package com.xiaoku.module.note.dto;
 
+import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
@@ -40,4 +41,15 @@ public class NotePublishDTO {
 
     /** type=2 时必填 */
     private String videoUrl;
+
+    /**
+     * 正文 @ 了谁（用户ID列表，P30）
+     *
+     * <p><b>为什么不用服务端解析文本</b>：昵称允许重复，解析文本必须在重名时
+     * 挑一个，而挑错人比不 @ 更糟。详见 {@code CommentCreateDTO.mentionUserIds}
+     * 的注释，两条链路共用同一套理由。
+     */
+    @Schema(description = "正文 @ 了谁（用户ID列表；正文里的 @ 只是外观，这里才是事实）")
+    @Size(max = 10, message = "一篇笔记最多 @ 10 个人")
+    private List<String> mentionUserIds;
 }

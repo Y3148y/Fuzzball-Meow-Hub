@@ -95,7 +95,7 @@ onMounted(load)
           <img class="avatar" src="/mascot/m02.webp" alt="" width="40" height="40" />
           <span class="names">
             <span class="nick" data-test="block-nick">{{ row.nickname }}</span>
-            <span class="uname">@{{ row.username }}</span>
+            <!-- P30：同上。黑名单里只有昵称。 -->
           </span>
         </RouterLink>
         <button

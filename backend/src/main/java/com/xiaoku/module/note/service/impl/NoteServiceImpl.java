@@ -45,6 +45,7 @@ import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import com.xiaoku.common.util.IdListUtil;
 
 @Slf4j
 @Service
@@ -121,7 +122,8 @@ log.info("笔记发布成功 noteId={} userId={} images={}", note.getId(), userI
 
         // 话题/提及关系行：正文是唯一事实来源，后端自己从 title+content 解析。
         // 放在写完 note/note_image 之后 —— 关系行需要 noteId，而 noteId 到这里才有。
-        topicRelationService.replaceRelations(note, note.getTitle(), note.getContent());
+        topicRelationService.replaceRelations(note, note.getTitle(), note.getContent(),
+                IdListUtil.parse(dto.getMentionUserIds()));
         // 刚发布的笔记必然没有点赞/收藏/关注作者（自己不能关注自己），三者都是 false
         return NoteConverter.toVO(note, userQueryService.getUserVO(userId), params.images(), false, false, false);
     }
@@ -174,7 +176,8 @@ log.info("笔记发布成功 noteId={} userId={} images={}", note.getId(), userI
         // 话题/提及全量替换：编辑本来就是全量覆盖语义，关系行跟着换。
         // 不做增量 diff —— 一篇最多 5 话题 10 提及，删了重插很便宜，
         // 而增量留下的「改了正文还挂着旧话题」残留更难查
-        topicRelationService.replaceRelations(note, dto.getTitle().trim(), dto.getContent().trim());
+        topicRelationService.replaceRelations(note, dto.getTitle().trim(), dto.getContent().trim(),
+                IdListUtil.parse(dto.getMentionUserIds()));
         // 编辑不会让一篇笔记「重新上热搜」：已下架的继续发 UNPUBLISH（确保索引里没有），
         // 正常的才带新标题/正文 re-upsert
         int curStatus = note.getStatus() == null ? STATUS_PUBLISHED : note.getStatus();

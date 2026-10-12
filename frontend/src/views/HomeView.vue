@@ -195,7 +195,7 @@ onMounted(loadFeed)
         <img class="avatar" src="/mascot/m02.webp" alt="" width="62" height="62" />
         <div class="names">
           <h1 class="nickname">{{ userStore.displayName || '加载中…' }}</h1>
-          <p class="username">@{{ userStore.userInfo?.username }}</p>
+        <!-- P30：同上，用户名不再展示。 -->
         </div>
       </div>
 

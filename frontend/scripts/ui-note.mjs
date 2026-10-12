@@ -293,7 +293,27 @@ async function setVal(sel, value) {
 
   const TOPIC = 'cdpt' + Date.now().toString(36).slice(2, 7)
   await setVal('[data-test=note-title]', `话题验证 #${TOPIC}`)
-  await setVal('[data-test=note-content]', `正文提到 @xk_ui_follow 也在 #${TOPIC}`)
+  // ⚠️ P30：**@ 必须走候选选择器**，直接往输入框里打 `@用户名` 不再产生提及
+  //（服务端不再解析文本——昵称允许重复，解析就必须在重名时挑一个，
+  //  而挑错人比不 @ 更糟）。这条用例以前是 setVal 写入 @用户名，
+  //  改机制后它会**静默失效**：预览里出现 chip、发布后却没有提及关系。
+  await setVal('[data-test=note-content]', `大家好，`)
+  await s.waitFor("!!document.querySelector('[data-test=note-content]')", '正文框', 10000)
+  await setVal('[data-test=note-content]', `大家好，@xk_ui`)
+  await s
+    .waitFor("document.querySelector('[data-test=mention-opt-xk_ui_follow]')", '出现候选', 15000)
+    .catch(() => false)
+  const pickedInPublish = await s.evaluate(`(() => {
+    const opt = document.querySelector('[data-test=mention-opt-xk_ui_follow]')
+    if (!opt) return false
+    opt.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }))
+    return true
+  })()`)
+  s.check('发布页输入 @ 也弹候选（P30：@ 只能从候选里选）', pickedInPublish === true)
+  await sleep(200)
+  // ⚠️ #话题**仍走文本解析**（P30 只把「提及」切给 id）——
+  // 话题名天然唯一，没有消歧问题，所以直接打就行
+  await setVal('[data-test=note-content]', `大家好，@关注搭子 也在 #${TOPIC}`)
   await s.waitFor(
     "!!document.querySelector('[data-test=note-topics-preview]')",
     '识别预览出现',
@@ -305,7 +325,7 @@ async function setVal(sel, value) {
   })`)
   const pvd = JSON.parse(pv)
   s.check('预览识别出了 #话题', pvd.topics.some((x) => x.includes(TOPIC)), pv)
-  s.check('预览识别出了 @提及', pvd.mentions.some((x) => x.includes('xk_ui_follow')), pv)
+  s.check('预览识别出选中的 @提及（正文里是**昵称**）', pvd.mentions.some((x) => x.includes('关注搭子')), pv)
   s.check(
     '同一个 #话题 标题与正文各写一次，只显示一个 chip（预览去重了）',
     pvd.topics.filter((x) => x.includes(TOPIC)).length === 1,

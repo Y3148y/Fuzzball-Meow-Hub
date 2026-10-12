@@ -56,6 +56,15 @@ public class CommentVO implements Serializable {
     @Schema(description = "创建时间")
     private LocalDateTime createTime;
 
+    /**
+     * 这条评论里 @ 了谁（P29）。
+     *
+     * <p>渲染端靠它把正文里的 {@code @用户名} 变成可点链接。与笔记正文的
+     * {@code mentions} 同一个 VO，但**来源不同**：那边是 commentId=0 的行，
+     * 这边是 comment_id = 本评论 id 的行。
+     */
+    private List<com.xiaoku.module.topic.vo.MentionVO> mentions;
+
     @Schema(description = "子回复列表，只有一级评论会带这个字段")
     private List<CommentVO> replies;
 

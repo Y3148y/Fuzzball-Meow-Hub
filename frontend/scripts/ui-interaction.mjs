@@ -490,8 +490,88 @@ try {
   await s
     .waitFor("document.querySelector('[data-test=note-comment-count]').textContent.trim() === '0'", '详情评论计数归零', 20000)
     .catch(() => false)
-  s.check('删除后详情页评论计数归零（子树一起退掉）', (await num('note-comment-count')) === 0)
-} catch (e) {
+s.check('删除后详情页评论计数归零（子树一起退掉）', (await num('note-comment-count')) === 0)
+
+    /* ============ P29：@ 提及候选选择器 ============ */
+    //
+    // 立项起因是手测反馈「@ 什么都没���，没有候选列表」——用户看得见昵称
+    // 「关注搭子」，却要手打用户名 `xk_ui_follow` 才能 @ 到人。
+    //
+    // ⚠️ 关键前提：**必须切回 demo 身份**。此时登录的是 PEER，而候选列表
+    // 按后端规则排除自己（自己 @ 自己没意义，服务端也会丢），
+    // 所以 PEER 搜 DEMO 是搜不到的 —— 症状是「面板永远是空的」，
+    // 与「组件没接上」长得一模一样。
+    {
+      await loginDemo(s, BASE)
+      await s.goto(`${BASE}/#/note/${noteId}`)
+      await s.waitFor("document.querySelector('[data-test=comment-input]')", '评论输入框', 20000)
+
+      const peerNick = (await s.evaluate(`(async () => {
+        const r = await fetch('/api/search/user?keyword=${PEER.username}', {
+          headers: { Authorization: 'Bearer ' + localStorage.getItem('xk_token') } })
+        const j = await r.json()
+        return j?.data?.[0]?.nickname ?? ''
+      })()`)) ?? ''
+      s.check('候选接口能按用户名搜到搭子', !!peerNick, `nick=${peerNick}`)
+
+      // 断言链接 href 要用对方的 userId —— LoginVO 里**没有** userId（P29 踩过），
+      // 只能从候选接口顺带拿
+      const peerId = (await s.evaluate(`(async () => {
+        const r = await fetch('/api/search/user?keyword=${PEER.username}', {
+          headers: { Authorization: 'Bearer ' + localStorage.getItem('xk_token') } })
+        const j = await r.json()
+        return j?.data?.[0]?.id ?? ''
+      })()`)) ?? ''
+      s.check('候选里带回对方 userId（渲染链接要用）', !!peerId, `id=${peerId}`)
+
+      // 只打一个 @，**停下来** —— 这正是手测反馈描述的动作
+      await setValue('[data-test=comment-input]', '这个 @' + PEER.username.slice(0, 4))
+      await s.waitFor("document.querySelector('[data-test=mention-picker]')", '候选面板弹出', 15000)
+      s.check('输入 @ 后弹出候选面板（原来什么都没有）', true)
+
+      const opts = await s.evaluate(`[...document.querySelectorAll('[data-test^=mention-opt-]')].map(e => e.dataset.test)`)
+      s.check('候选里有搭子这一条', (opts ?? []).some(o => o === 'mention-opt-' + PEER.username),
+        JSON.stringify(opts))
+
+      // ⚠️ **按昵称**也要能搜到：用户记得的是昵称，不是那串拉丁用户名
+      await setValue('[data-test=comment-input]', '这个 @' + peerNick.slice(0, 2))
+      await s.waitFor(
+        `document.querySelector('[data-test=mention-opt-${PEER.username}]')`,
+        '按昵称搜出候选', 15000)
+      s.check('按**昵称**也能搜到（用户记得的是昵称，不是用户名）', true)
+
+      // 选中后要**替换**掉已输入的片段，而不是追加
+      await click(`mention-opt-${PEER.username}`)
+      await s.waitFor(
+        `!document.querySelector('[data-test=mention-picker]')`, '选中后面板收起', 10000)
+      const draftNow = await s.evaluate(`document.querySelector('[data-test=comment-input]').value`)
+      s.check('选中后插入 @用户名，且替换掉刚输入的那段（不追加成 @关@xxx）',
+        draftNow === `这个 @${PEER.username} `,
+        `实际="${draftNow}"`)
+
+      // 发出去，验证渲染成链接（评论正文复用笔记正文的 mentionNodes）
+      await click('comment-submit')
+      await s.waitFor("document.querySelector('[data-test=comment-item]')", '评论出现', 20000)
+      const linkOk = await s.evaluate(`(() => {
+        const a = document.querySelector('[data-test=comment-content] a')
+        return a ? { href: a.getAttribute('href'), text: a.textContent.trim() } : null
+      })()`)
+      s.check('评论里的 @ 渲染成可点链接（点得进对方主页）',
+        !!linkOk && linkOk.href === '#/user/' + peerId && linkOk.text === '@' + peerNick,
+        JSON.stringify(linkOk))
+      // ⚠️ 断言**文本是昵称**而不是用户名，这是有意的：正文里写的是
+      // `@xk_ui_interact`（机器能解析的唯一标识），但给人看的应该是
+      // 「@互动搭子」。mentionNodes 第 43 行就是干这个替换的。
+      // 我第一版断言写成了用户名，红了 —— 改的是断言而不是实现。
+
+      // 清理：这条评论不能留，它会长期给 demo 刷通知
+      await s.evaluate(`document.querySelector('[data-test=comment-delete-btn]')?.click()`)
+      await s.waitFor("document.querySelector('.van-dialog')", '删除确认', 10000)
+      await s.evaluate(`document.querySelector('.van-dialog__confirm').click()`)
+      await s.waitFor("document.querySelector('[data-test=comment-empty]')", '删回空态', 20000)
+      s.check('清理：@ 提及的评论已删除', true)
+    }
+  } catch (e) {
   s.check('用例执行到底', false, String(e.message))
 } finally {
   const allOk = await s.close()

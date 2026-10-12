@@ -52,6 +52,7 @@ public class CommentQueryServiceImpl implements CommentQueryService {
     private final CommentLikeMapper commentLikeMapper;
     private final NoteMapper noteMapper;
     private final UserQueryService userQueryService;
+    private final com.xiaoku.module.topic.service.TopicRelationService topicRelationService;
 
     @Override
     public PageVO<CommentVO> listByNote(Long noteId, int page, int size) {
@@ -99,15 +100,29 @@ public class CommentQueryServiceImpl implements CommentQueryService {
         Map<Long, List<CommentEntity>> repliesByRoot = replies.stream()
                 .collect(Collectors.groupingBy(CommentEntity::getRootCommentId));
 
+        // P29：一次捞出这批评论里的 @ 提及，避免逐条查的 N+1。
+        // 只查**会被渲染出来**的那些（根 + 前 N 条子回复），
+        // 多查的子回复只是白费一次 IN 里的几行。
+        List<CommentEntity> shownChildren = replies.stream()
+                .filter(c -> repliesByRoot.getOrDefault(c.getRootCommentId(), List.of()).stream()
+                        .limit(MAX_REPLIES_PER_ROOT)
+                        .anyMatch(x -> x.getId().equals(c.getId())))
+                .toList();
+        Map<Long, List<com.xiaoku.module.topic.vo.MentionVO>> mentionMap =
+                topicRelationService.commentMentionMap(java.util.stream.Stream
+                        .concat(rootList.stream(), shownChildren.stream())
+                        .map(CommentEntity::getId)
+                        .toList());
+
         List<CommentVO> voList = rootList.stream()
                 .map(root -> {
                     List<CommentEntity> children = repliesByRoot.getOrDefault(root.getId(), List.of());
                     // 子回复只带前 N 条，多出来的靠 replyTotal 告诉前端还有多少
                     List<CommentVO> childVOs = children.stream()
                             .limit(MAX_REPLIES_PER_ROOT)
-                            .map(c -> toVO(c, users, likedIds, currentUserId, null, null))
+                            .map(c -> toVO(c, users, likedIds, currentUserId, null, null, mentionMap))
                             .toList();
-                    return toVO(root, users, likedIds, currentUserId, childVOs, children.size());
+                    return toVO(root, users, likedIds, currentUserId, childVOs, children.size(), mentionMap);
                 })
                 .toList();
 
@@ -128,9 +143,10 @@ public class CommentQueryServiceImpl implements CommentQueryService {
         UserVO replyTo = comment.getReplyUserId() == null || comment.getReplyUserId() == 0L
                 ? null
                 : userQueryService.findUserVO(comment.getReplyUserId());
-        return CommentConverter.toVO(comment,
+return CommentConverter.toVO(comment,
                 userQueryService.findUserVO(comment.getUserId()),
-                replyTo, liked, mine, null, null);
+                replyTo, liked, mine, null, null,
+                topicRelationService.commentMentionMap(List.of(commentId)).get(commentId));
     }
 
     /** 评论读接口也要求登录，但这里是软读：拿不到登录态就当"没人点过赞"，不该 500 */
@@ -140,14 +156,15 @@ public class CommentQueryServiceImpl implements CommentQueryService {
     }
 
     private CommentVO toVO(CommentEntity entity, Map<Long, UserVO> users, Set<Long> likedIds,
-                           Long currentUserId, List<CommentVO> replies, Integer replyTotal) {
+                           Long currentUserId, List<CommentVO> replies, Integer replyTotal,
+                           Map<Long, List<com.xiaoku.module.topic.vo.MentionVO>> mentionMap) {
         UserVO replyTo = entity.getReplyUserId() == null || entity.getReplyUserId() == 0L
                 ? null
                 : users.get(entity.getReplyUserId());
         boolean liked = likedIds.contains(entity.getId());
         boolean mine = currentUserId != null && currentUserId.equals(entity.getUserId());
         return CommentConverter.toVO(entity, users.get(entity.getUserId()), replyTo, liked, mine,
-                replies, replyTotal);
+                replies, replyTotal, mentionMap == null ? null : mentionMap.get(entity.getId()));
     }
 
     /**

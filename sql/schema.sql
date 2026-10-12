@@ -259,10 +259,11 @@ CREATE TABLE `note_mention`
 (
     `id`          BIGINT UNSIGNED NOT NULL COMMENT '雪花ID',
     `note_id`     BIGINT UNSIGNED NOT NULL COMMENT '笔记ID',
+    `comment_id`  BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '评论ID；0=笔记正文提及',
     `user_id`     BIGINT UNSIGNED NOT NULL COMMENT '被提及的用户ID',
     `create_time` DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (`id`),
-    UNIQUE KEY `uk_note_mention` (`note_id`, `user_id`),
+    UNIQUE KEY `uk_note_mention` (`note_id`, `comment_id`, `user_id`),
     KEY `idx_mention_user` (`user_id`)
 ) ENGINE = InnoDB
     DEFAULT CHARSET = utf8mb4

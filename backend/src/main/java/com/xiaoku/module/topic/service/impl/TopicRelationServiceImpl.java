@@ -22,10 +22,13 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Objects;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -89,6 +92,14 @@ public class TopicRelationServiceImpl implements TopicRelationService {
     /** 一篇笔记最多提及几个人 */
     public static final int MAX_MENTIONS = 10;
 
+    /**
+     * 笔记正文提及的 comment_id 哨兵值（P29）。
+     *
+     * <p>为什么不用 NULL：MySQL 唯一索引里 NULL 与 NULL 互不相等，
+     * {@code UNIQUE (note_id, comment_id, user_id)} 会放行重复的正文提及行。
+     */
+    public static final long COMMENT_ID_FOR_NOTE = 0L;
+
     private final TopicMapper topicMapper;
     private final NoteTopicMapper noteTopicMapper;
     private final NoteMentionMapper noteMentionMapper;
@@ -103,9 +114,13 @@ public class TopicRelationServiceImpl implements TopicRelationService {
             return;
         }
         // 先清后插：编辑是全量覆盖语义，关系行跟着全量替换，
-        // 免得「改了正文还留着旧话题」这种残留
+        // 免得「改了正文还留着旧话题」这种残留。
+        // ⚠️ 只清 comment_id=0 的行：评论里的提及（P29）与正文提及共表，
+        // 编辑正文不该把评论的提及关系删掉——那会让评论渲染不出 @ 链接。
         noteTopicMapper.delete(Wrappers.<NoteTopicEntity>lambdaQuery().eq(NoteTopicEntity::getNoteId, noteId));
-        noteMentionMapper.delete(Wrappers.<NoteMentionEntity>lambdaQuery().eq(NoteMentionEntity::getNoteId, noteId));
+        noteMentionMapper.delete(Wrappers.<NoteMentionEntity>lambdaQuery()
+                .eq(NoteMentionEntity::getNoteId, noteId)
+                .eq(NoteMentionEntity::getCommentId, COMMENT_ID_FOR_NOTE));
 
         List<String> topicNames = extractTopicNames(title, content);
         List<Long> topicIds = ensureTopics(topicNames);
@@ -120,6 +135,7 @@ public class TopicRelationServiceImpl implements TopicRelationService {
         for (Long userId : mentionUserIds) {
             NoteMentionEntity row = new NoteMentionEntity();
             row.setNoteId(noteId);
+            row.setCommentId(COMMENT_ID_FOR_NOTE);
             row.setUserId(userId);
             noteMentionMapper.insert(row);
         }
@@ -189,6 +205,70 @@ public class TopicRelationServiceImpl implements TopicRelationService {
         return ids;
     }
 
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void replaceCommentMentions(Long noteId, Long commentId, String content, Long authorId) {
+        if (noteId == null || commentId == null) {
+            return;
+        }
+        // 先清后插：评论目前不支持编辑，所以这里恒为空删；
+        // 留着是为了与 replaceRelations 形状一致，将来加编辑不用改这里。
+        noteMentionMapper.delete(Wrappers.<NoteMentionEntity>lambdaQuery()
+                .eq(NoteMentionEntity::getCommentId, commentId));
+
+        List<Long> mentionUserIds = resolveMentionUserIds(content, authorId);
+        for (Long uid : mentionUserIds) {
+            NoteMentionEntity row = new NoteMentionEntity();
+            row.setNoteId(noteId);
+            row.setCommentId(commentId);
+            row.setUserId(uid);
+            noteMentionMapper.insert(row);
+            notificationService.notifyCommentMention(uid, authorId, noteId, commentId, content);
+        }
+        log.info("评论提及关系已写入 noteId={} commentId={} mentions={}",
+                noteId, commentId, mentionUserIds.size());
+    }
+
+    @Override
+    public void removeCommentRelations(Long commentId) {
+        if (commentId == null) {
+            return;
+        }
+        noteMentionMapper.delete(Wrappers.<NoteMentionEntity>lambdaQuery()
+                .eq(NoteMentionEntity::getCommentId, commentId));
+    }
+
+    @Override
+    public Map<Long, List<MentionVO>> commentMentionMap(Collection<Long> commentIds) {
+        if (commentIds == null || commentIds.isEmpty()) {
+            return Map.of();
+        }
+        List<Long> distinct = commentIds.stream().filter(Objects::nonNull).distinct().toList();
+        if (distinct.isEmpty()) {
+            return Map.of();
+        }
+        List<NoteMentionEntity> rows = noteMentionMapper.selectByCommentIds(distinct);
+        if (rows.isEmpty()) {
+            return Map.of();
+        }
+        Map<Long, UserVO> users = userQueryService.findUserVOMap(
+                rows.stream().map(NoteMentionEntity::getUserId).toList());
+        Map<Long, List<MentionVO>> out = new LinkedHashMap<>();
+        for (NoteMentionEntity r : rows) {
+            UserVO u = users.get(r.getUserId());
+            if (u == null) {
+                continue;   // 作者已注销：跳过，渲染端按纯文本处理
+            }
+            out.computeIfAbsent(r.getCommentId(), k -> new ArrayList<>())
+                    .add(MentionVO.builder()
+                            .id(u.getId())
+                            .nickname(u.getNickname())
+                            .username(u.getUsername())
+                            .build());
+        }
+        return out;
+    }
+
     /**
      * 话题不存在就建，存在就取 id
      *
@@ -248,7 +328,9 @@ public class TopicRelationServiceImpl implements TopicRelationService {
 
     @Override
     public List<MentionVO> listMentions(Long noteId) {
-        List<Long> userIds = noteMentionMapper.selectUserIds(noteId);
+        // ⚠️ 只取**正文**提及（comment_id=0）。评论的提及走 listCommentMentions，
+        // 两者混在一起会让笔记正文里渲染出一堆评论时才出现的 @ 链接。
+        List<Long> userIds = noteMentionMapper.selectUserIds(noteId, COMMENT_ID_FOR_NOTE);
         if (userIds.isEmpty()) {
             return List.of();
         }

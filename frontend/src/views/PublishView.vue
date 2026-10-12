@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import MentionPicker from '@/components/MentionPicker.vue'
+import { useMentionPicker } from '@/composables/useMentionPicker'
 /*
  * 话题/提及的**预览**解析。
  *
@@ -60,6 +62,9 @@ const router = useRouter()
 
 const title = ref('')
 const content = ref('')
+
+/** P29：@ 候选选择器，与详情页评论区共用同一套逻辑（不复制第二份） */
+const mention = useMentionPicker(content, '[data-test=note-content]')
 const files = ref<File[]>([])
 const previews = ref<string[]>([])
 const submitting = ref(false)
@@ -335,14 +340,27 @@ const { markClean } = useUnsavedChanges(
 
       <label class="field">
         <span class="label">正文</span>
-        <textarea
-          v-model="content"
-          class="input area"
-          placeholder="说点什么…"
-          maxlength="2100"
-          data-test="note-content"
-        />
-        <span class="count" :class="{ over: contentLen > 2000 }">{{ contentLen }}/2000</span>
+<textarea
+              v-model="content"
+              class="input area"
+              placeholder="说点什么…"
+              maxlength="2100"
+              data-test="note-content"
+              @input="mention.onDraftInput"
+              @keydown="(e) => mention.onDraftKeydown(e, submit)"
+              @blur="mention.onDraftBlur"
+              @click="mention.syncCaret"
+              @keyup="mention.syncCaret"
+            />
+            <span class="count" :class="{ over: contentLen > 2000 }">{{ contentLen }}/2000</span>
+            <!-- P29：@ 候选选择器。与详情页评论区共用同一个组件。 -->
+            <MentionPicker
+              v-if="mention.showMentionPicker"
+              ref="mention.mentionPickerRef"
+              :text="content"
+              :caret="mention.caret.value"
+              @pick="mention.applyMention"
+            />
       </label>
 
       <!--

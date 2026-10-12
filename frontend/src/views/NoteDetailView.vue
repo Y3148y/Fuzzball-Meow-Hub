@@ -60,6 +60,8 @@ import ReportSheet from '@/components/ReportSheet.vue'
 import { useReportSheet } from '@/composables/useReportSheet'
 import { useShare } from '@/composables/useShare'
 import { blockUser } from '@/api/report'
+import MentionPicker from '@/components/MentionPicker.vue'
+import { useMentionPicker } from '@/composables/useMentionPicker'
 
 const router = useRouter()
 const userStore = useUserStore()
@@ -353,6 +355,14 @@ const canSubmit = computed(
 const draftPlaceholder = computed(() =>
   replyTarget.value ? `回复 @${replyTarget.value.nickname}` : '说点什么…',
 )
+
+/* ================= P29：@ 提及候选选择器 ================= */
+const mention = useMentionPicker(draft, '[data-test=comment-input]')
+
+/** textarea 的 keydown 必须手动转发给选择器（Enter/Tab 在 textarea 里不冒泡） */
+function onDraftKeydown(e: KeyboardEvent) {
+  mention.onDraftKeydown(e, () => void submitComment())
+}
 
 async function loadComments() {
   loadingComments.value = true
@@ -768,7 +778,20 @@ onBeforeUnmount(() => {
               <img class="c-avatar" src="/mascot/m02.webp" alt="" width="28" height="28" />
               <div class="c-main">
               <p class="c-nick">{{ c.nickname }}</p>
-              <p class="c-content" data-test="comment-content">{{ c.content }}</p>
+              <!--
+                    P29：评论正文里的 @ 也渲染成链接。
+                    复用与笔记正文**同一个** mentionNodes —— 两处各写一份
+                    解析必然漂移，而漂移的症状是「某处 @ 能点某处不能」，
+                    没有报错也没有异常外观。
+                    注意 :key 用 index：切片重建出来的节点每次都是新对象，
+                    用 text 做 key 会在内容相同的相邻片段上撞 key。
+                  -->
+                  <p class="c-content" data-test="comment-content">
+                    <template v-for="(seg, si) in mentionNodes(c.content, c.mentions)" :key="si">
+                      <RouterLink v-if="seg.userId" :to="{ name: 'user', params: { id: seg.userId } }">{{ seg.text }}</RouterLink>
+                      <span v-else>{{ seg.text }}</span>
+                    </template>
+                  </p>
               <p class="c-meta">{{ formatDateTime(c.createTime) }}</p>
 
               <div class="c-ops">
@@ -896,6 +919,12 @@ onBeforeUnmount(() => {
             回复 @{{ replyTarget.nickname }}
             <button type="button" data-test="comment-cancel-reply" @click="cancelReply">取消</button>
           </div>
+          <!--
+            P29：输入 @ 弹候选选择器。
+            ⚠️ keydown 必须**手动转发**给选择器 —— textarea 会吞掉 Enter/Tab，
+            冒泡到根上的监听器拿不到它们，所以「在候选里按回车选中」会失效。
+            ⌘/Ctrl+Enter 仍然直接发（是发表，不是选择）。
+          -->
           <textarea
             v-model="draft"
             class="c-input"
@@ -904,6 +933,22 @@ onBeforeUnmount(() => {
             :placeholder="draftPlaceholder"
             :aria-label="replyTarget ? `回复 @${replyTarget.nickname}` : '发表评论'"
             data-test="comment-input"
+@input="mention.onDraftInput"
+            @keydown="onDraftKeydown"
+            @blur="mention.onDraftBlur"
+            @click="mention.syncCaret"
+            @keyup="mention.syncCaret"
+          />
+          <!--
+            挂在这层（position:relative）而不是 body：面板要贴着输入框上方，
+            挂到 body 就得自己算坐标，而输入框会随 ResizeObserver 长高。
+          -->
+          <MentionPicker
+            v-if="mention.showMentionPicker"
+            ref="mention.mentionPickerRef"
+            :text="draft"
+            :caret="mention.caret.value"
+            @pick="mention.applyMention"
           />
           <div v-if="showLen" class="c-len" :class="{ over: draftOver }" data-test="comment-len">
             {{ draftLen }}/{{ COMMENT_MAX }}

@@ -49,5 +49,21 @@ public interface TopicRelationService {
                         java.util.Map<Long, List<TopicVO>> topicMap,
                         java.util.Map<Long, List<MentionVO>> mentionMap);
 
+    /**
+     * 写评论里的 @ 提及关系并给被提及者发通知（P29）。
+     *
+     * <p><b>为什么评论的 @ 以前完全没实现</b>：{@code note_mention} 表原本只有
+     * {@code note_id}，没有「这条提及来自哪条评论」的位置，而 {@code listMentions}
+     * 又只按 noteId 查。症状是用户反馈的「@ 对方后对方后台没有任何提示」——
+     * 接口返回 200、页面看着一切正常，只是<strong>关系行与通知都没写</strong>。
+     */
+    void replaceCommentMentions(Long noteId, Long commentId, String content, Long authorId);
+
+    /** 删评论时清掉它的提及关系行（无外键不级联） */
+    void removeCommentRelations(Long commentId);
+
+    /** 批量取一批评论的提及，供评论列表渲染 @ 链接（避免 N+1） */
+    java.util.Map<Long, List<MentionVO>> commentMentionMap(java.util.Collection<Long> commentIds);
+
 
 }

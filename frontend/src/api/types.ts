@@ -283,6 +283,14 @@ export interface CommentVO {
   content: string
   likeCount: number
   /**
+   * 这条评论里 @ 了谁（P29）。后端在评论创建时写关系行并带在 VO 里，
+   * 前端靠它把正文中的 @用户名 渲染成可点链接。
+   *
+   * <p>没有这个字段时**界面看不出任何异常** —— 那段 @ 只是纯文本、点不了而已。
+   * 所以前端必须容忍 undefined（empty 走纯文本分支），不能直接 .map。
+   */
+  mentions?: MentionVO[]
+  /**
    * 父评论 ID，一级评论为「无」。
    *
    * <p>后端数据库里用 0 当哨兵，但 {@code CommentConverter} 会把 0 转成
@@ -418,4 +426,18 @@ export interface MessageSessionVO {
   lastMessage?: string
   lastTime?: string
   unread: number
+}
+
+/**
+ * 「@ 提及」候选用户（P29）
+ *
+ * <p>后端只给这四个字段：选择器需要的是「认出这个人并插入 @用户名」，
+ * 多给的 bio / 性别 / 粉丝数对选择这个动作没有帮助，带出去只是扩大信息暴露面。
+ */
+export interface UserPickVO {
+  id: SnowflakeId
+  nickname: string
+  /** @ 之后真正插入的就是它（用户名唯一，昵称不唯一） */
+  username: string
+  avatar: Nullable<string>
 }

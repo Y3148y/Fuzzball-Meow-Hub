@@ -25,6 +25,8 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.List;
+
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -43,6 +45,7 @@ public class CommentServiceImpl implements CommentService {
     private final UserQueryService userQueryService;
     private final CommentQueryService commentQueryService;
     private final NotificationService notificationService;
+    private final com.xiaoku.module.topic.service.TopicRelationService topicRelationService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -95,6 +98,16 @@ public class CommentServiceImpl implements CommentService {
         noteMapper.increaseCommentCount(noteId);
 
         /*
+         * 评论里的 @ 提及（P29）。
+         *
+         * ⚠️ 以前**完全没有**这一步，所以用户反馈「@ 对方后对方后台没有任何提示」。
+         * 注意它和下面那条「回复/评论通知」是**两回事**：下面那条发给被回复者或
+         * 笔记作者，而 @ 提及发给**正文里被点名的人** —— 被 @ 的人既不是回复对象
+         * 也未必是笔记作者时，收到的那条必须是 MENTION 类型。
+         */
+        topicRelationService.replaceCommentMentions(noteId, comment.getId(), comment.getContent(), userId);
+
+        /*
          * 通知：回复要给「被回复的人」，非回复要给「笔记作者」。
          * 两种可能重叠（回复自己笔记下别人的评论时，被回复者就是作者），此时只发
          * 「回复」这一条 —— 两条通知指向同一件事，是噪音。
@@ -108,10 +121,12 @@ public class CommentServiceImpl implements CommentService {
             notificationService.notifyComment(note.getUserId(), userId, noteId, comment.getContent());
         }
 
-        return CommentConverter.toVO(comment,
+return CommentConverter.toVO(comment,
                 userQueryService.findUserVO(userId),
                 comment.getReplyUserId() == NO_PARENT ? null : userQueryService.findUserVO(comment.getReplyUserId()),
-                false, true, null, null);
+                false, true, null, null,
+                // 刚发出去的这条要把 @ 渲染成链接，不能等下次拉列表才有
+                topicRelationService.commentMentionMap(List.of(comment.getId())).get(comment.getId()));
     }
 
     @Override
@@ -160,6 +175,12 @@ public class CommentServiceImpl implements CommentService {
         notificationService.retractByTarget(NotificationType.COMMENT_LIKE.code(), commentId);
         notificationService.retractByTarget(NotificationType.COMMENT_REPLY.code(), commentId);
         retractCommentNotificationIfLastOne(comment.getNoteId(), userId);
+
+        // P29：清掉这条评论带出去的 @ 提及关系 + 撤回它产生的 MENTION 通知。
+        // 不清的话「谁 @ 过我」的名单会指向一条已经不存在的评论 ——
+        // 与 P21 修的「通知指向已删笔记」是同一类死链。
+        topicRelationService.removeCommentRelations(commentId);
+        notificationService.retractByTarget(NotificationType.MENTION.code(), commentId);
 
         // ⚠️ 子树的子回复不单独处理：它们是别人发的，通知发给的是「被回复的人」，
         // 不是这里这个 userId。删子树会把那些通知留成死链 ——

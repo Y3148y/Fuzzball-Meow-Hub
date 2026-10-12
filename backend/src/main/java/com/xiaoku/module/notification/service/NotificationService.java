@@ -66,6 +66,20 @@ public interface NotificationService {
     void notifyMention(Long receiverId, Long actorId, Long noteId, String content);
 
     /**
+     * 「在评论里 @ 了我」（P29）。
+     *
+     * <p><b>为什么必须与正文提及分成两个方法</b>：通知的去重键是
+     * {@code uk_notify_once(receiver_id, actor_id, type, target_id)}，
+     * 而正文提及的 {@code target_id} 是 noteId。如果评论提及也用 noteId，
+     * 同一个人在同一篇笔记上「正文 @ 一次 + 评论里 @ 一次」会被判成同一件事，
+     * 只剩一条通知；更糟的是**删评论时撤不掉**——撤的是 noteId，
+     * 把正文那条也一起撤了。这里让 targetId = commentId，两类来源各自独立。
+     *
+     * @param commentId 评论 id，作为通知的 target_id（撤回时按它撤）
+     */
+    void notifyCommentMention(Long receiverId, Long actorId, Long noteId, Long commentId, String content);
+
+    /**
      * 内容被举报（类型 7）
      *
      * @param targetType 1笔记 2评论

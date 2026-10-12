@@ -6,7 +6,9 @@ import com.xiaoku.common.exception.BizException;
 import com.xiaoku.common.result.ErrorCodeEnum;
 import com.xiaoku.module.user.converter.UserConverter;
 import com.xiaoku.module.user.entity.UserEntity;
+import com.xiaoku.module.user.mapper.UserBlockMapper;
 import com.xiaoku.module.user.mapper.UserMapper;
+import com.xiaoku.module.user.vo.UserPickVO;
 import com.xiaoku.module.user.vo.UserVO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -39,6 +41,7 @@ import java.util.stream.Collectors;
 public class UserQueryService {
 
     private final UserMapper userMapper;
+    private final UserBlockMapper userBlockMapper;
 
     /**
      * 按 id 读用户信息，走 Redis 缓存。
@@ -140,5 +143,55 @@ public class UserQueryService {
         }
         return userMapper.selectBatchIds(distinct).stream()
                 .collect(Collectors.toMap(UserEntity::getId, UserConverter::toVO));
+    }
+
+    /**
+     * 按关键词搜「@ 提及」候选用户：<b>昵称与用户名都匹配</b>。
+     *
+     * <p><b>为什么两个字段都搜</b>：界面上到处显示的是昵称（「关注搭子」），
+     * 而 {@code @} 之后真正插入的是用户名（{@code xk_ui_follow}）。
+     * 只搜昵称 → 用户搜「关注搭子」搜得到但插进去是英文，用户困惑；
+     * 只搜用户名 → 用户根本不知道那串英文是什么（P29 立项时用户反馈的
+     * 原话是「我只能看到昵称，只能在主页看到用户名」）。
+     * <b>两个都搜，两个都能命中，选中后一律插入用户名</b>（用户名唯一，
+     * 昵称不唯一）。
+     *
+     * <p><b>排除拉黑</b>：{@code user_block} 双向生效（P18），拉黑的人不该
+     * 出现在对方的候选列表里 —— 那等于「我藏了你，但你还能搜到我」。
+     *
+     * <p><b>排除自己</b>：服务端 {@code resolveMentionUserIds} 本来就会丢掉
+     * 自己（自己提醒自己没意义），候选里还列出来只会让人点了没反应。
+     *
+     * <p><b>排除已注销/禁用账号</b>：否则会出现「搜得到但发出去解析不出」
+     * 的鬼影 —— 发布不报错、@ 也渲染不出来，只有界面看不出异常。
+     *
+     * <p><b>刻意不加缓存</b>：搜索结果随昵称修改即时变化，缓存会让「刚改的
+     * 昵称搜不到」，而这正是这个功能最容易踩的坑。
+     */
+    public List<UserPickVO> searchForMention(String keyword, Long viewerId, int limit) {
+        String kw = keyword == null ? "" : keyword.trim();
+        if (kw.isEmpty()) {
+            return List.of();
+        }
+        List<Long> hidden = viewerId == null
+                ? List.of()
+                : userBlockMapper.selectHiddenUserIds(viewerId);
+        List<UserEntity> rows = userMapper.selectList(Wrappers.<UserEntity>lambdaQuery()
+                .select(UserEntity::getId, UserEntity::getUsername,
+                        UserEntity::getNickname, UserEntity::getAvatar)
+                .and(w -> w.like(UserEntity::getNickname, kw).or().like(UserEntity::getUsername, kw))
+                .eq(UserEntity::getDeleted, 0)
+                .eq(UserEntity::getStatus, 1)
+                .ne(UserEntity::getId, viewerId)
+                .last("LIMIT " + Math.max(1, Math.min(limit, 20))));
+        if (!hidden.isEmpty()) {
+            rows = rows.stream().filter(u -> !hidden.contains(u.getId())).toList();
+        }
+        return rows.stream().map(u -> UserPickVO.builder()
+                .id(u.getId())
+                .username(u.getUsername())
+                .nickname(u.getNickname())
+                .avatar(u.getAvatar())
+                .build()).toList();
     }
 }

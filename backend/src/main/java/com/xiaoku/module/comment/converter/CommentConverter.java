@@ -45,7 +45,8 @@ public final class CommentConverter {
      */
     public static CommentVO toVO(CommentEntity entity, UserVO author, UserVO replyTo,
                                  boolean liked, boolean mine, List<CommentVO> replies,
-                                 Integer replyTotal) {
+                                 Integer replyTotal,
+      java.util.List<com.xiaoku.module.topic.vo.MentionVO> mentions) {
         if (entity == null) {
             return null;
         }
@@ -62,8 +63,9 @@ public final class CommentConverter {
                 .liked(liked)
                 .mine(mine)
                 .createTime(entity.getCreateTime())
-                .replies(replies)
+.replies(replies)
                 .replyTotal(replyTotal)
+                .mentions(mentions)
                 .build();
     }
 }

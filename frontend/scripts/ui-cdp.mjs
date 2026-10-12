@@ -290,6 +290,19 @@ export async function createSession({ name = 'ui', port } = {}) {
 export async function loginDemo(s, base, { attempts = 3, onFilled } = {}) {
   for (let attempt = 1; ; attempt++) {
     if ((await s.evaluate('location.hash')) === '#/') return true
+    /*
+      ⚠️ 提前返回只看 `hash === '#/'` **不够**（P29 踩到）：
+      在 `#/note/123` 这种**已登录**的页面上调用本 helper 时，hash 不是 '#/'，
+      于是照常 goto `#/login` —— 而 `guestOnly` 守卫会把已登录用户弹回首页，
+      `.demo` 按钮永远不出现，报的是「超时：演示账号按钮」，
+      看起来像「登录接口坏了」，与真因隔了整整一层。
+
+      做法：清掉 token 让守卫放行。⚠️ 但**必须先导航到应用域名再清** ——
+      会话初始停在 about:blank，那是「不透明源」，读 localStorage 直接抛
+      SecurityError（AGENTS P21/P22 都记过这一条）。
+    */
+    await s.goto(`${base}/#/`)
+    await s.evaluate("localStorage.removeItem('xk_token')")
     await s.goto(`${base}/#/login`)
     await s.waitFor("document.querySelector('.demo')", '演示账号按钮', 20000)
     await s.evaluate("document.querySelector('.demo').click()")

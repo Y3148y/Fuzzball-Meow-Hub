@@ -285,6 +285,14 @@ public class NotificationServiceImpl implements NotificationService {
     }
 
     @Override
+    public void notifyCommentMention(Long receiverId, Long actorId, Long noteId,
+                                     Long commentId, String content) {
+        // targetId 用 commentId 而不是 noteId，理由见接口注释：
+        // 与正文提及共用 noteId 会撞去重键，而且删评论时撤不掉
+        push(receiverId, actorId, NotificationType.MENTION, commentId, noteId, excerpt(content));
+    }
+
+    @Override
     public void notifyReported(Long receiverId, Long actorId, Long targetId,
                                Integer targetType, String reasonText) {
         // 拉黑关系不在这条通知里体现：被拉黑的人不该收到「XX 举报了你」。

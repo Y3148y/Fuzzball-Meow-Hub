@@ -28,6 +28,19 @@ let passed = 0
 let failed = 0
 const failures = []
 
+/**
+ * 记一条断言。
+ *
+ * <p><b>必须 return condition</b>（P29 抓到的真 bug）：
+ * 调用方大量使用 `if (!check('前置', cond)) { 跳过 } else { 真正的断言 }`，
+ * 而 check 原本**没有 return**，返回 undefined —— `!undefined` 恒为 true，
+ * 于是「前置不满足就跳过」的分支永远被选中，整段断言**一次都没跑过**，
+ * 而汇总照样显示全绿。
+ *
+ * <p>症状极具迷惑性：段首那条 PASS 正常打印，后面一条都没有，
+ * 而总数只多了「段首那一条」的数量（P22 私信段当时只贡献了 2 条，
+ * 正好是段首的两个 check）。
+ */
 function check(name, condition, detail = '') {
   if (condition) {
     passed++
@@ -37,6 +50,8 @@ function check(name, condition, detail = '') {
     failures.push(name)
     console.log(`FAIL  ${name}${detail ? '  ' + detail : ''}`)
   }
+  // ← 没有这一行，下面的 if/else 全都走错分支
+  return !!condition
 }
 
 function eq(name, actual, expected) {
@@ -1899,7 +1914,6 @@ async function main() {
     codeIs('审核段落用完的笔记已删除', rm, 0)
   }
 
-
   // ---- 17.8 P16「谁赞了/ 谁收藏了」：GET /api/note/{id}/likes | collects
   //
   // 为什么值得单独一段：计数与名单是两件事。计数只能给人一个数字，
@@ -2826,9 +2840,12 @@ async function main() {
 
       const hist = (await get(`/api/message/history?withUserId=${idM2}&page=1&size=50`, { token: tM1 })).json?.data
       eq('历史总数 +2（两条）', hist?.total, baseTotal + 2)
-      const lastTwo = (hist?.list ?? []).slice(-2)
-      eq('聊天记录按时间正序（最早在前）', lastTwo.map((m) => m.content),
-        [`P22 第一条 ${stamp}`, `P22 回复 ${stamp}`])
+const lastTwo = (hist?.list ?? []).slice(-2)
+    // ⚠️ 不能直接 `eq(name, arr, arr)`：eq 用 `===` 比较，而两个内容相同的
+    // **数组**引用也永远不相等 —— 期望与实际打印出来一模一样却判 FAIL。
+    // 要比数组就比它的 JSON 串。
+    eq('聊天记录按时间正序（最早在前）', JSON.stringify(lastTwo.map((m) => m.content)),
+      JSON.stringify([`P22 第一条 ${stamp}`, `P22 回复 ${stamp}`]))
       check('每条都带 senderId（前端靠它决定左右气泡）',
         lastTwo.every((m) => typeof m.senderId === 'string'), JSON.stringify(lastTwo.map((m) => m.senderId)))
 
@@ -2841,23 +2858,36 @@ async function main() {
       eq('M2 未读不受影响（不能替对方点已读）',
         (await get('/api/message/unread-count', { token: tM2 })).json?.data, baseM2Unread + 1)
       const histAfterRead = (await get(`/api/message/history?withUserId=${idM2}&page=1&size=50`, { token: tM1 })).json?.data
-      const readFlags = (histAfterRead?.list ?? []).slice(-2).map((m) => m.isRead)
-      check('我收到的那些被标已读', readFlags.every((r) => r === 1), JSON.stringify(readFlags))
+      // ⚠️ **必须按方向过滤**（P29 抓到）：本段的最后两条里，「第一条」是 M1
+      // 自己发的，「回复」才是 M2 发给 M1 的。M1 点已读**只该**标后一条 ——
+      // 前面刚断言过「不能替对方点已读」，这里却不按 senderId 过滤，
+      // 于是自己发的那条 isRead=0 被算成失败，**与上一行自相矛盾**。
+      const receivedFlags = (histAfterRead?.list ?? [])
+        .filter((m) => m.senderId === idM2)
+        .map((m) => m.isRead)
+      check('我收到的那些被标已读（自己发的不算）',
+        receivedFlags.length > 0 && receivedFlags.every((r) => r === 1),
+        JSON.stringify(receivedFlags))
       // 重复已读必须幂等：返回 0 而不是报错
       eq('重复已读返回 0（幂等，不是负数也不是报错）',
         (await post(`/api/message/read-all?withUserId=${idM2}`, { token: tM1 })).json?.data, 0)
 
       /* ---------- 拉黑互禁 ---------- */
 
+      // ⚠️ **必须先真的拉黑**，否则下面两条断言永远拿到 code=0
+      // （P29 抓到的：这一段因为 check() 的返回 bug 整段从未执行过，
+      //   于是「创建拉黑」这一步从没写，断言却已经在期望 50004 ——
+      //   结构上就不可能通过，只是从来没机会红。）
+      const blkM = await post(`/api/user/block/${idM2}`, { token: tM1 })
+      eq('拉黑本身成功', blkM.json?.code, 0)
       // ⚠️ 错误码刻意不区分是谁拉黑了谁，这里钉的是「发不出去」这个结果
       eq('拉黑对方后发消息被拒（50004）',
         (await post('/api/message/send', { token: tM1, body: { toUserId: idM2, content: '还能发吗' } })).json?.code, 50004)
       // 拉黑必须是双向的：对方拉黑我，我也发不出去
       eq('对方拉黑我后我也发不出去（拉黑双向生效）',
-        (await post('/api/message/send', { token: tM1, body: { toUserId: idM2, content: '换个方向' } })).json?.code, 50004)
-      // ⚠️ 清理必须放进 finally —— 否则下面的解除拉黑一旦崩在断言里，
-      // 拉黑会永久留在库里，而它会污染 ui-follow / ui-search / ui-notification
-      // 三个组（见 AGENTS P21 段记录的「一个残留拉黑让三组同时变红」）
+        (await post('/api/message/send', { token: tM2, body: { toUserId: idM1, content: '换个方向' } })).json?.code, 50004)
+      // ⚠️ 清理必须无条件执行 —— 拉黑会污染 ui-follow / ui-search /
+      // ui-notification 三个组（见 AGENTS P21「一个残留拉黑让三组同时变红」）
       await del(`/api/user/block/${idM2}`, { token: tM1 })
       eq('解除拉黑后又能发了',
         (await post('/api/message/send', { token: tM1, body: { toUserId: idM2, content: `P22 收尾 ${stamp}` } })).json?.code, 0)
@@ -2866,18 +2896,140 @@ async function main() {
 
       // ⚠️ 50005 与「被拉黑」刻意同码：告诉对方「会话不存在」等于
       // 告诉他「你被屏蔽了」，那会把普通屏蔽变成社交对抗（与 P18 同一原则）
-      const noSession = await get('/api/message/history?withUserId=' + idM1, { token: tM2 })
-      eq('不存在与自己之间的会话 → 50005', noSession.json?.code, 50005)
+      //
+      // ⚠️ 这里**不能用 M1 自己问 M1**：两个 fixture 之间已经有历史会话
+      //（53 条，且 ui-message 每轮都在发），拿有会话的组合去断言 50005
+      // 永远拿不到 —— 那条旧断言就是踩了这个坑写成的。
+      // 改用**从未与 M1 通过私信的第三个账号**。
+      const lM3 = await post('/api/user/login', { body: { username: 'xk_ui_interact', password: 'Xk@2026peer' } })
+      const idM3 = (await get('/api/user/me', { token: `Bearer ${lM3.json?.data?.accessToken}` })).json?.data?.id
+      if (check('第三个 fixture（从未与 M1 通过私信）就绪', !!idM3, `idM3=${idM3}`)) {
+        const noSession = await get(`/api/message/history?withUserId=${idM3}`, { token: tM1 })
+        eq('与对方从未通过私信 → 查历史 50005', noSession.json?.code, 50005)
+      }
     }
   }
 
   // ---- 汇总
+  /* ================================================================
+   * 23. P29 @ 提及：搜用户候选 + 评论里的 @
+   *
+   * 立项起因是 2026-10-11 的两条手测反馈：
+   *   「@ 什么都没���，没有候选列表」
+   *   「@ 对方后对方后台没有任何提示」
+   *
+   * ⚠️ 第二条的真因**不是**通知坏了，而是**评论里的 @ 从来没实现**：
+   * note_mention 表原本只有 note_id，没有「这条提及来自哪条评论」的位置，
+   * 而 listMentions 只按 noteId 查 —— 关系行与通知都没地方写。
+   * 所以「笔记正文里的 @ 会发通知，评论里的 @ 什么都不发生」。
+   *
+   * 本段同样**不注册新账号**（register 10/min/IP，本文件已注册 4 个），
+   * 复用 xk_ui_smoke / xk_ui_follow 两个常驻 fixture（同 22 段）。
+   * ================================================================ */
+  {
+    // ⚠️ 口令**各不相同**，别抄错：xk_ui_smoke 是 Xk@123456，
+    // xk_ui_follow / xk_ui_interact / xk_ui_admin 是 Xk@2026peer。
+    // 写错的后果不是「登录失败」这么直白 —— 拿到的是 undefined，
+    // 于是后面**每一条**请求都带着 `Bearer undefined` 去打，
+    // 全部返 10005/10006「凭证无效」，整段假红且症状完全指不到原因。
+    const lA = await post('/api/user/login', { body: { username: 'xk_ui_smoke', password: 'Xk@123456' } })
+    const lB = await post('/api/user/login', { body: { username: 'xk_ui_follow', password: 'Xk@2026peer' } })
+    const tA = `Bearer ${lA.json?.data?.accessToken}`
+    const tB = `Bearer ${lB.json?.data?.accessToken}`
+    const idB = (await get('/api/user/me', { token: tB })).json?.data?.id
+    if (!check('P29 两个 fixture 都能登录', !!tA && !!tB && !!idB, `A=${!!tA} B=${!!tB} idB=${idB}`)) {
+      // 拿不到就往下跑只会得到一串「参数为 null」的连锁假红
+    } else {
+      /* ---------- ① 搜用户候选：昵称与用户名都要能搜到 ---------- */
+      // ⚠️ 用户在界面上只看得见昵称（「关注搭子」），要 @ 对方得打用户名
+      // （xk_ui_follow）。**两个字段都得能搜到**，否则用户根本无从下手。
+      const byNick = await get(`/api/search/user?keyword=${encodeURIComponent('关注搭子')}`, { token: tA })
+      check('P29 按**昵称**能搜到候选', byNick.json?.code === 0
+        && byNick.json?.data?.some((u) => u.username === 'xk_ui_follow'),
+        JSON.stringify(byNick.json?.data?.map((u) => u.username)))
+      const byUser = await get('/api/search/user?keyword=xk_ui_follow', { token: tA })
+      check('P29 按**用户名**能搜到候选', byUser.json?.code === 0
+        && byUser.json?.data?.some((u) => u.username === 'xk_ui_follow'),
+        JSON.stringify(byUser.json?.data?.map((u) => u.username)))
+
+      /* ---------- ② 排除自己与已拉黑 ---------- */
+      const bySelf = await get('/api/search/user?keyword=xk_ui_smoke', { token: tA })
+      check('P29 搜不到自己（自己 @ 自己没意义，服务端也会丢）',
+        bySelf.json?.code === 0 && !bySelf.json?.data?.some((u) => u.username === 'xk_ui_smoke'),
+        JSON.stringify(bySelf.json?.data?.map((u) => u.username)))
+      await post(`/api/user/block/${idB}`, { token: tA })
+      const afterBlock = await get('/api/search/user?keyword=xk_ui_follow', { token: tA })
+      check('P29 拉黑后搜不到对方（user_block 双向生效，选子里也不该出现）',
+        !afterBlock.json?.data?.some((u) => u.username === 'xk_ui_follow'),
+        JSON.stringify(afterBlock.json?.data?.map((u) => u.username)))
+      await del(`/api/user/block/${idB}`, { token: tA })
+
+      /* ---------- ③ 字段最小化 ---------- */
+      const one = byNick.json?.data?.[0]
+      check('P29 候选只给 id/nickname/username/avatar（不泄露 bio 等）',
+        !!one && Object.keys(one).every((k) => ['id', 'nickname', 'username', 'avatar'].includes(k)),
+        JSON.stringify(Object.keys(one ?? {})))
+
+      /* ---------- ④ 评论里的 @ 要真发通知 ---------- */
+      const bNotes = await get(`/api/note/user/${idB}?page=1&size=1`, { token: tA })
+      const bNoteId = bNotes.json?.data?.list?.[0]?.id
+      if (!check('P29 取到 fixture 名下的一篇笔记作为评论目标', !!bNoteId,
+        JSON.stringify(bNotes.json).slice(0, 120))) {
+        // 拿不到笔记就没法评论
+      } else {
+        const unreadBefore = (await get('/api/notification/unread-count', { token: tB })).json?.data ?? 0
+        const cm = await post('/api/comment', {
+          token: tA,
+          body: { noteId: bNoteId, content: `P29 契约：同问，@xk_ui_follow 这个怎么弄？` },
+        })
+        const commentId = cm.json?.data?.id
+        check('P29 在他人笔记下评论并 @ 对方', cm.json?.code === 0,
+          `code=${cm.json?.code} ${JSON.stringify(cm.json?.message ?? '')}`)
+
+        // ⚠️ 这里**不是 +1**：在别人的笔记下评论会让对方收到两条
+        //   ① COMMENT「XX 评论了你的笔记」 ② MENTION「在笔记里提到了我」
+        // 两条都是被承诺的行为，所以只断言「变多了」，
+        // 精确的那条由下面的 type===6 钉。
+        const unreadAfter = (await get('/api/notification/unread-count', { token: tB })).json?.data ?? 0
+        check('P29 对方未读通知变多（评论通知 + 提及通知）', unreadAfter > unreadBefore,
+          `before=${unreadBefore} after=${unreadAfter}`)
+
+        const nlist = await get('/api/notification/list?onlyUnread=true', { token: tB })
+        // ⚠️ 通知列表是 PageVO（{list,total}）不是数组；直接 data.find 会报
+        // 「list.find is not a function」——症状离「接口坏了」隔了一层
+        const rows = nlist.json?.data?.list ?? []
+        const mention = rows.find((n) => n.type === 6)
+        check('P29 通知里有 MENTION 类型（type=6）', !!mention,
+          JSON.stringify(rows.map((n) => n.type)))
+        check('P29 MENTION 通知指向这条评论所在的笔记', mention?.noteId === bNoteId,
+          `noteId=${mention?.noteId} 期望=${bNoteId}`)
+
+        /* ---------- ⑤ 关系行写进去了（渲染 @ 链接的依据）---------- */
+        const clist = await get(`/api/comment/list?noteId=${bNoteId}&page=1&size=20`, { token: tB })
+        const mine = (clist.json?.data?.list ?? []).find((c) => c.id === commentId)
+        check('P29 评论 VO 带 mentions（前端靠它把 @ 渲染成链接）',
+          Array.isArray(mine?.mentions) && mine.mentions.some((m) => m.username === 'xk_ui_follow'),
+          JSON.stringify(mine?.mentions))
+        check('P29 mentions 同时带 username（正文里写的是它，不是昵称）',
+          mine?.mentions?.[0]?.username === 'xk_ui_follow' && !!mine?.mentions?.[0]?.nickname,
+          JSON.stringify(mine?.mentions?.[0]))
+
+        /* ---------- ⑥ 删评论要撤通知 + 清关系行 ---------- */
+        await del(`/api/comment/${commentId}`, { token: tA })
+        const unreadAfter2 = (await get('/api/notification/unread-count', { token: tB })).json?.data ?? 0
+        check('P29 删评论后对方未读回落（否则通知指向已删评论）',
+          unreadAfter2 < unreadAfter, `before=${unreadAfter} after=${unreadAfter2}`)
+      }
+    }
+  }
+
   const total = passed + failed
   console.log(`\n===== ${passed}/${total} 通过 =====`)
   if (failed > 0) {
     console.log(`失败用例：\n${failures.map((f) => '  - ' + f).join('\n')}`)
     process.exit(1)
   }
+
   // 本脚本只走 HTTP，没有删用户/删笔记接口，跑完会留下测试账号与测试笔记。
   // 这里直接把清理 SQL 打出来，省得下次翻聊天记录找。
   //

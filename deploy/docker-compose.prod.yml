@@ -180,7 +180,12 @@ services:
       elasticsearch:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8088/api/system/ping || exit 1"]
+      # ⚠️ 用 wget 而不是 curl：curl 在这个基础镜像里**不是自带的**，是
+      # `apt-get install curl` 装上去的，而 archive.ubuntu.com 在部分网络下 502
+      # （AGENTS 8.2 墙③）。wget 是基础镜像自带的，于是后端镜像的构建
+      # 完全不依赖 apt —— 少一个构建期网络依赖，比换 apt 源可靠得多。
+      # 前端那条（L210）本来就是 wget，这里也一并统一了。
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8088/api/system/ping || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 10

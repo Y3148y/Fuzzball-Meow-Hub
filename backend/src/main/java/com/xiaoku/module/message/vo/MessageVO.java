@@ -38,6 +38,20 @@ public class MessageVO implements Serializable {
     @Schema(description = "消息正文")
     private String content;
 
+    /**
+     * 消息类型：1 文本 2 图片（P32）
+     *
+     * <p>前端按它决定渲染「气泡」还是「缩略图」。
+     * ⚠️ 缺省输出 1 而不是 null —— {@code non_null} 策略下 null 会整个从 JSON 里消失，
+     * 而前端 {@code type ?? 1} 与「字段缺失」两条路都要写，收益为零。
+     */
+    @Schema(description = "消息类型：1 文本 2 图片")
+    private Integer type;
+
+    /** 图片 URL，仅 type=2 有值 */
+    @Schema(description = "图片 URL，仅图片消息有值")
+    private String imageUrl;
+
     @Schema(description = "0未读 1已读（接收方视角）")
     private Integer isRead;
 

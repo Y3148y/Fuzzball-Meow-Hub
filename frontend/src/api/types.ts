@@ -419,6 +419,16 @@ export interface MessageVO {
   senderId: SnowflakeId
   receiverId: SnowflakeId
   content: string
+  /**
+   * 消息类型：1 文本 2 图片（P32）
+   *
+   * <p>⚠️ 非可选：后端 `toVO` 显式兜成 1，所以这个字段**永远存在**。
+   * 写成 `1 | 2 | undefined` 会让每个渲染处都要再兜一次，
+   * 而漏掉的那一处表现为「图片消息渲染成空白气泡」——界面看不出异常。
+   */
+  type: 1 | 2
+  /** 图片 URL，仅 type=2 有值 */
+  imageUrl?: string
   isRead: 0 | 1
   createTime: string
 }

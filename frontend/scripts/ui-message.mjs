@@ -195,12 +195,18 @@ try {
   s.check('对方气泡带头像', av.hasImg, JSON.stringify(av))
   s.check('头像尺寸 ≥32px（P13 热区下限的一半，气泡内缩略）', av.imgW >= 32, JSON.stringify(av))
   s.check('自己这侧用等宽占位（否则两侧气泡左右不对称）', av.hasGhost, JSON.stringify(av))
-  // ⚠️ 头像必须在气泡**左边**（对方侧）—— 占位放错边的话头像会跑到气泡中间
+  // ⚠️ 头像必须在气泡**左边**（对方侧）—— 占位放错边的话头像会跑到气泡中间。
+  //
+  // ⚠️ 取 `.bub, .thumb` 而不是只 `.bub`：P32 加了图片消息，而**图片行没有 .bub**
+  // （渲染成缩略图）。只查 .bub 时，一旦对方最新一条恰好是图片消息，
+  // `row.querySelector('.bub')` 就是 null，整条断言会 NPE 崩掉脚本 ——
+  // 症状是「后面的用例全没跑」，真因隔了十几行。
   const peerRow = await s.evaluate(`(() => {
     const row = document.querySelector('[data-test=message-row-peer]')
+    if (!row) return null
     const a = row.querySelector('[data-test=message-avatar]')?.getBoundingClientRect()
-    const b = row.querySelector('.bub')?.getBoundingClientRect()
-    return a && b ? Math.round(b.left - a.left) : null
+    const body = row.querySelector('.bub, .thumb')?.getBoundingClientRect()
+    return a && body ? Math.round(body.left - a.left) : null
   })()`)
   s.check('头像在气泡左边（位置而非仅存在）', peerRow !== null && peerRow > 0, `dx=${peerRow}`)
 
@@ -251,7 +257,7 @@ try {
       const top = el.getBoundingClientRect().top
       for (const r of el.querySelectorAll('[data-test=message-row-me],[data-test=message-row-peer]')) {
         if (r.getBoundingClientRect().bottom > top + 1) {
-          window.__p31anchor = r.querySelector('.bub').textContent.trim().slice(0, 24)
+          window.__p31anchor = r.getAttribute('data-msg-anchor')
           return true
         }
       }
@@ -274,7 +280,7 @@ try {
       const el = document.querySelector('[data-test=message-scroller]')
       const box = el.getBoundingClientRect()
       const all = Array.from(el.querySelectorAll('[data-test=message-row-me],[data-test=message-row-peer]'))
-      const idx = all.findIndex((r) => r.querySelector('.bub').textContent.trim().slice(0, 24) === window.__p31anchor)
+      const idx = all.findIndex((r) => r.getAttribute('data-msg-anchor') === window.__p31anchor)
       if (idx < 0) return { found: false }
       const rc = all[idx].getBoundingClientRect()
       return { found: true, dy: Math.round(rc.top - box.top), inView: rc.top < box.bottom && rc.bottom > box.top }
@@ -297,14 +303,14 @@ try {
       const top = el.getBoundingClientRect().top
       for (const r of el.querySelectorAll('[data-test=message-row-me],[data-test=message-row-peer]')) {
         const rc = r.getBoundingClientRect()
-        if (rc.bottom > top + 1) { window.__p31mid = r.querySelector('.bub').textContent.trim().slice(0, 24); break }
+        if (rc.bottom > top + 1) { window.__p31mid = r.getAttribute('data-msg-anchor'); break }
       }
       return window.__p31mid ?? null
     })()`)
     const midBefore = await s.evaluate(`(() => {
       const el = document.querySelector('[data-test=message-scroller]')
       const all = Array.from(el.querySelectorAll('[data-test=message-row-me],[data-test=message-row-peer]'))
-      const i = all.findIndex((r) => r.querySelector('.bub').textContent.trim().slice(0, 24) === window.__p31mid)
+      const i = all.findIndex((r) => r.getAttribute('data-msg-anchor') === window.__p31mid)
       return i < 0 ? null : Math.round(all[i].getBoundingClientRect().top - el.getBoundingClientRect().top)
     })()`)
     await click('message-load-more')
@@ -312,7 +318,7 @@ try {
     const midAfter = await s.evaluate(`(() => {
       const el = document.querySelector('[data-test=message-scroller]')
       const all = Array.from(el.querySelectorAll('[data-test=message-row-me],[data-test=message-row-peer]'))
-      const i = all.findIndex((r) => r.querySelector('.bub').textContent.trim().slice(0, 24) === window.__p31mid)
+      const i = all.findIndex((r) => r.getAttribute('data-msg-anchor') === window.__p31mid)
       if (i < 0) return null
       const dy = Math.round(all[i].getBoundingClientRect().top - el.getBoundingClientRect().top)
       const b = all[i].getBoundingClientRect(), bx = el.getBoundingClientRect()
@@ -453,6 +459,126 @@ try {
   const stillFailed = await exists('message-failed-bubble')
   s.check('重发后消息真的发出去了（不再是失败态）', sentNow && !stillFailed,
     `sent=${sentNow} failed=${stillFailed}`)
+
+  /* ---------- 4f. P32：图片消息 ---------- */
+
+  await s.goto(BASE + `/#/message/${idFollow}`)
+  await s.waitFor("document.querySelector('[data-test=message-row-me], [data-test=message-empty]')",
+    '聊天页（图片段）', 20000)
+
+  s.check('有「发送图片」按钮', await exists('message-image-pick'), 'message-image-pick 不存在')
+  const pickBox = await s.evaluate(`(() => {
+    const r = document.querySelector('[data-test=message-image-pick]').getBoundingClientRect()
+    return { w: Math.round(r.width), h: Math.round(r.height) }
+  })()`)
+  s.check('图片按钮热区 ≥40px（P13）', pickBox.w >= 40 && pickBox.h >= 40, JSON.stringify(pickBox))
+  const iconOk = await s.evaluate(`(() => {
+    const el = document.querySelector('[data-test=message-image-pick] i.van-icon')
+    if (!el) return false
+    return getComputedStyle(el, '::before').content !== 'none'
+  })()`)
+  s.check('图片按钮的图标有字形（名字写错会渲染成空心圆）', iconOk)
+
+  // ⚠️ file input 必须是**隐藏但可点**的：用 display:none 的话
+  // click() 在部分浏览器不触发，而那正是我们唯一的触发路径。
+  const fileUsable = await s.evaluate(`(() => {
+    const el = document.querySelector('[data-test=message-file]')
+    if (!el) return null
+    const st = getComputedStyle(el)
+    return { display: st.display, visibility: st.visibility, accept: el.getAttribute('accept') }
+  })()`)
+  s.check('file input 存在且不是 display:none',
+    fileUsable && fileUsable.display !== 'none', JSON.stringify(fileUsable))
+  s.check('accept 限死了四种位图格式',
+    fileUsable && /image\/(png|jpeg|gif|webp)/.test(fileUsable.accept ?? ''),
+    JSON.stringify(fileUsable))
+
+  // 用 DOM 注入一个 File 并派发 change —— 真机上要过文件选择器，CDP 里做不到
+  //
+  // ⚠️ 必须是**完整**的 PNG（含 IEND 块）。第一版抄了契约测试里的 TINY_PNG，
+  // 那个是**截断的** —— 它只用来过服务端的内容类型白名单，从不需要解码。
+  // 于是 <img> 解码失败、naturalWidth=0，缩略图断言假红，
+  // 而症状是「图片没显示出来」，与「上传的字节不完整」隔了两层。
+  // 下面是手写的 1×1 红点：IHDR + IDAT(zlib) + IEND，69 字节。
+  await s.evaluate(`(() => {
+    const el = document.querySelector('[data-test=message-file]')
+    const b64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC'
+    const bin = atob(b64)
+    const arr = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i)
+    const file = new File([arr], 'p32.png', { type: 'image/png' })
+    const dt = new DataTransfer()
+    dt.items.add(file)
+    el.files = dt.files
+    el.dispatchEvent(new Event('change', { bubbles: true }))
+    return true
+  })()`)
+  await s.waitFor("document.querySelector('[data-test=message-image]')", '图片消息上屏', 20000)
+  s.check('选图后图片消息上屏', await exists('message-image'), 'message-image 不存在')
+
+  const thumbBox = await s.evaluate(`(() => {
+    const r = document.querySelector('[data-test=message-image]').getBoundingClientRect()
+    const img = document.querySelector('[data-test=message-image] img')
+    return { w: Math.round(r.width), h: Math.round(r.height), nat: img ? img.naturalWidth : 0 }
+  })()`)
+  s.check('缩略图有尺寸', thumbBox.w > 80 && thumbBox.h > 80, JSON.stringify(thumbBox))
+  s.check('缩略图热区 ≥40px（P13）', thumbBox.w >= 40 && thumbBox.h >= 40, JSON.stringify(thumbBox))
+  // 图片消息**不该**同时渲染成文字气泡 —— 两者互斥。
+  // 量的是**缩略图那一行**（不是整页）：上一条文本消息本来就有 .bub。
+  const mutual = await s.evaluate(`(() => {
+    const row = document.querySelector('[data-test=message-image]').closest('li')
+    return !!row && !row.querySelector('.bub')
+  })()`)
+  // ⚠️ **必须等 decode() 完成再量 naturalWidth**：解码完成前它就是 0，
+  // 于是「图没显示出来」与「量得太早」长得一模一样（AGENTS P12-C 记过同一个坑）。
+  // ⚠️ decode() 必须带超时兜底：对一张**永远不进入视口**的图（懒加载、
+  //   或者 src 指向了 404），decode() 既不 resolve 也不 reject，
+  //   而 Runtime.evaluate 的 awaitPromise 会跟着一起挂住 —— 症状是「测试卡死」，
+  //   与「那张图有问题」之间没有任何提示。
+  const decoded = await s.evaluate(`(() => {
+    const img = document.querySelector('[data-test=message-image] img')
+    if (!img) return Promise.resolve({ ok: false, why: 'no img' })
+    if (img.complete && img.naturalWidth > 0) {
+      return Promise.resolve({ ok: true, nat: img.naturalWidth })
+    }
+    const t = new Promise((res) => setTimeout(() => res({ ok: false, why: 'timeout', nat: img.naturalWidth }), 8000))
+    return Promise.race([
+      img.decode().then(() => ({ ok: true, nat: img.naturalWidth })).catch((e) => ({ ok: false, why: String(e), nat: img.naturalWidth })),
+      t,
+    ])
+  })()`)
+  s.check('图片真的解码出来了（等 decode()，naturalWidth>0）',
+    decoded?.ok === true && decoded.nat > 0, JSON.stringify(decoded))
+  s.check('图片消息与文字气泡互斥（同一行里没有 .bub）', mutual, '同一行同时有缩略图和气泡')
+
+  // 点开大图
+  await click('message-image')
+  await s.waitFor("document.querySelector('[data-test=message-lightbox]')", '大图预览打开', 5000)
+  const lb = await s.evaluate(`(() => {
+    const el = document.querySelector('[data-test=message-lightbox]')
+    const r = el.getBoundingClientRect()
+    const img = document.querySelector('[data-test=message-lightbox-img]')
+    return { vw: Math.round(r.width), vh: Math.round(r.height),
+             iw: img ? Math.round(img.getBoundingClientRect().width) : 0,
+             fit: img ? getComputedStyle(img).objectFit : '' }
+  })()`)
+  s.check('大图预览铺满视口', lb.vw > 300 && lb.vh > 300, JSON.stringify(lb))
+  s.check('大图完整显示（object-fit: contain，不裁切）', lb.fit === 'contain', JSON.stringify(lb))
+  await click('message-lightbox')
+  await sleep(400)
+  s.check('点预览空白处关闭', !(await exists('message-lightbox')), '没关掉')
+
+  // 后端确实把这条记成 type=2（不只验界面）
+  // ⚠️ /api/message/history 的对方 id 走 **query**（withUserId=），
+  // 不是路径变量。写成 /history/{id} 会拿到 100404，于是 `?? []` 变空数组 ——
+  // 这类「取不到就兜空数组」的写法会让断言变成恒假或恒真，两头都绿。
+  const his = await api(`/message/history?withUserId=${idSmoke}&page=1&size=20`, { token: tFollow })
+  const found2 = (his?.data?.list ?? []).find((m) => m.type === 2)
+  s.check('历史接口真的返回了数据（防 URL 写错导致空数组）',
+    Array.isArray(his?.data?.list) && his.data.list.length > 0,
+    `code=${his?.code} n=${his?.data?.list?.length}`)
+  s.check('后端把它存成 type=2 的图片消息', !!found2,
+    JSON.stringify((his?.data?.list ?? []).map((m) => m.type)))
 
   /* ---------- 5. 会话列表：有未读角标，点进去变已读 ---------- */
 

@@ -36,6 +36,11 @@ public class MessageServiceImpl implements MessageService {
     /** last_message 列是 VARCHAR(200)：摘要超长截断，不让 SQL 报错 */
     private static final int BRIEF_MAX = 200;
 
+    /** 消息类型：文本 */
+    private static final int TYPE_TEXT = 1;
+    /** 消息类型：图片 */
+    private static final int TYPE_IMAGE = 2;
+
     private final MessageMapper messageMapper;
     private final MessageSessionMapper sessionMapper;
     private final UserQueryService userQueryService;
@@ -69,7 +74,28 @@ public class MessageServiceImpl implements MessageService {
             throw new BizException(ErrorCodeEnum.MESSAGE_TARGET_BLOCKED);
         }
 
-        String content = dto.getContent().strip();
+        int type = resolveType(dto.getType());
+        String content = dto.getContent() == null ? "" : dto.getContent().strip();
+        String imageUrl = normalizeImageUrl(dto.getImageUrl());
+        // 两条规则各自独立校验，不是一起判 —— 「文本必须有正文、图片必须有 URL」
+        // 如果写成「content 为空且 url 为空就报错」，那么「有正文没 URL」会被放行，
+        // 存进库之后渲染成一条空消息，而界面看不出异常。
+        if (type == TYPE_IMAGE) {
+            if (imageUrl == null) {
+                throw new BizException(ErrorCodeEnum.MESSAGE_IMAGE_REQUIRED);
+            }
+            // 图片消息**可以有**正文（小红书允许带一句说明），但正文与图片
+            // 不进同一个气泡渲染 —— 前端只渲染图片，正文作为这条消息的
+            // 无障碍描述与「会话列表摘要」使用。
+            if (content.length() > 1000) {
+                throw new BizException(ErrorCodeEnum.MESSAGE_TOO_LONG);
+            }
+        } else {
+            if (content.isEmpty()) {
+                throw new BizException(ErrorCodeEnum.MESSAGE_CONTENT_REQUIRED);
+            }
+        }
+
         MessageSessionEntity session = resolveSession(me, peerId);
 
         MessageEntity e = new MessageEntity();
@@ -77,6 +103,8 @@ public class MessageServiceImpl implements MessageService {
         e.setSenderId(me);
         e.setReceiverId(peerId);
         e.setContent(content);
+        e.setType(type);
+        e.setImageUrl(imageUrl);
         e.setIsRead(0);
         messageMapper.insert(e);
 
@@ -85,8 +113,8 @@ public class MessageServiceImpl implements MessageService {
         // 「顺序变了但角标没跳」这种用户可见的中间态。
         boolean lowIsReceiver = session.getUserLowId().equals(peerId);
         boolean highIsReceiver = session.getUserHighId().equals(peerId);
-        sessionMapper.advanceOnSend(session.getId(), brief(content), e.getCreateTime(),
-                lowIsReceiver, highIsReceiver);
+        sessionMapper.advanceOnSend(session.getId(), brief(briefOf(type, content, imageUrl)),
+                e.getCreateTime(), lowIsReceiver, highIsReceiver);
 
         return MessageVO.builder()
                 .id(e.getId())
@@ -94,9 +122,80 @@ public class MessageServiceImpl implements MessageService {
                 .senderId(me)
                 .receiverId(peerId)
                 .content(content)
+                .type(type)
+                .imageUrl(imageUrl)
                 .isRead(0)
                 .createTime(e.getCreateTime())
                 .build();
+    }
+
+    /**
+     * 类型兜底：null / 0 / 未知值一律当文本
+     *
+     * <p>⚠️ **不因为「type=99」报错**：那会让老客户端或手写请求直接失败，
+     * 而「按文本渲染一张图片 URL」的实际后果只是会话摘要里显示空白 ——
+     * 远好于「发不出去」。真正要挡的是「type=2 却没有 URL」，那条在下面单独判。
+     */
+    private static int resolveType(Integer raw) {
+        return raw != null && raw == TYPE_IMAGE ? TYPE_IMAGE : TYPE_TEXT;
+    }
+
+    /**
+     * 校验并归一化图片 URL
+     *
+     * <p>⚠️ **只允许站内路径**：这是 P32 唯一一个「安全相关」的判断 ——
+     * 私信里的图片是最不像链接、最容易骗过人的位置（用户对「对方发来的图」
+     * 的信任度远高于「对方发来的链接」），所以允许任意外链等于开一个钓鱼入口。
+     *
+     * <p>接受两种形态：站内绝对路径（{@code /static/...}）与
+     * {@code data:} 之外的本项目域名。返回 {@code null} 表示「不合法或没传」。
+     */
+    private static String normalizeImageUrl(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        String s = raw.strip();
+        if (s.length() > 500) {
+            throw new BizException(ErrorCodeEnum.MESSAGE_IMAGE_REQUIRED);
+        }
+        if (s.startsWith("/static/")) {
+            return s;
+        }
+        // http(s) 的绝对地址：只认本项目配置的那个域名。
+        // ⚠️ 用 contains 而不是 equals 是错的（evil.com/?x=/static/ 也能通过），
+        // 所以这里解析出 host 再比。
+        try {
+            java.net.URI u = java.net.URI.create(s);
+            if (!("http".equalsIgnoreCase(u.getScheme()) || "https".equalsIgnoreCase(u.getScheme()))) {
+                return null;
+            }
+            String host = u.getHost();
+            // localhost / 127.0.0.1 是**开发与 prod 自己的**地址：
+            // 存量图片就是这些 host 生成的，放行它们不影响「外链钓鱼」这条判断。
+            if (host == null) {
+                return null;
+            }
+            if (isOwnHost(host)) {
+                return s;
+            }
+            return null;
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+    private static boolean isOwnHost(String host) {
+        String h = host.toLowerCase();
+        return h.equals("localhost") || h.equals("127.0.0.1") || h.equals("0.0.0.0")
+                || h.equals("xiaoku.net") || h.endsWith(".xiaoku.net");
+    }
+
+    /** 会话列表里那一条摘要：图片消息显示 [图片]（有正文时优先正文） */
+    private static String briefOf(int type, String content, String imageUrl) {
+        if (!content.isEmpty()) {
+            return content;
+        }
+        return type == TYPE_IMAGE && imageUrl != null ? "[图片]" : "";
     }
 
     /**
@@ -233,6 +332,11 @@ public class MessageServiceImpl implements MessageService {
                 .senderId(e.getSenderId())
                 .receiverId(e.getReceiverId())
                 .content(e.getContent())
+                // ⚠️ 存量数据是 P32 之前写的，type 列为 NULL。
+                // 这里兜成 1，否则前端拿到 undefined 会走「不是 1 就是 2」
+                // 的默认分支之外的路径，而界面看不出异常。
+                .type(e.getType() == null ? TYPE_TEXT : e.getType())
+                .imageUrl(e.getImageUrl())
                 .isRead(e.getIsRead())
                 .createTime(e.getCreateTime())
                 .build();

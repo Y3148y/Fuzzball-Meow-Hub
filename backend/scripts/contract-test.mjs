@@ -2770,12 +2770,16 @@ async function main() {
       codeIs('不能给自己发私信（50003）',
         (await post('/api/message/send', { token: tM1, body: { toUserId: idM1, content: 'hi' } })).json, 50003)
 
-      // 100001 来自 DTO 层的 @NotBlank，**不进业务层** —— 与 P18 记的
-      // 「补充说明超 200 字返回 100001 而不是 80003」是同一形状
-      codeIs('空消息被拒（100001，DTO 层）',
-        (await post('/api/message/send', { token: tM1, body: { toUserId: idM2, content: '   ' } })).json, 100001)
-      codeIs('纯空格也算空（@NotBlank 而不是 @NotNull）',
-        (await post('/api/message/send', { token: tM1, body: { toUserId: idM2, content: '\t\n' } })).json, 100001)
+      // 空消息被拒。⚠️ **P32 起错误码从 100001 变成 50008**：
+      // 图片消息的 content 恒为空串，而 @NotBlank 是**无条件**生效的 ——
+      // 两者直接冲突，所以校验必须移到 service 里按 type 分支。
+      // 行为没变（仍然拒），变的是「在哪一层拦」与「码段」。
+      // 换码的同时 message 也更可用了（100001 只说「参数不合法」，
+      // 50008 直接说「消息内容不能为空」—— 前端能据此决定要不要把输入还回去）。
+      codeIs('空消息被拒（P32 起是 50008，校验移到 service 按 type 分支）',
+        (await post('/api/message/send', { token: tM1, body: { toUserId: idM2, content: '   ' } })).json, 50008)
+      codeIs('纯空格也算空（strip 之后再判，不是 @NotNull 那种空串判定）',
+        (await post('/api/message/send', { token: tM1, body: { toUserId: idM2, content: '\t\n' } })).json, 50008)
       codeIs('缺 toUserId 被拒（100001）',
         (await post('/api/message/send', { token: tM1, body: { content: 'hi' } })).json, 100001)
       codeIs('超长消息被拒（100001，@Size 上限 1000）',
@@ -3030,6 +3034,103 @@ const lastTwo = (hist?.list ?? []).slice(-2)
         check('P29 删评论后对方未读回落（否则通知指向已删评论）',
           unreadAfter2 < unreadAfter, `before=${unreadAfter} after=${unreadAfter2}`)
       }
+    }
+  }
+
+  /* ================================================================
+   * 24. P32 私信图片消息
+   *
+   * 三条设计决定各自都对应一个「写成那样会静默出错」的地方：
+   *
+   * 1. **content 的 @NotBlank 被拿掉了**，校验移到 service 按 type 分支。
+   *    图片消息的 content 恒为空串，而 @NotBlank 是无条件生效的 ——
+   *    两者直接冲突。
+   *
+   * 2. **只认站内图片 URL**。这是本轮唯一的安全相关判断：私信里的图是
+   *    最不像链接、最容易骗过人的位置，所以允许任意外链等于开钓鱼入口。
+   *    用 URI 解析 host 再比，**不能用 contains**（evil.com/?x=/static/ 能过）。
+   *
+   * 3. **不做图文混排**。发图就是纯图片，想带文字再发一条 ——
+   *    否则会话摘要得在正文与图片之间二选一，那两种选择都不是好产品行为。
+   *
+   * 本段**不注册新账号**（register 10/min/IP），复用常驻 fixture（同 23 段）。
+   * ================================================================ */
+  {
+    const l32 = await post('/api/user/login', { body: { username: 'xk_ui_smoke', password: 'Xk@123456' } })
+    const f32 = await post('/api/user/login', { body: { username: 'xk_ui_follow', password: 'Xk@2026peer' } })
+    const t32 = `Bearer ${l32.json?.data?.accessToken}`
+    const f32t = `Bearer ${f32.json?.data?.accessToken}`
+    const u32 = (await get('/api/user/me', { token: t32 })).json?.data?.id
+    const v32 = (await get('/api/user/me', { token: f32t })).json?.data?.id
+    if (check('P32 两个 fixture 都能登录（口令不同，别抄错）', !!t32 && !!f32t && !!u32 && !!v32,
+      `smoke=${u32} follow=${v32}`)) {
+      /* ---------- ① 老客户端不传 type 也要能发 ---------- */
+      // ⚠️ 老客户端（以及所有存量测试）都不会传 type。用 @NotNull 打断
+      // 会让 P22 那一整套接口一次性全挂，而「缺省就是文本」本来就很自然。
+      const plain = await post('/api/message/send', {
+        token: f32t, body: { toUserId: u32, content: `P32 文本 ${stamp}` },
+      })
+      eq('P32 不传 type 也能发文本（老客户端不被打断）', plain.json?.code, 0)
+      eq('P32 缺省 type 返回 1 而不是 undefined', plain.json?.data?.type, 1)
+
+      /* ---------- ② 图片消息 ---------- */
+      // ⚠️ uploadImage 返回的是 `{ json, ... }`，**URL 在 .json.data.url**。
+      // 把返回值直接当 imageUrl 传下去会变成 "[object Object]"，
+      // 后端 normalizeImageUrl 判为非法 → 50007（AGENTS P20 记过同一个坑）。
+      const imgUp = await uploadImage(t32, { name: 'p32.png' })
+      const imgUrl = imgUp?.json?.data?.url
+      if (check('P32 上传图片成功', !!imgUrl, JSON.stringify(imgUp?.json))) {
+        const img = await post('/api/message/send', {
+          token: f32t, body: { toUserId: u32, type: 2, imageUrl: imgUrl },
+        })
+        eq('P32 发图片消息成功', img.json?.code, 0)
+        eq('P32 返回 type=2', img.json?.data?.type, 2)
+        eq('P32 imageUrl 与传入一致', img.json?.data?.imageUrl, imgUrl)
+        eq('P32 图片消息正文是空串（不是 undefined）', img.json?.data?.content, '')
+
+        // 会话摘要显示 [图片]
+        const sess = (await get('/api/message/session/list', { token: t32 })).json?.data ?? []
+        const row = sess.find((s) => s.peerId === v32)
+        eq('P32 会话摘要对图片消息显示 [图片]', row?.lastMessage, '[图片]')
+      }
+
+      /* ---------- ③ 校验分支（两条规则各自独立）---------- */
+      // ⚠️ 不能写成「content 为空且 url 为空就报错」：那样「有正文没 URL」
+      // 会被放行，存进库之后渲染成一条空消息，而界面看不出异常。
+      eq('P32 type=2 但没带图 → 50007',
+        (await post('/api/message/send', { token: f32t, body: { toUserId: u32, type: 2 } })).json?.code, 50007)
+      eq('P32 文本空正文 → 50008',
+        (await post('/api/message/send', { token: f32t, body: { toUserId: u32, content: '   ' } })).json?.code, 50008)
+
+      /* ---------- ④ 外链拦截（本轮唯一的安全判断）---------- */
+      eq('P32 外链图片被拒',
+        (await post('/api/message/send', { token: f32t, body: { toUserId: u32, type: 2, imageUrl: 'https://evil.example.com/x.png' } })).json?.code, 50007)
+      // ⚠️ 这条是「用 contains 实现就会漏掉」的那种伪装
+      eq('P32 外链伪装成站内路径也被拒',
+        (await post('/api/message/send', { token: f32t, body: { toUserId: u32, type: 2, imageUrl: 'https://evil.com/?x=/static/a.png' } })).json?.code, 50007)
+      eq('P32 javascript: 伪协议被拒',
+        (await post('/api/message/send', { token: f32t, body: { toUserId: u32, type: 2, imageUrl: 'javascript:alert(1)' } })).json?.code, 50007)
+      eq('P32 站内绝对路径放行',
+        (await post('/api/message/send', { token: f32t, body: { toUserId: u32, type: 2, imageUrl: '/static/2026/10/x.png' } })).json?.code, 0)
+
+      /* ---------- ⑤ 未知 type 降级而不是报错 ---------- */
+      const weird = await post('/api/message/send', { token: f32t, body: { toUserId: u32, type: 99, content: `P32 未知类型 ${stamp}` } })
+      eq('P32 未知 type 不打断请求', weird.json?.code, 0)
+      eq('P32 未知 type 降级为 1', weird.json?.data?.type, 1)
+
+      /* ---------- ⑥ 历史接口读得出 type / imageUrl ---------- */
+      // ⚠️ /api/message/history 的对方 id 走 **query**（withUserId=）不是路径变量。
+      // 写成 /history/{id} 拿 100404，`?? []` 兜成空数组，于是
+      // 「每条都有 type」恒真通过、「有 type=2」恒假失败 —— 两头都不报错。
+      const his = await get(`/api/message/history?withUserId=${v32}&page=1&size=20`, { token: t32 })
+      eq('P32 历史接口 code=0', his.json?.code, 0)
+      const rows = his.json?.data?.list ?? []
+      check('P32 历史真的取到了数据（防 URL 写错兜成空数组）',
+        Array.isArray(his.json?.data?.list) && rows.length > 0, `n=${rows.length}`)
+      check('P32 历史里每条都有 type', rows.length > 0 && rows.every((r) => r.type !== undefined),
+        JSON.stringify(rows.slice(0, 2).map((r) => r.type)))
+      check('P32 历史里有 type=2 的记录', rows.some((r) => r.type === 2 && r.imageUrl),
+        JSON.stringify(rows.map((r) => r.type)))
     }
   }
 

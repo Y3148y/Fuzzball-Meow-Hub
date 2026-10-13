@@ -9,9 +9,25 @@ import type { MessageSessionVO, MessageVO, PageVO, SnowflakeId } from './types'
  * 将来接 WebSocket 时只需要在这层改，业务代码不动。
  */
 
-/** 发送私信。对方拉黑了我时后端返 50004（message 不区分是谁拉黑了谁） */
-export function sendMessage(toUserId: SnowflakeId, content: string) {
-  return post<MessageVO>('/message/send', { toUserId, content }, { idempotent: true })
+/**
+ * 发送私信。对方拉黑了我时后端返 50004（message 不区分是谁拉黑了谁）
+ *
+ * <p>P32 起支持图片消息：`type=2` + `imageUrl`。
+ * ⚠️ **content 仍然要传**（可以是空串）—— 后端 DTO 上的 `@NotBlank` 已去掉，
+ * 但老字段不能删：删了以后 `MessageSendDTO.content` 为 null，
+ * 而 `message.content` 列是 NOT NULL，service 侧兜的是 `""` 而不是 null。
+ */
+export function sendMessage(
+  toUserId: SnowflakeId,
+  content: string,
+  opts: { type?: 1 | 2; imageUrl?: string } = {},
+) {
+  return post<MessageVO>('/message/send', {
+    toUserId,
+    content,
+    type: opts.type ?? 1,
+    imageUrl: opts.imageUrl,
+  }, { idempotent: true })
 }
 
 /**

@@ -11,7 +11,9 @@
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { showToast } from 'vant'
 import { messageHistory, readAllMessages, sendMessage } from '@/api/message'
+import { uploadImage } from '@/api/note'
 // 对方卡片用 follow 域的「一次往返拿全」端点（UserView 用的同一个），
 // 不另开一个只返回昵称头像的新接口 —— 那会造出第二个形状相同的用户卡片
 import { getUserFollowStatus } from '@/api/follow'
@@ -58,9 +60,11 @@ const hasMore = computed(() => total.value > 0 && list.value.length < total.valu
 interface FailedMsg {
   key: string
   content: string
+  imageUrl?: string
   error: string
 }
 const failed = ref<FailedMsg[]>([])
+const uploading = ref(false)
 
 /** 等两帧 rAF：确保浏览器完成布局与绘制，之后量到的才是稳定位置 */
 function raf2(): Promise<void> {
@@ -121,8 +125,52 @@ async function loadMore() {
 function retryFailed(f: FailedMsg) {
   const i = failed.value.findIndex((x) => x.key === f.key)
   if (i >= 0) failed.value.splice(i, 1)
-  void doSend(f.content, f.key)
+  void doSend(f.content, f.imageUrl, f.key)
 }
+
+/* ================= P32：图片消息 ================= */
+const pickRef = ref<HTMLInputElement | null>(null)
+
+function openPicker() {
+  pickRef.value?.click()
+}
+
+/**
+ * 选图 → 预览 → 上传 → 发消息
+ *
+ * <p>**刻意不自动发送**：选完图就发出去的话，用户还没来得及取消
+ * 就已经把图传出去了 —— 发错一次比多按一次按钮糟糕得多。
+ */
+async function onPick(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  // 无论成败都要清空，否则同一个文件再选一次不触发 change
+  input.value = ''
+  if (!file) return
+  if (!/^image\/(png|jpe?g|gif|webp)$/.test(file.type)) {
+    showToast('只能发 PNG / JPG / GIF / WebP 图片')
+    return
+  }
+  if (file.size > 10 * 1024 * 1024) {
+    showToast('图片不能超过 10MB')
+    return
+  }
+  uploading.value = true
+  try {
+    // ⚠️ uploadImage 返回的是 **ImageUploadVO 对象**，不是 URL 字符串。
+    // 直接把它传给 doSend 会让 imageUrl 变成 "[object Object]"，
+    // 后端 normalizeImageUrl 判为非法 → 50007（AGENTS P20 记过同一个坑）。
+    const vo = await uploadImage(file)
+    await doSend('', vo.url)
+  } catch (err) {
+    showToast(err instanceof Error ? err.message : '图片上传失败')
+  } finally {
+    uploading.value = false
+  }
+}
+
+/** 点缩略图看大图 */
+const previewUrl = ref<string | null>(null)
 
 /* ================= P31：表情面板 ================= */
 const emojiOpen = ref(false)
@@ -205,11 +253,11 @@ async function send() {
  * 小红书的做法是**把失败的气泡留在原地**，标红 + 一个「重新发送」，
  * 点一下原样再发。用户能看见它失败，也能看见它成功。
  */
-async function doSend(content: string, reuseKey?: string) {
+async function doSend(content: string, imageUrl?: string, reuseKey?: string) {
   sending.value = true
   const key = reuseKey ?? 'tmp-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6)
   try {
-    const msg = await sendMessage(peerId.value, content)
+    const msg = await sendMessage(peerId.value, content, imageUrl ? { type: 2, imageUrl } : {})
     // 重试成功：把那条失败记录换成真消息
     const i = failed.value.findIndex((x) => x.key === key)
     if (i >= 0) failed.value.splice(i, 1)
@@ -220,7 +268,7 @@ async function doSend(content: string, reuseKey?: string) {
     // 后端刻意不在别处提示（P18 原则：不暴露对方的操作）。
     // 但**不弹 toast 就消失**：私信发不出去是最让人无力的场景，
     // 让用户重打一遍 500 字比多一句解释糟糕得多。所以标红留在原地等重发。
-    failed.value.push({ key, content, error: e instanceof Error ? e.message : '发送失败' })
+    failed.value.push({ key, content, imageUrl, error: e instanceof Error ? e.message : '发送失败' })
     scrollToBottom(true)
   } finally {
     sending.value = false
@@ -437,7 +485,24 @@ onBeforeUnmount(() => {
             <span v-else class="avatar-ghost" aria-hidden="true" />
 
             <div class="col">
-              <div class="bub">
+              <!-- 图片消息：缩略图，不进气泡框（P32）
+              --
+              ⚠️ **刻意不加 loading="lazy"**：聊天页一屏只有十几条图，懒加载省不下什么，
+              但它会让**刚好在视口底边那张图**的 decode() 一直不 resolve ——
+              表现是「最后一张图永远转圈 / 量到 naturalWidth=0」，
+              而真因（懒加载 + 边界）与症状隔了两层（AGENTS P25 在轮播上记过同一个坑）。
+            -->
+              <button
+                v-if="r.msg.type === 2 && r.msg.imageUrl"
+                type="button"
+                class="thumb"
+                data-test="message-image"
+                :aria-label="'查看图片 ' + (r.msg.content || '图片消息')"
+                @click="previewUrl = r.msg.imageUrl!"
+              >
+                <img :src="r.msg.imageUrl" alt="图片消息">
+              </button>
+              <div v-else class="bub">
                 {{ r.msg.content }}
               </div>
               <time v-if="r.time" class="stamp" data-test="message-time">
@@ -458,7 +523,18 @@ onBeforeUnmount(() => {
         >
           <span class="avatar-ghost" aria-hidden="true" />
           <div class="col">
-            <div class="bub bad" data-test="message-failed-bubble">{{ f.content }}</div>
+            <!-- 失败重发也要能重发图片 -->
+            <button
+              v-if="f.imageUrl"
+              type="button"
+              class="thumb"
+              data-test="message-failed-image"
+              :aria-label="'查看失败的图片'"
+              @click="previewUrl = f.imageUrl!"
+            >
+              <img :src="f.imageUrl" alt="图片消息">
+            </button>
+            <div v-else class="bub bad" data-test="message-failed-bubble">{{ f.content }}</div>
             <div class="retry-row">
               <span class="why" data-test="message-failed-reason">{{ f.error }}</span>
               <button
@@ -488,6 +564,31 @@ onBeforeUnmount(() => {
         @keydown.enter.exact.prevent="send"
         @keydown.enter.shift.stop
       />
+      <!-- 图片按钮：与表情开关同排（P32） -->
+      <button
+        type="button"
+        class="icon-btn"
+        data-test="message-image-pick"
+        :disabled="uploading || sending"
+        aria-label="发送图片"
+        title="发送图片"
+        @click="openPicker"
+      >
+        <van-icon name="photo-o" />
+      </button>
+      <!--
+        ⚠️ input 必须放在 form **外面**：放在里面时选完文件会触发表单提交
+        （input 的 change 在某些浏览器里会带着 form 一起 submit），
+        症状是「选了图结果消息也发出去了」。
+      -->
+      <input
+        ref="pickRef"
+        type="file"
+        accept="image/png,image/jpeg,image/gif,image/webp"
+        class="file"
+        data-test="message-file"
+        @change="onPick"
+      >
       <!-- 表情开关：切换动作 → button（aria-expanded 而非 aria-selected） -->
       <button
         type="button"
@@ -516,6 +617,18 @@ onBeforeUnmount(() => {
     </form>
 
     <EmojiPanel v-if="emojiOpen" @pick="insertEmoji" />
+
+    <!-- 大图预览（P32）：点缩略图放大，点任意处关闭 -->
+    <div
+      v-if="previewUrl"
+      class="lightbox"
+      data-test="message-lightbox"
+      role="dialog"
+      aria-label="图片预览"
+      @click="previewUrl = null"
+    >
+      <img :src="previewUrl" alt="图片预览" data-test="message-lightbox-img">
+    </div>
   </main>
 </template>
 
@@ -612,6 +725,60 @@ onBeforeUnmount(() => {
   background: transparent;
   color: var(--xk-text-3);
   border: 1px dashed var(--xk-danger);
+}
+
+/* ---------- P32 图片消息 ---------- */
+
+/* 缩略图：方形圆角，不进气泡框 */
+.thumb {
+  display: block;
+  border: 0;
+  padding: 0;
+  background: none;
+  cursor: pointer;
+  border-radius: var(--xk-radius-md, 10px);
+  overflow: hidden;
+  line-height: 0;
+  /* 缩略图本体就是点击目标，给够热区（P13） */
+  min-width: 120px;
+  min-height: 120px;
+}
+.thumb img {
+  display: block;
+  width: 160px;
+  height: 160px;
+  object-fit: cover;
+  /* 限定最大宽高，竖图不会被撑成一整屏 */
+  max-width: 100%;
+}
+
+/* file input 隐藏但**仍可被脚本点击**（不能用 display:none，
+   那样 click() 在部分浏览器上不触发） */
+.file {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 大图预览：全屏黑底，点任意处关闭 */
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background: rgba(0, 0, 0, 0.92);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--xk-space-4);
+  cursor: zoom-out;
+}
+.lightbox img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: var(--xk-radius-sm, 4px);
 }
 
 .retry-row {

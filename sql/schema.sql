@@ -408,6 +408,8 @@ CREATE TABLE `message`
     `sender_id`   BIGINT UNSIGNED NOT NULL COMMENT '发送者',
     `receiver_id` BIGINT UNSIGNED NOT NULL COMMENT '接收者（恒为会话另一方）',
     `content`     VARCHAR(1000)   NOT NULL COMMENT '消息正文（与评论同量级）',
+    `type`        TINYINT         NOT NULL DEFAULT 1 COMMENT '消息类型：1文本 2图片',
+    `image_url`   VARCHAR(500)    DEFAULT NULL COMMENT '图片 URL，仅 type=2 有值',
     `is_read`     TINYINT         NOT NULL DEFAULT 0 COMMENT '0未读 1已读',
     `create_time` DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (`id`),

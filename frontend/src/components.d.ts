@@ -11,6 +11,7 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    EmojiPanel: typeof import('./components/EmojiPanel.vue')['default']
     ImageCropper: typeof import('./components/ImageCropper.vue')['default']
     MentionPicker: typeof import('./components/MentionPicker.vue')['default']
     MoreSheet: typeof import('./components/MoreSheet.vue')['default']

@@ -235,13 +235,23 @@ export const AUDIT_EXPR = `(() => {
     }
     /* 吸底栏以外的可点元素热区扫描（P13 下限 40px）。
      * 报告里长期挂着 brand 125×38 / submit 60×31 / me-edit 56×31 这几条，
-     * 这次开始**断言**：谁不达标就报谁，不再靠人看体检表。 */
+     * 这次开始**断言**：谁不达标就报谁，不再靠人看体检表。
+     *
+     * ⚠️ **行内文字链接要豁免**：40px 是给「独立可点控件」的最小目标，
+     * 而正文里的 @提及（P30 加的 .mention）、外链是**句子的一部分** ——
+     * 给它加 padding 撑到 40px 会把整段正文的行高撑开、出现空白断行。
+     * 与详情页 .interacts 里那条注释同一判断（web-interface-guidelines 的
+     * inline links are exempt 一条）。P30 加了 .mention 却没同步这里，
+     * 于是详情页每轮都报两条假红 —— 症状是「热区不合格」，
+     * 与「真有一个按钮太小」毫无关系。
+     */
     spec.smallTargets = [...document.querySelectorAll('button, a, input[type=submit]')]
       .filter(el => {
         if (!el.offsetParent && el.offsetWidth === 0) return false
         const st = getComputedStyle(el)
         if (st.display === 'none' || st.visibility === 'hidden') return false
         if (actionBar && (el === actionBar || actionBar.contains(el))) return false
+        if (el.closest('.content, .bub, p')) return false
         return true
       })
       .map(el => {
@@ -371,6 +381,19 @@ export const REPORT_EXPR = `(() => {
   const small = []
   for (const el of all) {
     if (!el.matches('button, a[href], input, textarea, [role=button]')) continue
+    // ⚠️ **行内文字链接不算按钮**：40px 是给「独立可点控件」的最小目标，
+    // 而正文里的 @提及 / 外链是**句子的一部分** —— 给它加 padding 撑到 40px
+    // 会把整段正文的行高撑开、视觉上出现空白断行。
+    // 与详情页 .interacts 里那条注释同一判断
+    // （web-interface-guidelines 的 inline links are exempt 一条）。
+    //
+    // ⚠️ 注释里**不许写反引号**：这段代码整体在模板字符串里，
+    // 一个反引号就提前闭合，报错指向注释行
+    // 「SyntaxError: Unexpected token」而真因隔了三行（AGENTS P28 记过一次）。
+    //
+    // P30 加了 .mention 却没同步这里，于是详情页每轮都报两条假红 ——
+    // 症状是「热区不合格」，与「真有一个按钮太小」毫无关系。
+    if (el.closest('.content, .bub, p')) continue
     const b = el.getBoundingClientRect()
     if (b.width < 40 || b.height < 40) {
       small.push(String(el.getAttribute('data-test') || el.className || el.tagName).slice(0, 16) + ' ' + Math.round(b.width) + 'x' + Math.round(b.height))

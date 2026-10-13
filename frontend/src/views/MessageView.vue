@@ -11,13 +11,13 @@
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { showToast } from 'vant'
 import { messageHistory, readAllMessages, sendMessage } from '@/api/message'
 // 对方卡片用 follow 域的「一次往返拿全」端点（UserView 用的同一个），
 // 不另开一个只返回昵称头像的新接口 —— 那会造出第二个形状相同的用户卡片
 import { getUserFollowStatus } from '@/api/follow'
 import { useMessageUnread } from '@/composables/useMessageUnread'
 import { useUserStore } from '@/stores/user'
+import EmojiPanel from '@/components/EmojiPanel.vue'
 import type { MessageVO } from '@/api/types'
 
 const route = useRoute()
@@ -38,6 +38,115 @@ const draft = ref('')
 const scroller = ref<HTMLElement | null>(null)
 const MAX_LEN = 1000
 
+/* ================= P31：加载更多 + 失败重发 ================= */
+/** 每页条数，与后端 PageVO 对齐 */
+const PAGE_SIZE = 30
+const page = ref(1)
+const total = ref(0)
+const loadingMore = ref(false)
+/**
+ * 还有更多历史吗？
+ *
+ * <p>⚠️ 必须要求 `total > 0`：刚进页面时 `total` 还是 0 而 `list` 也是空，
+ * `list.length < total` → `0 < 0` 是 false，这没问题；但如果**接口只回了部分**
+ * 或者 `total` 因任何原因没填上，`0 < 0` 之外的组合会让按钮凭空出现。
+ * 显式带上 `total > 0` 就把「我根本没拿到总数」与「真的还有更多」区分开了。
+ */
+const hasMore = computed(() => total.value > 0 && list.value.length < total.value)
+
+/** 发送失败的消息：留在界面上等重发，而不是弹个 toast 就消失 */
+interface FailedMsg {
+  key: string
+  content: string
+  error: string
+}
+const failed = ref<FailedMsg[]>([])
+
+/** 等两帧 rAF：确保浏览器完成布局与绘制，之后量到的才是稳定位置 */
+function raf2(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+  })
+}
+
+/**
+ * 往上滑到顶时加载更早的一页
+ *
+ * <p>⚠️ **必须保持滚动位置**：新消息插在前面，视口内容整体下移，
+ * 用户看到的是「我明明没动，消息却自己往上跑」——那比加载不出来更糟。
+ *
+ * <p>做法不是「新高度 - 旧高度」那套算术，而是**抓住插入点那个元素**：
+ * 插入前记下第一条已有消息的 DOM 引用，插入后把它滚回原来的视口位置。
+ * 算术补偿的坑在于 `scrollHeight` 的测量时机 —— `nextTick` 只等 DOM 结构，
+ * 不等图片解码与字体加载，那期间高度还在变，于是补偿量偏小、视口仍然下移
+ * （CDP 实测 scrollTop 差了近 15000px）。抓元素则与测量时机无关。
+ */
+async function loadMore() {
+  const el = scroller.value
+  if (!el || loadingMore.value || !hasMore.value) return
+  loadingMore.value = true
+  // ⚠️ 高度必须在**响应到达之后、插入之前**量，不能在发请求之前。
+  // 请求在飞的那几百毫秒里，5s 一次的轮询可能刚好追加了新消息
+  // （CDP 实测补偿量因此少算约 5900px，视口被顶走一半）。
+  // 「发出前记基线」这个直觉写法在这里是错的 —— 两次量之间列表会变。
+  let scrollTopBefore = el.scrollTop
+  let prevHeight = el.scrollHeight
+  try {
+    const next = page.value + 1
+    const res = await messageHistory(peerId.value, next, PAGE_SIZE)
+    // 响应回来、还没插进 DOM —— 这才是正确的基线时刻
+    scrollTopBefore = el.scrollTop
+    prevHeight = el.scrollHeight
+    const known = new Set(list.value.map((m) => m.id))
+    const older = (res.list ?? []).filter((m) => !known.has(m.id))
+    // 后端按时间**正序**返回（一页比一页早），所以直接前面拼
+    if (older.length) list.value.unshift(...older)
+    page.value = next
+    total.value = res.total ?? total.value
+    await nextTick()
+    // ⚠️ **等两帧**再量高度：nextTick 只保证 DOM 结构建好，
+    // 浏览器还没做布局 —— 此刻 scrollHeight 是旧的，算出来的补偿量是 0。
+    // rAF × 2 = 一轮布局 + 一轮绘制之后，高度才是最终值。
+    await raf2()
+    // 插入后内容变高，把差值补回 scrollTop，视口就停在原来那批内容上。
+    const grew = el.scrollHeight - prevHeight
+    if (grew) el.scrollTop = scrollTopBefore + grew
+  } catch {
+    // 拉不动就停在原地，不打扰用户
+  } finally {
+    loadingMore.value = false
+  }
+}
+
+function retryFailed(f: FailedMsg) {
+  const i = failed.value.findIndex((x) => x.key === f.key)
+  if (i >= 0) failed.value.splice(i, 1)
+  void doSend(f.content, f.key)
+}
+
+/* ================= P31：表情面板 ================= */
+const emojiOpen = ref(false)
+
+/**
+ * 把表情插进输入框，**插在光标处**而不是末尾
+ *
+ * <p>用户已经打了半句话、想在中间插一个表情，追加到末尾就是错的。
+ *
+ * <p>⚠️ 用原生 setter 改值：直接 `el.value = x` 不触发 Vue 的 v-model，
+ * `draft` 不更新、发送键也还是禁用（与 MentionPicker 同一个坑）。
+ */
+function insertEmoji(text: string) {
+  const el = document.getElementById('msg-input') as HTMLTextAreaElement | null
+  const at = el ? el.selectionStart ?? draft.value.length : draft.value.length
+  draft.value = draft.value.slice(0, at) + text + draft.value.slice(el ? el.selectionEnd ?? at : at)
+  void nextTick(() => {
+    if (!el) return
+    const pos = at + text.length
+    el.focus()
+    el.setSelectionRange(pos, pos)
+  })
+}
+
 /** 轮询拉新消息；只在页面可见时跑 */
 const POLL_MS = 5_000
 let timer: ReturnType<typeof setInterval> | undefined
@@ -53,8 +162,10 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const page = await messageHistory(peerId.value, 1, 50)
-    list.value = page.list
+    const res = await messageHistory(peerId.value, 1, PAGE_SIZE)
+    list.value = res.list ?? []
+    total.value = res.total ?? list.value.length
+    page.value = 1
     // 进会话即已读。刻意不等待它完成再渲染：标已读是副作用，
     // 用户想看的是消息本身，卡住渲染等一个角标更新是本末倒置。
     void markRead()
@@ -82,16 +193,35 @@ async function markRead() {
 async function send() {
   const content = draft.value.trim()
   if (!content || sending.value) return
+  draft.value = ''
+  await doSend(content)
+}
+
+/**
+ * 真正发一条
+ *
+ * <p>⚠️ **失败不吞**：私信发不出去是最让人无力的场景之一，
+ * 而「弹个 toast 然后内容消失」等于让用户重新打一遍。
+ * 小红书的做法是**把失败的气泡留在原地**，标红 + 一个「重新发送」，
+ * 点一下原样再发。用户能看见它失败，也能看见它成功。
+ */
+async function doSend(content: string, reuseKey?: string) {
   sending.value = true
+  const key = reuseKey ?? 'tmp-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6)
   try {
     const msg = await sendMessage(peerId.value, content)
-    list.value.push(msg)
-    draft.value = ''
+    // 重试成功：把那条失败记录换成真消息
+    const i = failed.value.findIndex((x) => x.key === key)
+    if (i >= 0) failed.value.splice(i, 1)
+    else list.value.push(msg)
     scrollToBottom(true)
   } catch (e) {
-    // 50004（对方拉黑了我）在这里才有意义 —— 它是**发送时**才暴露的，
-    // 后端刻意不在别处提示（P18 原则：不暴露对方的操作）
-    showToast(e instanceof Error ? e.message : '发送失败')
+    // ⚠️ 50004（对方拉黑了我）在这里才有意义 —— 它是**发送时**才暴露的，
+    // 后端刻意不在别处提示（P18 原则：不暴露对方的操作）。
+    // 但**不弹 toast 就消失**：私信发不出去是最让人无力的场景，
+    // 让用户重打一遍 500 字比多一句解释糟糕得多。所以标红留在原地等重发。
+    failed.value.push({ key, content, error: e instanceof Error ? e.message : '发送失败' })
+    scrollToBottom(true)
   } finally {
     sending.value = false
   }
@@ -101,15 +231,17 @@ async function send() {
 async function pollNew() {
   if (document.hidden || sending.value) return
   try {
-    const page = await messageHistory(peerId.value, 1, 50)
+    const res = await messageHistory(peerId.value, 1, PAGE_SIZE)
     const known = new Set(list.value.map((m) => m.id))
-    const fresh = page.list.filter((m) => !known.has(m.id))
+    const fresh = (res.list ?? []).filter((m) => !known.has(m.id))
     if (fresh.length) {
       const atBottom = isNearBottom()
       list.value.push(...fresh)
+      // 用户已经翻上去看历史时**不要**把他拽回底部
       if (atBottom) scrollToBottom(true)
       void markRead()
     }
+    if (res.total !== undefined) total.value = res.total
   } catch {
     // 静默：下一轮再试
   }
@@ -124,6 +256,77 @@ function isNearBottom(): boolean {
 function mine(m: MessageVO): boolean {
   return m.senderId === myId.value
 }
+
+/* ================= P31 对齐小红书：日期线 / 头像 / 时间戳 ================= */
+
+/**
+ * 把消息流切成「带日期分隔线的分段」
+ *
+ * <p>小红书（以及几乎所有 IM）在跨天处插一条居中的灰色日期线。
+ * **只在跨天时才插**，不是每条都带 —— 每条都带就成了噪音。
+ *
+ * <p>⚠️ 分组必须用**稳定的分组键**而不是 `index`：切一次就会全部重建，
+ * 用下标做 key 会在内容相同的相邻片段上撞 key（Vue 会警告且复用错节点）。
+ */
+type ChatRow =
+  | { kind: 'date'; key: string; label: string }
+  | { kind: 'msg'; key: string; msg: MessageVO; time: string }
+
+/** 本地时区的「今天 / 昨天 / 3月5日」—— 与 formatDateTime 同源，避免两套时区口径 */
+function dayKey(iso: string): string {
+  const d = new Date(iso)
+  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
+}
+
+function dateLabel(iso: string): string {
+  const d = new Date(iso)
+  const today = new Date()
+  const yest = new Date(today)
+  yest.setDate(today.getDate() - 1)
+  if (dayKey(iso) === dayKey(today.toISOString())) return '今天'
+  if (dayKey(iso) === dayKey(yest.toISOString())) return '昨天'
+  const sameYear = d.getFullYear() === today.getFullYear()
+  const mm = d.getMonth() + 1
+  const dd = d.getDate()
+  return sameYear ? `${mm}月${dd}日` : `${d.getFullYear()}年${mm}月${dd}日`
+}
+
+/**
+ * 时间戳只显示到「分」，且**同一分钟内不重复显示**
+ *
+ * <p>小红书的做法：每条气泡旁显示 HH:mm，但连着发的几条只在最后一条显示。
+ * 屏幕上全是 `14:23` 对读的人没有任何信息量。
+ */
+function timeLabel(m: MessageVO, prev?: MessageVO): string {
+  const d = new Date(m.createTime)
+  const hh = String(d.getHours()).padStart(2, '0')
+  const mm = String(d.getMinutes()).padStart(2, '0')
+  if (prev && new Date(prev.createTime).getMinutes() === d.getMinutes()
+    && new Date(prev.createTime).getHours() === d.getHours()) {
+    return ''
+  }
+  return `${hh}:${mm}`
+}
+
+const rows = computed<ChatRow[]>(() => {
+  const out: ChatRow[] = []
+  let lastKey = ''
+  let prev: MessageVO | undefined
+  for (const m of list.value) {
+    const k = dayKey(m.createTime)
+    if (k !== lastKey) {
+      out.push({ kind: 'date', key: 'd-' + m.id, label: dateLabel(m.createTime) })
+      lastKey = k
+      prev = undefined
+    }
+    // ⚠️ `time` 挂在**行**上而不是塞回 msg：给 MessageVO 加一个
+    // `__time` 会让它看起来像后端字段，将来有人拿它当接口契约去写文档。
+    // 它是纯渲染派生量，只在这一行里活。
+    out.push({ kind: 'msg', key: m.id, msg: m, time: timeLabel(m, prev) })
+    prev = m
+  }
+  return out
+})
 
 async function loadPeer() {
   try {
@@ -142,10 +345,17 @@ onMounted(async () => {
   await userStore.loadProfile().catch(() => {})
   await Promise.all([load(), loadPeer()])
   timer = setInterval(pollNew, POLL_MS)
+  scroller.value?.addEventListener('scroll', onScroll, { passive: true })
 })
+
+function onScroll() {
+  const el = scroller.value
+  if (el && el.scrollTop < 40) void loadMore()
+}
 
 onBeforeUnmount(() => {
   if (timer) clearInterval(timer)
+  scroller.value?.removeEventListener('scroll', onScroll)
 })
 </script>
 
@@ -172,22 +382,94 @@ onBeforeUnmount(() => {
       </RouterLink>
     </header>
 
-    <div ref="scroller" class="scroller" data-test="message-scroller">
+    <div ref="scroller"
+      class="scroller"
+      data-test="message-scroller">
       <p v-if="loading" class="hint" data-test="message-loading">加载中…</p>
       <p v-else-if="error" class="hint err" role="alert">{{ error }}</p>
       <p v-else-if="!list.length" class="hint" data-test="message-empty">
         还没有消息，打个招呼吧。
       </p>
 
-      <ul v-else class="bubbles">
+      <!--
+        ⚠️ 「加载更早」与消息列表**不是互斥分支**：它们是上下两个东西。
+        第一版写成 `v-if="hasMore"` + `v-else-if="list.length"`，
+        结果只要还有更多历史，整屏消息就一条都不渲染 ——
+        而按钮照常显示，页面看上去是「加载中」的样子。
+        症状是聊天页只剩一个按钮，**与「消息没加载出来」完全一样**，
+        极难归因。两条都必须独立成立。
+      -->
+      <div v-if="hasMore" class="more-wrap" data-test="message-more">
+        <button
+          type="button"
+          class="more"
+          :disabled="loadingMore"
+          data-test="message-load-more"
+          @click="loadMore"
+        >{{ loadingMore ? '加载中…' : '加载更早的消息' }}</button>
+      </div>
+
+      <ul v-if="list.length" class="bubbles">
+        <template v-for="r in rows" :key="r.key">
+          <!-- 日期分隔线：只在跨天处出现，不是每条都带 -->
+          <li v-if="r.kind === 'date'" class="dayline" data-test="message-dayline">
+            {{ r.label }}
+          </li>
+
+          <li
+            v-else
+            class="row"
+            :class="mine(r.msg) ? 'me' : 'peer'"
+            :data-msg-anchor="r.msg.id"
+            :data-test="mine(r.msg) ? 'message-row-me' : 'message-row-peer'"
+          >
+            <!-- 对方的气泡带头像；自己这侧留一个等宽的占位，
+                 否则两侧气泡会左右错位（同一条消息的左右内边距不对称） -->
+            <img
+              v-if="!mine(r.msg)"
+              class="avatar"
+              :src="peerAvatar ?? ''"
+              :alt="peerName"
+              width="34"
+              height="34"
+              data-test="message-avatar"
+            >
+            <span v-else class="avatar-ghost" aria-hidden="true" />
+
+            <div class="col">
+              <div class="bub">
+                {{ r.msg.content }}
+              </div>
+              <time v-if="r.time" class="stamp" data-test="message-time">
+                {{ r.time }}
+              </time>
+            </div>
+          </li>
+        </template>
+      </ul>
+
+      <!-- P31：发送失败的气泡留在原地，标红 + 可重发（而不是弹 toast 就消失） -->
+      <ul v-if="failed.length" class="bubbles" data-test="message-failed">
         <li
-          v-for="m in list"
-          :key="m.id"
-          class="bubble"
-          :class="mine(m) ? 'me' : 'peer'"
-          :data-test="mine(m) ? 'message-bubble-me' : 'message-bubble-peer'"
+          v-for="f in failed"
+          :key="f.key"
+          class="row me"
+          data-test="message-failed-row"
         >
-          {{ m.content }}
+          <span class="avatar-ghost" aria-hidden="true" />
+          <div class="col">
+            <div class="bub bad" data-test="message-failed-bubble">{{ f.content }}</div>
+            <div class="retry-row">
+              <span class="why" data-test="message-failed-reason">{{ f.error }}</span>
+              <button
+                type="button"
+                class="retry"
+                data-test="message-retry"
+                :disabled="sending"
+                @click="retryFailed(f)"
+              >重新发送</button>
+            </div>
+          </div>
         </li>
       </ul>
     </div>
@@ -203,7 +485,21 @@ onBeforeUnmount(() => {
         :maxlength="MAX_LEN"
         placeholder="说点什么…"
         autocomplete="off"
+        @keydown.enter.exact.prevent="send"
+        @keydown.enter.shift.stop
       />
+      <!-- 表情开关：切换动作 → button（aria-expanded 而非 aria-selected） -->
+      <button
+        type="button"
+        class="icon-btn"
+        data-test="message-emoji-toggle"
+        :aria-expanded="emojiOpen"
+        aria-label="表情"
+        title="表情"
+        @click="emojiOpen = !emojiOpen"
+      >
+        <van-icon name="smile-o" />
+      </button>
       <!--
         发送是**动作**不是导航 → button 而不是链接。
         disabled 在请求在飞时就置上：连点两次会发两条，私信里这个代价很高
@@ -218,6 +514,8 @@ onBeforeUnmount(() => {
         发送
       </button>
     </form>
+
+    <EmojiPanel v-if="emojiOpen" @pick="insertEmoji" />
   </main>
 </template>
 
@@ -242,9 +540,53 @@ onBeforeUnmount(() => {
 
 .bubbles { list-style: none; margin: 0; padding: 0; }
 
-.bubble {
-  max-width: 78%;
+/* 日期分隔线：居中、灰、小 —— 它是**分隔**，不是内容 */
+.dayline {
+  list-style: none;
+  text-align: center;
+  font-size: var(--xk-fs-12);
+  color: var(--xk-text-3);
+  margin: var(--xk-space-4) 0 var(--xk-space-3);
+}
+
+/* 一行 = 头像 + （气泡 + 时间戳） */
+.row {
+  list-style: none;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--xk-space-2);
   margin-bottom: var(--xk-space-3);
+}
+.row.me { flex-direction: row-reverse; }
+
+.avatar {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--xk-surface-2);
+}
+
+/* 自己这侧的等宽占位 —— 不留的话两侧气泡左右内边距不对称，
+   同一条消息的两端对不齐，看起来像"排版没居中" */
+.avatar-ghost {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+}
+
+.col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--xk-space-1);
+  /* ⚠️ min-width:0：flex 子项默认 min-content，长消息会把这一列撑出容器 */
+  min-width: 0;
+  max-width: 78%;
+}
+.row.me .col { align-items: flex-end; }
+
+.bub {
   padding: var(--xk-space-3) var(--xk-space-4);
   border-radius: 16px;
   font-size: var(--xk-fs-16);
@@ -253,20 +595,61 @@ onBeforeUnmount(() => {
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
-
-.bubble.peer {
-  margin-right: auto;
+.row.peer .bub {
   background: var(--xk-surface-2);
   border: 1px solid var(--xk-stroke);
   border-bottom-left-radius: 4px;
 }
-
-.bubble.me {
-  margin-left: auto;
+.row.me .bub {
   background: var(--xk-amber);
   color: var(--xk-amber-ink);
   border-bottom-right-radius: 4px;
 }
+
+/* 发送失败：标红 + 虚线边，与成功消息**形状明显不同**
+   —— 虚线是关键，浅红底在琥珀气泡旁边几乎看不出来 */
+.bub.bad {
+  background: transparent;
+  color: var(--xk-text-3);
+  border: 1px dashed var(--xk-danger);
+}
+
+.retry-row {
+  display: flex;
+  align-items: center;
+  gap: var(--xk-space-2);
+}
+.why { font-size: var(--xk-fs-12); color: var(--xk-danger); }
+.retry {
+  font-size: var(--xk-fs-12);
+  color: var(--xk-amber-text);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  padding: 0;
+  min-height: 28px;
+}
+.retry:disabled { opacity: 0.5; cursor: default; }
+
+.stamp {
+  font-size: var(--xk-fs-12);
+  color: var(--xk-text-3);
+  font-variant-numeric: tabular-nums;
+  padding: 0 var(--xk-space-1);
+}
+
+.more-wrap { text-align: center; padding: var(--xk-space-3) 0; }
+.more {
+  font-size: var(--xk-fs-13);
+  color: var(--xk-text-2);
+  background: var(--xk-surface-2);
+  border: 1px solid var(--xk-stroke);
+  border-radius: 999px;
+  padding: var(--xk-space-2) var(--xk-space-4);
+  min-height: 40px;
+  cursor: pointer;
+}
+.more:disabled { opacity: 0.6; cursor: default; }
 
 .composer {
   flex: none;
@@ -277,6 +660,39 @@ onBeforeUnmount(() => {
   padding-bottom: calc(var(--xk-space-3) + env(safe-area-inset-bottom, 0px));
   border-top: 1px solid var(--xk-stroke);
   background: var(--xk-surface-1);
+}
+
+/* 表情开关：与发送键同高，热区 ≥40px（P13） */
+.icon-btn {
+  flex: 0 0 auto;
+  min-width: 44px;
+  min-height: 44px;
+  align-self: flex-end;
+  border: 0;
+  background: none;
+  color: var(--xk-text-2);
+  font-size: 22px;
+  cursor: pointer;
+  border-radius: var(--xk-radius-sm);
+  -webkit-tap-highlight-color: transparent;
+}
+.icon-btn:active { background: var(--xk-surface-2); }
+
+@media (prefers-reduced-motion: reduce) {
+  .icon-btn { transition: none; }
+}
+
+@media (min-width: 1024px) {
+  /* 桌面消息区不要无限拉宽 —— 气泡 78% 的上限靠 .col 承担，
+     这里只把整列收进可读宽度内 */
+  .scroller { max-width: 760px; margin: 0 auto; width: 100%; }
+  .composer { max-width: 760px; margin: 0 auto; width: 100%; }
+}
+
+@media (max-width: 1023px) {
+  /* 表情面板占 236px；不加这个 page 会多出等高的死空白（与 P28 的
+     --bar-h 同源：面板出现时输入框被推上去，但要给 TabBar 让位） */
+  .chat { padding-bottom: 0; }
 }
 
 /* ⚠️ flex 内 textarea 必须 min-width:0 —— 否则 placeholder 一长

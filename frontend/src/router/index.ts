@@ -81,6 +81,14 @@ meta: { title: '通知', requiresAuth: true },
       meta: { title: '私信', requiresAuth: true },
     },
   {
+    // 沉浸流（P34）：一屏一张、上下滑。与发现流共用排序（后端同一个 mapper），
+    // 但带全部图片与正文摘要，所以要独立一个 VO 与页面。
+    path: '/immerse',
+    name: 'immerse',
+    component: () => import('@/views/ImmerseView.vue'),
+    meta: { title: '沉浸浏览', requiresAuth: true },
+  },
+  {
     // id 是雪花 ID，必须按字符串透传。这里写 :id(\\d+) 只是收窄非法路径，
     // 不要写成 :id(\\d{1,15}) —— 那样真笔记的 17~18 位 ID 反而进不来。
     path: '/note/:id(\\d+)',

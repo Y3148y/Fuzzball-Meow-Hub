@@ -288,6 +288,19 @@ type="search"
         </button>
       </div>
 
+      <!--
+        P34 沉浸浏览入口。
+
+        它是**导航**（换到另一个页面）→ RouterLink 而不是 button。
+        ⚠️ 入口刻意放在 tab **外面**：它不是第三个信息流来源，而是
+        「把同一批内容换成沉浸形态看」的一个视图开关。放进 tablist 会让
+        读屏把它当成第三个可切换的数据源，而点它实际是整页跳走。
+      -->
+      <RouterLink class="immerse-entry" to="/immerse" data-test="immerse-entry">
+        <van-icon name="photo-o" aria-hidden="true" />
+        <span>沉浸浏览</span>
+      </RouterLink>
+
       <p v-if="feedLoading" class="hint" data-test="feed-loading">加载中…</p>
       <p v-else-if="feedError" class="hint err" data-test="feed-error">{{ feedError }}</p>
       <p v-else-if="!feed.length" class="hint" data-test="feed-empty">
@@ -594,6 +607,27 @@ type="search"
 
 .feed-tab:hover {
   color: var(--xk-text);
+}
+
+/* P34 沉浸入口：小一号的次要按钮，紧贴 tab 行右侧。
+   热区 ≥40px（P13 下限）；不用 padding 撑，改 min-height。 */
+.immerse-entry {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: var(--xk-space-2);
+  min-height: 40px;
+  padding: 0 var(--xk-space-3);
+  border: 1px solid var(--xk-stroke);
+  border-radius: 999px;
+  background: none;
+  color: var(--xk-text-2);
+  font-size: var(--xk-fs-13);
+  -webkit-tap-highlight-color: transparent;
+}
+.immerse-entry:hover {
+  border-color: var(--xk-amber);
+  color: var(--xk-amber-text);
 }
 
 .hint {

@@ -573,7 +573,7 @@ const { markClean } = useUnsavedChanges(
   color: var(--xk-text-3);
   font-size: var(--xk-fs-12);
 }
-/* 识别预览：贴在下���输入框下面，一行 chip。视觉权重刻意压得很低，
+/* 识别预览：贴在下面输入框下面，一行 chip。视觉权重刻意压得很低，
    它是「告诉你系统读到了什么」，不是内容本身 */
 .pickrow {
   display: flex;

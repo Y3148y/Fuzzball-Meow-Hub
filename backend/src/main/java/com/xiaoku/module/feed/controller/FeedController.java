@@ -3,6 +3,7 @@ package com.xiaoku.module.feed.controller;
 import com.xiaoku.common.result.PageVO;
 import com.xiaoku.common.result.Result;
 import com.xiaoku.module.feed.service.FeedService;
+import com.xiaoku.module.note.vo.ImmerseCardVO;
 import com.xiaoku.module.note.vo.NoteListItemVO;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -41,6 +42,24 @@ public class FeedController {
             @Parameter(description = "页码，从 1 开始") @RequestParam(defaultValue = "1") long page,
             @Parameter(description = "每页条数") @RequestParam(defaultValue = "20") long size) {
         return Result.success(feedService.discoverFeed(safePage(page), safeSize(size)));
+    }
+
+    /**
+     * 沉浸流：给「一屏一张、上下滑」那个页面喂数据
+     *
+     * <p>排序与发现流**刻意一致**（见 FeedServiceImpl#immerseFeed 的注释）：
+     * 首页看到的内容与滑到的内容必须对得上，否则「首页有但滑不到」极难归因。
+     *
+     * <p>size 上限放到 20（发现流是 100）：沉浸流一次渲染一整屏的卡片，
+     * 一次拉 100 条会同时下载上百张图，移动网络下直接把首屏拖垮。
+     */
+    @Operation(summary = "沉浸流",
+        description = "排序与发现流一致，但每条带全部图片与正文摘要，供一屏一张的上下滑页面使用")
+    @GetMapping("/immerse")
+    public Result<PageVO<ImmerseCardVO>> immerseFeed(
+        @Parameter(description = "页码，从 1 开始") @RequestParam(defaultValue = "1") long page,
+        @Parameter(description = "每页条数，上限 20") @RequestParam(defaultValue = "6") long size) {
+        return Result.success(feedService.immerseFeed(safePage(page), (int) Math.min(Math.max(size, 1L), 20L)));
     }
 
     private static int safePage(long page) {

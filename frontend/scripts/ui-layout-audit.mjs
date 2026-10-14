@@ -437,7 +437,7 @@ export async function auditPage(s, w, hash, height = 900) {
   // 超时**不再静默吞掉**：以前是 `.catch(() => {})`，于是「关注流还没回来」
   // 会被当成「关注流是空的」继续量下去，最后报出 `cols=undefined`、
   // `covers=[]` 这种看不出根因的假红（本轮真踩了一次）。现在把结果带回
-  // 去，由 auditOne 显式断言「进了终态」——超时是���问题，别混进几何断言里。
+  // 去，由 auditOne 显式断言「进了终态」——超时是超时问题，别混进几何断言里。
   const ready = await s.waitFor(`(() => {
     // 页面骨架：多数页是 .page，登录页是 .login（它没有 .page 外壳）
     if (!document.querySelector('.page, .login')) return false

@@ -1,5 +1,5 @@
 import { get } from './request'
-import type { NoteListItemVO, PageVO, SnowflakeId } from './types'
+import type { ImmerseCardVO, NoteListItemVO, PageVO, SnowflakeId } from './types'
 
 /** 我关注的人的最新笔记（跟踪）。列表不带正文，只有卡片字段 */
 export function getFollowFeed(page = 1, size = 20) {
@@ -14,6 +14,19 @@ export function getFollowFeed(page = 1, size = 20) {
  */
 export function getDiscoverFeed(page = 1, size = 20) {
   return get<PageVO<NoteListItemVO>>('/feed/discover', { page, size })
+}
+
+/**
+ * 沉浸流（P34）：一屏一张、上下滑那个页面
+ *
+ * <p>排序与 {@link getDiscoverFeed} **一致**（后端复用同一个 mapper），
+ * 但每条带**全部图片**与正文摘要 —— 卡片要在卡内轮播，
+ * 而 {@code NoteListItemVO} 只有封面。
+ *
+ * <p>默认 size=6：一次渲染一整屏卡片，拉太多会同时下载上百张图。
+ */
+export function immerseFeed(page = 1, size = 6) {
+  return get<PageVO<ImmerseCardVO>>('/feed/immerse', { page, size })
 }
 
 /** 某作者的笔记列表，作者主页用 */

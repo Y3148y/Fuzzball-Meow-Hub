@@ -55,7 +55,7 @@ function brightness(r: number, g: number, b: number, k: number): [number, number
  * 灰度。
  *
  * <p>⚠️ **必须带强度**：CSS 的 {@code grayscale(0.3)} 是「30% 灰 + 70% 原图」，
- * 不是完全变灰。早期版本这里直接全灰再叠 sepia，于��「胶片」那套
+ * 不是完全变灰。早期版本这里直接全灰再叠 sepia，于于「胶片」那套
  * （grayscale(0.3) sepia(0.22)）与 CSS 差 122 —— 而且**单独测 grayscale
  * 是测不出来的**，必须测组合。
  */

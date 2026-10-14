@@ -1,6 +1,7 @@
 package com.xiaoku.module.feed.service;
 
 import com.xiaoku.common.result.PageVO;
+import com.xiaoku.module.note.vo.ImmerseCardVO;
 import com.xiaoku.module.note.vo.NoteListItemVO;
 
 /**
@@ -26,4 +27,19 @@ public interface FeedService {
      * @param size 每页条数
      */
     PageVO<NoteListItemVO> discoverFeed(int page, int size);
+
+    /**
+     * 沉浸流（P34）：给「一屏一张、上下滑」那个页面喂数据
+     *
+     * <p>排序与 {@link #discoverFeed} **完全一致**（关注优先 → 热度 → 时间），
+     * 刻意不另造一套：两处排序若不一致，用户在首页看到的内容与滑到的内容
+     * 会对不上，而「首页有但滑不到」极难归因。
+     *
+     * <p>差异只在<b>返回什么</b>：带全部图片（卡内轮播）与正文摘要，
+     * 而 {@code NoteListItemVO} 只有封面。
+     *
+     * @param page 页码，从 1 开始。沉浸流按「一条一页」消费，不需要游标
+     * @param size 每页条数
+     */
+    PageVO<ImmerseCardVO> immerseFeed(int page, int size);
 }

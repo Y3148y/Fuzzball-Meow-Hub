@@ -2691,7 +2691,7 @@ async function main() {
     /* ---------- ④ 删笔记 → 该笔记的全部通知消失 ---------- */
 
     // ⚠️ 基线必须取在「B 的评论已经清空」之后，否则算不准：
-    // ③ 步给 A 留了一条聚合的「XX 评论了你的笔记」通知（B 那时还留着一���评论）。
+    // ③ 步给 A 留了一条聚合的「XX 评论了你的笔记」通知（B 那时还留着一条评论）。
     // 删笔记时 retractByNoteId 会把它**一起**扫掉 —— 那是正确行为（笔记都没了，
     // 那条评论通知留着就是死链），但它会让「删笔记前后未读数相等」这条断言差 1。
     // 真实症状：期望 N+1 实际 N，而真因是基线取早了，隔了好几行。
@@ -2928,7 +2928,7 @@ const lastTwo = (hist?.list ?? []).slice(-2)
    * 23. P29 @ 提及：搜用户候选 + 评论里的 @
    *
    * 立项起因是 2026-10-11 的两条手测反馈：
-   *   「@ 什么都没���，没有候选列表」
+   *   「@ 什么都没有，没有候选列表」
    *   「@ 对方后对方后台没有任何提示」
    *
    * ⚠️ 第二条的真因**不是**通知坏了，而是**评论里的 @ 从来没实现**：
@@ -3134,6 +3134,72 @@ const lastTwo = (hist?.list ?? []).slice(-2)
     }
   }
 
+/* ================================================================
+   * 25. P34 沉浸流：/api/feed/immerse
+   *
+   * 三条设计决定：
+   *
+   * 1. **排序与发现流刻意一致**（后端复用同一个 mapper 方法）。两处排序若不一致，
+   *    用户在首页看到的内容与滑到的内容会对不上，而「首页有但滑不到」极难归因。
+   *
+   * 2. **每条带全部图片**，而 NoteListItemVO 只有封面。沉浸流是「一直往下划」的
+   *    形态，卡内还要轮播 —— 复用封面 VO 就得多打一次详情请求。
+   *
+   * 3. **图片一次 IN 批量取**，不是逐篇查。一页 6 条就是 6 次 vs 1 次往返。
+   *
+   * 本段**不注册新账号**，复用常驻 fixture（同 23/24 段）。
+   * ================================================================ */
+  {
+    const l34 = await post('/api/user/login', { body: { username: 'xk_ui_smoke', password: 'Xk@123456' } })
+    const t34 = `Bearer ${l34.json?.data?.accessToken}`
+    if (check('P34 fixture 能登录', !!t34 && t34 !== 'Bearer undefined', `token=${t34?.slice(0, 24)}`)) {
+      const d34 = await get(`/api/feed/discover?page=1&size=6`, { token: t34 })
+      const i34 = await get(`/api/feed/immerse?page=1&size=6`, { token: t34 })
+      eq('P34 沉浸流 code=0', i34.json?.code, 0)
+      const dIds = (d34.json?.data?.list ?? []).map((x) => x.id)
+      const iCards = i34.json?.data?.list ?? []
+      const iIds = iCards.map((x) => x.id)
+      check('P34 与发现流返回同样条数', dIds.length === iCards.length, `${dIds.length} vs ${iCards.length}`)
+      check('P34 排序与发现流完全一致（复用同一个 mapper）',
+        dIds.length > 0 && JSON.stringify(dIds) === JSON.stringify(iIds),
+        `${dIds.slice(0, 2)} vs ${iIds.slice(0, 2)}`)
+      eq('P34 total 与发现流相同（同一个 count）', i34.json?.data?.total, d34.json?.data?.total)
+
+      check('P34 返回卡片', iCards.length > 0, `n=${iCards.length}`)
+      check('P34 每张卡片有 images 数组', iCards.every((c) => Array.isArray(c.images)),
+        JSON.stringify(iCards.map((c) => (c.images || []).length)))
+      check('P34 图文笔记至少有图（P11 起的规则）',
+        iCards.filter((c) => c.type !== 2).every((c) => (c.images || []).length > 0),
+        JSON.stringify(iCards.map((c) => [c.type, (c.images || []).length])))
+      check('P34 卡片带作者与计数',
+        !!iCards[0]?.authorNickname && typeof iCards[0]?.likeCount === 'number',
+        JSON.stringify([iCards[0]?.authorNickname, iCards[0]?.likeCount]))
+      check('P34 authorFollowed 是布尔（P14 定过：不能靠列表来源推断）',
+        typeof iCards[0]?.authorFollowed === 'boolean', typeof iCards[0]?.authorFollowed)
+      check('P34 contentBrief 有值但限长（不是全文）',
+        iCards[0]?.contentBrief === undefined || String(iCards[0].contentBrief).length <= 121,
+        `len=${String(iCards[0]?.contentBrief ?? '').length}`)
+
+      /* ---------- 分页不重不漏 ---------- */
+      const p1 = await get(`/api/feed/immerse?page=1&size=6`, { token: t34 })
+      const p2 = await get(`/api/feed/immerse?page=2&size=6`, { token: t34 })
+      const p1Ids = (p1.json?.data?.list ?? []).map((x) => x.id)
+      const p2Ids = (p2.json?.data?.list ?? []).map((x) => x.id)
+      check('P34 两页不重叠', p1Ids.every((i) => !p2Ids.includes(i)),
+        p1Ids.filter((i) => p2Ids.includes(i)).join(','))
+      check('P34 第二页非空', p2Ids.length > 0, `n=${p2Ids.length}`)
+
+      /* ---------- 参数夹取 ---------- */
+      const big = await get(`/api/feed/immerse?page=1&size=999`, { token: t34 })
+      check('P34 size 上限夹到 20（一次渲染一屏，多了会同时下载上百张图）',
+        (big.json?.data?.list ?? []).length <= 20,
+        `n=${big.json?.data?.list?.length}`)
+      const zero = await get(`/api/feed/immerse?page=0&size=0`, { token: t34 })
+      check('P34 page=0/size=0 被夹到合法值', zero.json?.code === 0 && (zero.json?.data?.list ?? []).length > 0,
+        `code=${zero.json?.code}`)
+      codeIs('P34 未登录被拒（10005）', (await get('/api/feed/immerse?page=1&size=6')).json, 10005)
+    }
+  }
   const total = passed + failed
   console.log(`\n===== ${passed}/${total} 通过 =====`)
   if (failed > 0) {

@@ -338,7 +338,7 @@ export interface CommentCreateDTO {
    * 挑一个，而挑错人比不 @ 更糟。这里传的是前端选择器确定的 id，
    * 正文里的 `@昵称` 只是给人看的装饰。
    *
-   * <p>前端提交前会过滤掉「正文里已经被删掉」的那几���，所以把 @ 删掉
+   * <p>前端提交前会过滤掉「正文里已经被删掉」的那几条，所以把 @ 删掉
    * 不会误发提及。
    */
   mentionUserIds?: SnowflakeId[]
@@ -370,6 +370,34 @@ export interface NoteListItemVO {
   type: number
   title: string
   cover: string | null
+  likeCount: number
+  collectCount: number
+  commentCount: number
+  createTime: string
+  authorId: SnowflakeId
+  authorNickname: string
+  authorAvatar: string | null
+  authorFollowed: boolean
+}
+
+/**
+ * 沉浸流的一张卡片（P34），对应后端 ImmerseCardVO
+ *
+ * <p>与 {@link NoteListItemVO} 的差别只有两处：**带全部图片**（卡内轮播）
+ * 与**带正文摘要**（限 120 字，服务端截）。刻意不带全文 ——
+ * 几百字的正文会让每张卡高度不可控，破坏「一屏一张」的构图。
+ */
+export interface ImmerseCardVO {
+  id: SnowflakeId
+  /** 1 图文 2 视频 */
+  type: 1 | 2
+  /** 视频 URL，仅 type=2 */
+  videoUrl?: string
+  /** 全部图片，按笔记内顺序。图文笔记至少有 1 张（P11 起的规则） */
+  images: string[]
+  title: string
+  /** 正文摘要（限 120 字），不是全文 */
+  contentBrief?: string
   likeCount: number
   collectCount: number
   commentCount: number

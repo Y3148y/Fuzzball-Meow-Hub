@@ -22,11 +22,13 @@ const router = useRouter()
 const userStore = useUserStore()
 
 /**
- * 详情/编辑/发布/登录页不显示，见上面第 2 条。
+ * 详情/编辑/发布/登录/沉浸流不显示，见上面第 2 条。
  * 名字必须与 router/index.ts 的 `name` 逐字一致：详情页是 **`note-detail`**
  * 不是 `note`（写错过一次，表现是详情页底部同时出现吸底操作栏 + tab 栏）。
+ * `immerse`（P34）也不挂：那个页面自己占满整屏，底部再压一条 tab 栏
+ * 既抢焦点又让它「一屏一张」的构图失效。
  */
-const HIDDEN_ROUTES = new Set(['login', 'note-detail', 'note-edit', 'publish'])
+const HIDDEN_ROUTES = new Set(['login', 'note-detail', 'note-edit', 'publish', 'immerse'])
 
 const show = computed(() => !HIDDEN_ROUTES.has(String(route.name)))
 

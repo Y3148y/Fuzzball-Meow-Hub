@@ -12,10 +12,15 @@ import com.xiaoku.module.note.support.NoteCounterStore;
 import com.xiaoku.module.note.vo.NoteListItemVO;
 import com.xiaoku.module.user.service.UserQueryService;
 import com.xiaoku.module.user.vo.UserVO;
+import com.xiaoku.module.note.entity.NoteImageEntity;
+import com.xiaoku.module.note.mapper.NoteImageMapper;
+import com.xiaoku.module.note.vo.ImmerseCardVO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -25,11 +30,15 @@ import java.util.Set;
 @RequiredArgsConstructor
 public class FeedServiceImpl implements FeedService {
 
+    /** 正文摘要的长度上限（字符）。沉浸流卡片只有几行文字的位置，超了就没意义 */
+    private static final int BRIEF_MAX = 120;
+
     private final FeedMapper feedMapper;
     private final UserQueryService userQueryService;
     private final NoteCounterStore counterStore;
     private final UserFollowQueryService userFollowQueryService;
     private final UserBlockService userBlockService;
+    private final NoteImageMapper noteImageMapper;
 
     @Override
     public PageVO<NoteListItemVO> followFeed(int page, int size) {
@@ -52,6 +61,75 @@ public class FeedServiceImpl implements FeedService {
         long total = feedMapper.countDiscover(userId, hidden);
         long offset = (long) (page - 1) * size;
         return assemble(feedMapper.pageDiscover(userId, offset, size, hidden), total, page, size, userId);
+    }
+
+    /**
+     * 沉浸流（P34）
+     *
+     * <p>排序与 {@link #discoverFeed} <b>刻意复用同一个 mapper 方法</b>：
+     * 两处排序若不一致，用户在首页看到的内容与滑到的内容会对不上，
+     * 而「首页有但滑不到」极难归因 —— 宁可少写一遍 SQL 也不能有两套口径。
+     */
+    @Override
+    public PageVO<ImmerseCardVO> immerseFeed(int page, int size) {
+        Long userId = UserContextHolder.requireUserId();
+
+        Set<Long> hidden = userBlockService.hiddenUserIds(userId);
+        long total = feedMapper.countDiscover(userId, hidden);
+        long offset = (long) (page - 1) * size;
+        List<NoteEntity> notes = feedMapper.pageDiscover(userId, offset, size, hidden);
+        if (notes.isEmpty()) {
+            return PageVO.of(List.of(), total, page, size);
+        }
+
+        List<Long> authorIds = notes.stream().map(NoteEntity::getUserId).distinct().toList();
+        Map<Long, UserVO> users = userQueryService.findUserVOMap(authorIds);
+        Set<Long> mine = userFollowQueryService.batchFollowingIds(userId, authorIds);
+        // 计数以 Redis 为准，与首页同一套（pipeline 一次往返）
+        counterStore.applyCounts(notes);
+
+        // ⚠️ **一次 IN 取全页的图**，不是逐篇查：沉浸流是「一直往下划」的形态，
+        // 每划一屏多几次往返，手感上就是「偶尔卡一下」（543 篇里实测 1.4 张/篇，
+        // 一页 6 条就是 6 次 vs 1 次的差别）。
+        List<Long> noteIds = notes.stream().map(NoteEntity::getId).toList();
+        Map<Long, List<String>> images = new HashMap<>();
+        for (NoteImageEntity img : noteImageMapper.listByNoteIds(noteIds)) {
+            images.computeIfAbsent(img.getNoteId(), k -> new ArrayList<>()).add(img.getUrl());
+        }
+
+        List<ImmerseCardVO> out = new ArrayList<>(notes.size());
+        for (NoteEntity note : notes) {
+            UserVO author = users.get(note.getUserId());
+            // 视频笔记没有图（note.video_url 才是它的封面）；图文一定有图
+            // （P11 起的规则：图文必须至少一张图）
+            List<String> imgs = images.getOrDefault(note.getId(), List.of());
+            out.add(ImmerseCardVO.builder()
+                    .id(note.getId())
+                    .type(note.getType())
+                    .videoUrl(note.getVideoUrl())
+                    .images(imgs)
+                    .title(note.getTitle())
+                    .contentBrief(brief(note.getContent()))
+                    .likeCount(note.getLikeCount())
+                    .collectCount(note.getCollectCount())
+                    .commentCount(note.getCommentCount())
+                    .authorId(note.getUserId())
+                    .authorNickname(author == null ? "已注销用户" : author.getNickname())
+                    .authorAvatar(author == null ? null : author.getAvatar())
+                    .authorFollowed(mine.contains(note.getUserId()))
+                    .createTime(note.getCreateTime())
+                    .build());
+        }
+        return PageVO.of(out, total, page, size);
+    }
+
+    /** 正文摘要：压掉换行并限长。沉浸流卡片只有几行文字的位置 */
+    private static String brief(String content) {
+        if (content == null || content.isBlank()) {
+            return null;
+        }
+        String s = content.replaceAll("\\s+", " ").strip();
+        return s.length() <= BRIEF_MAX ? s : s.substring(0, BRIEF_MAX) + "…";
     }
 
     /**

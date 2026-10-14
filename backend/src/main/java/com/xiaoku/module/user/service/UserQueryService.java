@@ -178,7 +178,7 @@ public class UserQueryService {
         int cap = Math.max(1, Math.min(limit, 20));
         // ⚠️ 空关键词**不能**返回空列表（P30 修的真缺陷）：
         // 用户刚敲出 `@` 就停住是最常见的动作，此时就该看到候选 ——
-        // 小红书正是这样。返回空列表的症状是「敲了 @ 什么都没��」，
+        // 小红书正是这样。返回空列表的症状是「敲了 @ 什么都没什么都没」，
         // 而当时的 CDP 用例敲的是 `@xk_ui_inte`（带前缀），永远走不到这里。
         if (kw.isEmpty()) {
             return listMentionSuggestions(viewerId, cap);

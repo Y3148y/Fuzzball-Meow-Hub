@@ -46,6 +46,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import com.xiaoku.common.util.IdListUtil;
+import com.xiaoku.common.support.VideoTranscoder;
 
 @Slf4j
 @Service
@@ -93,7 +94,18 @@ public class NoteServiceImpl implements NoteService {
         note.setContent(dto.getContent().trim());
         note.setVideoUrl(dto.getVideoUrl());
         // 封面缺省取第一张图，省得前端每篇都单独上传一张
-        note.setCover(params.images().isEmpty() ? null : params.images().get(0));
+        //
+        // ⚠️ **视频笔记必须从 videoUrl 推导封面**（P33）：视频没有 note_image 行，
+        // 所以下面那行对视频恒为 null —— 而 `cover` 是**首页瀑布流 / 搜索 / 收藏夹**
+        // 唯一的图来源，于是视频笔记在所有列表里都是一张**空白卡**。
+        //
+        // 不新建一个 videoCover 字段的理由：那些地方读的都是 cover，
+        // 让它们各自判断「type==2 就去算封面」要改十几个 VO 与前端分支，
+        // 而封面**本来就是 cover 这个字段该有的东西** ——
+        // P19 当时留空只是因为「还没想清楚视频的封面从哪来」。
+        String cover = !params.images().isEmpty() ? params.images().get(0)
+                : VideoTranscoder.coverUrlOf(dto.getVideoUrl());
+        note.setCover(cover);
         note.setStatus(1);
         noteMapper.insert(note);
         // 提前置位（事务提交前）：假阳性只多查一次库，「漏置位 = 详情 404」才是要命的。

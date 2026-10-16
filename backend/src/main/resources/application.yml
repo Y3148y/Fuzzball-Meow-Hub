@@ -189,6 +189,17 @@ xiaoku:
     # token 前缀，留空表示前端直接传裸 token
     token-prefix: "Bearer "
 
+  # P33 视频转码
+  #
+  # ⚠️ ffmpeg **不随 jar 发布**，它是系统级二进制：
+  #   dev  装在 E:\ffmpeg\bin（不在 PATH 上，所以这里要写绝对路径）
+  #   prod 后端镜像里要 COPY 一份静态 Linux 版进去（见 Dockerfile.localtemp）
+  # 找不到时转码会**自动降级为「保留原文件」而不是上传失败** ——
+  # 用户传的就是 mp4/webm，原文件多半本来就能播，转码只是增强。
+  video:
+    enabled: ${XK_VIDEO_TRANSCODE:true}
+    ffmpeg-path: ${XK_FFMPEG_PATH:E:\ffmpeg\bin\ffmpeg.exe}
+    ffprobe-path: ${XK_FFPROBE_PATH:E:\ffmpeg\bin\ffprobe.exe}
   # 开发期种子数据开关（仅 dev / test profile 生效）
   init-demo-data: ${XK_INIT_DEMO_DATA:true}
 

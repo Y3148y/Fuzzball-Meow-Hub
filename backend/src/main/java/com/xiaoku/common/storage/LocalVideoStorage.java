@@ -1,6 +1,7 @@
 package com.xiaoku.common.storage;
 
 import com.xiaoku.common.config.StorageConfig;
+import com.xiaoku.common.support.VideoTranscoder;
 import com.xiaoku.common.exception.BizException;
 import com.xiaoku.common.result.ErrorCodeEnum;
 import lombok.RequiredArgsConstructor;
@@ -58,6 +59,8 @@ public class LocalVideoStorage implements VideoStorage {
     private static final long MAX_SIZE = 200L * 1024 * 1024;
 
     private final StorageConfig storageConfig;
+    /** P33：转码 + 抽封面。转码失败会降级为「保留原文件」，不让上传失败 */
+    private final VideoTranscoder transcoder;
 
     @Override
     public String store(MultipartFile file) {
@@ -77,7 +80,8 @@ public class LocalVideoStorage implements VideoStorage {
         }
 
         String dateDir = LocalDate.now().format(DATE_DIR);
-        String filename = UUID.randomUUID().toString().replace("-", "") + ext;
+        String baseName = UUID.randomUUID().toString().replace("-", "");
+        String filename = baseName + ext;
         Path dir = Paths.get(storageConfig.getLocalPath(), dateDir).toAbsolutePath().normalize();
         Path target = dir.resolve(filename).normalize();
         if (!target.startsWith(dir)) {
@@ -95,8 +99,58 @@ public class LocalVideoStorage implements VideoStorage {
         }
 
         long mb = file.getSize() / 1024 / 1024;
-        log.info("视频已存储 {}（{}MB，无转码）", filename, mb);
+
+        // P33：转码 + 抽封面。
+        //
+        // ⚠️ **转码失败一律降级为「保留原文件」，不让整个上传失败**：
+        // 用户传的就是 mp4/webm，原文件多半本来就能播，转码是
+        // 「让它在更多设备上能播」的增强，不该成为「能不能发」的门禁。
+        //
+        // ⚠️ 降级时把原文件留着（不删）：它就是最终产物。
+        // 转码成功时删原文件 —— 留着它只是浪费磁盘，而用户永远看不到它
+        //（URL 已经指向转码产物）。
+        VideoTranscoder.Result tr = transcoder.transcode(target, dir, baseName);
+        if (tr.transcoded()) {
+            deleteQuietly(target);
+            long outMb = tr.video().toFile().length() / 1024 / 1024;
+            log.info("视频已转码 {} → {}（{}MB → {}MB）{}x{} {}s",
+                    filename, tr.video().getFileName(), mb, outMb, tr.width(), tr.height(), tr.durationSec());
+            return storageConfig.getLocalUrlPrefix() + "/" + dateDir + "/" + tr.video().getFileName();
+        }
+        log.info("视频已存储 {}（{}MB，未转码：{}）", filename, mb, tr.reason());
         return storageConfig.getLocalUrlPrefix() + "/" + dateDir + "/" + filename;
+    }
+
+    /**
+     * 取某个视频对应的封面 URL（转码时抽的那一帧）
+     *
+     * <p>刻意**不缓存**每次转码的返回：封面是转码的副产品，而
+     * {@link #store} 的签名返回 URL 单值。让调用方拿不到封面，
+     * 结果就是「列表页全是空白占位」—— 所以这里提供补查路径。
+     *
+     * <p>找不到就返回 {@code null}（封面是可选产物，没有它视频照样能用）。
+     */
+    public String coverOf(String videoUrl) {
+        String coverUrl = VideoTranscoder.coverUrlOf(videoUrl);
+        if (coverUrl == null || !coverUrl.startsWith(storageConfig.getLocalUrlPrefix() + "/")) {
+            return null;
+        }
+        try {
+            String relative = coverUrl.substring(storageConfig.getLocalUrlPrefix().length() + 1);
+            Path root = Paths.get(storageConfig.getLocalPath()).toAbsolutePath().normalize();
+            Path cover = root.resolve(relative).normalize();
+            return cover.startsWith(root) && Files.isRegularFile(cover) ? coverUrl : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static void deleteQuietly(Path p) {
+        try {
+            Files.deleteIfExists(p);
+        } catch (IOException ignored) {
+            // 残留只是浪费一点磁盘，不该让上传失败
+        }
     }
 
     @Override

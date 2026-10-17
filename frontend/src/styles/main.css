@@ -25,6 +25,18 @@
 :root {
   color-scheme: light;
 
+  /* 桌面顶栏 SiteNav 的**外高**（含它自己的 1px border-bottom）。
+     它是 sticky，**占布局空间**，所以任何想「占满剩余高度」的页面都必须减掉它
+     （见 MessageView 的 .chat）。
+     ⚠️ 之前没有 token，两处各写各的（一个靠 padding 顺手撑出、一个在聊天页
+        写死 100dvh），结果桌面聊天页文档多出一条纵向滚动、输入框被顶到视口外。
+        「写死两处」是 AGENTS 记过的老坑：改了一处另一处不动，
+        且症状（输入框看不见）与真因（高度算错）隔着一整屏。
+     ⚠️ 这个值是 67 而不是 66：`.inner` 内容 50 + 上下 padding 16 = 66，
+        再加 `.site-nav` 的 1px border-bottom。改成 SiteNav 的 min-height 后
+        由它保证 token 与实际一致，改 padding 时也不会漂。 */
+  --xk-sitenav-h: 67px;
+
   /* 底层背景与卡片 */
   --xk-bg: #f4f6fb;
   --xk-bg-soft: #e9edf8;

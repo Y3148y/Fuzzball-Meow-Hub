@@ -1,0 +1,61 @@
+# =====================================================================
+# prod profile 覆盖
+#
+# ⚠️ 这个文件以前**只存在于 AGENTS.md 的文字里，实际并不存在** ——
+#    文档说「prod 关闭 SQL 打印」，代码里基础 application.yml 却把
+#    `log-impl: StdOutImpl` 硬编码着，于是 prod 一直在打印全量 SQL。
+#    **文档与实现不一致时，先相信代码**（本项目的血泪教训，见 P12/P23）。
+#
+#    生效方式：compose 里 `XK_PROFILE: prod`，而 application.yml 的
+#    `spring.profiles.active: ${XK_PROFILE:dev}` 会读它 → 本文件被激活。
+#
+#    ⚠️ 这里的值会**覆盖**基础 application.yml 的同名项，所以只写要改的，
+#        不要把整个基础配置复制过来（复制过来以后基础配置再改就不会生效，
+#        又变成一个新的「文档/代码漂移」来源）。
+# =====================================================================
+
+mybatis-plus:
+  configuration:
+    # MyBatis 的独立日志开关。设成 NoLoggingImpl 一劳永逸，
+    # 不依赖「哪个 logger 名字恰好命中」这种间接推断。
+    log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl
+
+logging:
+  level:
+    # ⚠️ **真正关掉 SQL 打印的是下面这一行 `com.xiaoku: info`**，理由值得写下来，
+    #    因为基础配置里有一行**看起来在管这件事、实际匹配不到任何类**的设置：
+    #
+    #      # 打印 SQL
+    #      com.xiaoku.module.mapper: debug        ← 基础 application.yml L286
+    #
+    #    而实际的 mapper logger 名长这样（从 dev 日志统计出来的）：
+    #      com.xiaoku.module.note.mapper.NoteMapper
+    #      com.xiaoku.module.message.mapper.MessageMapper
+    #      com.xiaoku.module.user.mapper.UserMapper
+    #      com.xiaoku.module.feed.mapper.UserFollowMapper ...
+    #    全部是 `com.xiaoku.module.<域>.mapper`，**没有一个是 `com.xiaoku.module.mapper`**，
+    #    所以那行 pattern 匹配不到任何 logger，是个**死配置**。
+    #    SQL 之所以会被打出来，是因为它们的父级 `com.xiaoku` 被设成了 debug ——
+    #    降 `com.xiaoku` 到 info 就够了，而且能一次带走全部 mapper 的 SQL。
+    #
+    #    （顺带：那行死配置留在 dev 里无害，但**别再往它上面加期望** ——
+    #      「我明明配置了怎么没生效」的典型来源就是这种「写错 package 名但不报错」的设置。）
+    com.xiaoku: info
+    # 这行同样收掉。注意它当前匹配不到任何类（见上），保留是为了
+    # 哪天真的有人建了 com.xiaoku.module.mapper 包时不会又冒出 SQL。
+    com.xiaoku.module.mapper: info
+    # Druid 的 wall filter 在生产上是必要的（防 SQL 注入），
+    # 但它自己的 debug 输出会刷屏，只留 warn 以上。
+    com.alibaba.druid: warn
+
+xiaoku:
+  jwt:
+    # ⚠️ 这里**故意不写兜底值**：基础配置里是
+    #    `${XK_JWT_SECRET:CHANGE_ME_...}`，而那是给 dev 用的占位。
+    #    生产环境一旦漏注入环境变量，带兜底就会**静默地用一个公开的密钥签发
+    #    token** —— 等于任何人都能伪造任意用户的身份，且没有任何报错。
+    #    不写兜底则会在启动阶段直接失败（fail fast），这正是我们要的。
+    #    compose 侧已经用 `${XK_JWT_SECRET:?...}` 挡住了，这里是第二道防线
+    #    （覆盖「手工 java -jar 但没带环境变量」这种情况）。
+    secret: ${XK_JWT_SECRET}
+  init-demo-data: false

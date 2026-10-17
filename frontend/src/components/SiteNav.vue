@@ -68,6 +68,12 @@ async function logout() {
   backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--xk-border);
   display: none;
+  /* 由 token 保证外高（含 border），MessageView 的 .chat 按同一个值减出
+     可用高度 —— 改了这里不改那里，聊天页底部就会多出一条文档滚动。
+     min-height 而不是 height：内容更高时宁可顶栏变高，
+     也不要压掉内容（见 --xk-sitenav-h 的注释）。 */
+  box-sizing: border-box;
+  min-height: var(--xk-sitenav-h);
 }
 
 @media (min-width: 1024px) {
@@ -80,6 +86,7 @@ async function logout() {
   max-width: 1200px;
   margin: 0 auto;
   padding: 8px 32px;
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   justify-content: space-between;

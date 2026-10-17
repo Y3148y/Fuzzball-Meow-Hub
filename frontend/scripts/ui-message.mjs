@@ -185,16 +185,53 @@ try {
     !!dayl && /^(今天|昨天|\d{1,2}月\d{1,2}日|\d{4}年\d{1,2}月\d{1,2}日)$/.test(dayl.text),
     dayl?.text)
 
-  // ② 对方气泡有头像，自己的没有（自己这侧是等宽占位）
+  // ② 对方气泡带头像，自己的没有（自己这侧是等宽占位）
+  //
+  // ⚠️ **这条断言在 2026-10-17 被改写了语义（原「对方气泡带头像」只判 hasImg）**。
+  // 原来的写法是「对方那一侧存在 `[data-test=message-avatar]` 就算过」，
+  // 而旧实现是 `<img v-if="!mine(r.msg)" :src="peerAvatar ?? ''">` ——
+  // 头像为 NULL 时它**照样渲染出一个 `<img src="">`**：
+  //   - 元素在 DOM 里 → `hasImg` 为 true → 断言全绿
+  //   - 浏览器把空 src 解析成当前页面 URL 去请求，拿到 HTML 当图片解码 → 裂图
+  // 所以它能一路逃过 674 条 CDP 断言。
+  // 与 P30「浮层不能只查 querySelector」同家族，但这里更隐蔽一格：
+  // **存在 ≠ 能加载**，img 元素存在与解码成功是两件事。
+  //
+  // 现在改成钉真正的不变量：对方那一侧要么是**能解码**的头像，要么是等宽占位，
+  // 且两侧占位宽度必须一致（否则消息列左右不对称）。
   const av = await s.evaluate(`(() => {
     const im = document.querySelector('[data-test=message-row-peer] [data-test=message-avatar]')
-    const ghost = document.querySelector('[data-test=message-row-me] .avatar-ghost')
-    const ib = im && im.getBoundingClientRect()
-    return { hasImg: !!im, imgW: ib ? Math.round(ib.width) : 0, imgLeft: ib ? Math.round(ib.left) : 0, hasGhost: !!ghost }
+    const pg = document.querySelector('[data-test=message-row-peer] [data-test=message-avatar-ghost]')
+    const ghost = document.querySelector('[data-test=message-row-me] [data-test=message-avatar-ghost]')
+    const box = (e) => e ? Math.round(e.getBoundingClientRect().width) : 0
+    return {
+      hasImg: !!im, imgW: box(im), imgLeft: im ? Math.round(im.getBoundingClientRect().left) : 0,
+      // ⚠️ 核心：naturalWidth>0 才算「这个头像真的显示出来了」
+      imgLoaded: !!im && im.complete && im.naturalWidth > 0,
+      hasGhost: !!ghost, ghostW: box(ghost), peerGhostW: box(pg),
+    }
   })()`)
-  s.check('对方气泡带头像', av.hasImg, JSON.stringify(av))
-  s.check('头像尺寸 ≥32px（P13 热区下限的一半，气泡内缩略）', av.imgW >= 32, JSON.stringify(av))
+  s.check('对方一侧有头像图或等宽占位（取其一，不能都没有）',
+    av.hasImg || av.peerGhostW > 0, JSON.stringify(av))
+  s.check('对方头像真的解码出来了（naturalWidth>0，不能是裂图）',
+    !av.hasImg || av.imgLoaded, JSON.stringify(av))
+  s.check('头像尺寸 ≥32px（P13 热区下限的一半，气泡内缩略）',
+    av.imgW === 0 || av.imgW >= 32, JSON.stringify(av))
   s.check('自己这侧用等宽占位（否则两侧气泡左右不对称）', av.hasGhost, JSON.stringify(av))
+  s.check('两侧占位宽度一致（不一致会让整条消息列左右不对称）',
+    av.peerGhostW === 0 || av.peerGhostW === av.ghostW,
+    `peer=${av.peerGhostW} me=${av.ghostW}`)
+  // ⚠️ 只查**头像**的裂图，不能查「页面内所有 img」。
+  // 踩过一次：本条最初写成全页扫描，结果抓到 `/static/2026/10/x.png` ——
+  // 那是别的测试组删掉图片文件后、**消息记录还在**留下的死链，与本页正确性无关。
+  // 这就是 AGENTS 说的「自造的用例不能假设库是干净的」：断言一旦依赖全局数据状态，
+  // 就会在某次全量连跑里假红，而真因隔了十万八千里。
+  const brokenAvatars = await s.evaluate(`(() => Array.from(
+      document.querySelectorAll('[data-test=message-avatar], [data-test=avatar-head]'))
+    .filter((i) => !i.complete || i.naturalWidth === 0)
+    .map((i) => i.getAttribute('src') + '|' + String(i.className).slice(0, 24)))()`)
+  s.check('头像没有解码失败（src="" 会变成裂图 + alt 文字糊在气泡边）',
+    brokenAvatars.length === 0, JSON.stringify(brokenAvatars))
   // ⚠️ 头像必须在气泡**左边**（对方侧）—— 占位放错边的话头像会跑到气泡中间。
   //
   // ⚠️ 取 `.bub, .thumb` 而不是只 `.bub`：P32 加了图片消息，而**图片行没有 .bub**
@@ -204,11 +241,74 @@ try {
   const peerRow = await s.evaluate(`(() => {
     const row = document.querySelector('[data-test=message-row-peer]')
     if (!row) return null
-    const a = row.querySelector('[data-test=message-avatar]')?.getBoundingClientRect()
+    // ⚠️ 取 img **或** ghost：2026-10-17 起对方无头像时渲染的是占位，
+    // 只查 [data-test=message-avatar] 会拿到 undefined → dx=null → 这条恒红。
+    const a = row.querySelector('[data-test=message-avatar], [data-test=message-avatar-ghost]')
     const body = row.querySelector('.bub, .thumb')?.getBoundingClientRect()
-    return a && body ? Math.round(body.left - a.left) : null
+    if (!a || !body) return null
+    return Math.round(body.left - a.getBoundingClientRect().left)
   })()`)
   s.check('头像在气泡左边（位置而非仅存在）', peerRow !== null && peerRow > 0, `dx=${peerRow}`)
+
+  // ②-bis **消息必须一条占一行**（2026-10-17 回归钉子）
+  //
+  // ⚠️ 这一段对应一个真实缺陷，且它**逃过了此前 674 条断言**，值得把过程写下来：
+  //   根因是 MessageView 的 scoped CSS 里留了一段 P22 时代死代码
+  //   `.peer { display: inline-flex; color: inherit; text-decoration: none }`。
+  //   而 `.peer` 同时是消息行的 :class（`mine ? 'me' : 'peer'`），
+  //   于是每条**对方**消息的 `<li class="row">` 都命中 inline-flex，
+  //   `<li>` 从块级变成行内 → 消息横向流式排布、多条挤在同一行。
+  //   **自己这一侧不带 peer 类，所以发送方看起来完全正常** —— 单向可见。
+  //
+  // 为什么没被拦住：原有的左右位置断言只断 `mineLeft > peerLeft`，
+  // 而**并排时这个不等式依然成立**（左边那条确实更靠左）。
+  // 也就是说那条断言的判别力在「同一行有多条消息」时归零。
+  //
+  // 教训：位置断言只钉「相对关系」不够，还要钉「**有没有另一条消息挡在前面**」。
+  const rowLay = await s.evaluate(`(() => {
+    const rows = Array.from(document.querySelectorAll('.row'))
+    const boxes = rows.map((r) => {
+      const b = r.getBoundingClientRect()
+      return { top: Math.round(b.top), left: Math.round(b.left),
+               display: getComputedStyle(r).display }
+    })
+    // 同一条水平线上的行数 > 1 即为「挤在一行」
+    const byTop = new Map()
+    for (const b of boxes) byTop.set(b.top, (byTop.get(b.top) || 0) + 1)
+    return {
+      n: boxes.length,
+      sameTop: [...byTop.entries()].filter(([, c]) => c > 1).map(([t]) => t),
+      displays: [...new Set(boxes.map((b) => b.display))],
+      // 相邻两行必须上下不重叠
+      verticalOnly: boxes.every((b) => b.display === 'flex' || b.display === 'block'
+        || b.display === 'list-item' || b.display === 'flow-root'),
+    }
+  })()`)
+  s.check('多条消息没有挤在同一行（同 top 的行 >1 即为排版坏掉）',
+    rowLay.sameTop.length === 0, JSON.stringify(rowLay))
+  // ⚠️ **上面那条 sameTop 的判别力不强，真正拦住这个 bug 的是下面这条** ——
+  // 把 `.peer { display: inline-flex }` 注入回去实测：sameTop 仍是 []（没红），
+  // 而 displays 变成 ["inline-flex","flex"]（红了）。
+  // 原因是行数与气泡宽度组合下，inline-flex 换行后的行 top 恰好各不相同。
+  // 两条都留着：sameTop 钉「视觉结果」，display 钉「机制」——
+  // 只有机制那条能在换行凑巧不撞 top 时仍然报警（AGENTS：钉声明本身，
+  // 不要钉可以通过手动设 scrollTop 之类的巧合凑出来的结果）。
+  s.check('消息行是块级排版（不能是 inline/inline-flex，否则会横向流式排布）',
+    rowLay.verticalOnly, JSON.stringify(rowLay))
+  s.check('聊天页文档本身不纵向滚动（消息区自己滚，页面不该出现第二条滚动条）',
+    await s.evaluate(`document.documentElement.scrollHeight - window.innerHeight <= 1`), '')
+  // 输入框必须完全在视口内。桌面端 SiteNav 是 sticky（占布局空间），
+  // 聊天页若直接 height:100dvh 就会多出一个顶栏的高度、把输入框顶到视口外 ——
+  // 而症状是「底部看不见输入框」，与真因隔了一整屏。
+  const composer = await s.evaluate(`(() => {
+    const c = document.querySelector('.composer')
+    if (!c) return null
+    const b = c.getBoundingClientRect()
+    return { bottom: Math.round(b.bottom), vh: window.innerHeight,
+             visible: b.bottom <= window.innerHeight + 1 && b.top >= 0 }
+  })()`)
+  s.check('输入框完整落在视口内（底部没被顶出屏幕）',
+    !!composer && composer.visible, JSON.stringify(composer))
 
   // ③ 时间戳：只显示到分，且同一分钟不重复
   const stamps = await all('message-time')

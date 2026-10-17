@@ -418,7 +418,7 @@ onBeforeUnmount(() => {
         <img
           v-if="peerAvatar"
           class="avatar"
-          :src="peerAvatar"
+          :src="peerAvatar ?? ''"
           :alt="`${peerName} 的头像`"
           width="28"
           height="28"
@@ -473,16 +473,31 @@ onBeforeUnmount(() => {
           >
             <!-- 对方的气泡带头像；自己这侧留一个等宽的占位，
                  否则两侧气泡会左右错位（同一条消息的左右内边距不对称） -->
+            <!--
+                ⚠️ **必须是三分支，不能只判 peerAvatar**：
+                「自己这侧显示什么」和「对方有没有头像」是两个独立问题。
+                只写 `v-if="peerAvatar"` 会让我这一侧也去渲染对方头像。
+                而 `:src="peerAvatar ?? ''"` 在头像为空时会渲染 `<img src="">`，
+                浏览器把空串解析成**当前页面 URL** 去请求，拿到 HTML 当图片解码 →
+                裂图 + alt 文字糊在气泡左边。
+                ⚠️ 这不是边缘情况：dev 库里 12 个账号的 avatar **全是 NULL**。
+                写法与 ImmerseView 的作者头像一致。
+              -->
             <img
-              v-if="!mine(r.msg)"
+              v-if="!mine(r.msg) && peerAvatar"
               class="avatar"
-              :src="peerAvatar ?? ''"
+              :src="peerAvatar"
               :alt="peerName"
               width="34"
               height="34"
               data-test="message-avatar"
             >
-            <span v-else class="avatar-ghost" aria-hidden="true" />
+            <span
+              v-else
+              class="avatar avatar-ghost"
+              aria-hidden="true"
+              data-test="message-avatar-ghost"
+            />
 
             <div class="col">
               <!-- 图片消息：缩略图，不进气泡框（P32）
@@ -643,6 +658,27 @@ onBeforeUnmount(() => {
   padding-bottom: 0;
 }
 
+/* ⚠️ 桌面（≥1024px）必须减掉 SiteNav 的高度。
+   SiteNav 是 `position: sticky`，**仍然占布局空间**，所以上面那行
+   `height: 100dvh` 会让「顶栏 + 聊天页 100vh」正好多出一个顶栏的高度：
+   文档多出一条纵向滚动条，而输入框因为在 flex 列的末尾，
+   **底部落在视口之外** —— 症状是「聊天页底部看不见输入框」，
+   而真因在两屏之外的 `.chat` 高度上。
+   <1024px 时 SiteNav 是 display:none，不占空间，所以不能无条件减。
+
+   ⚠️ **min-height 必须一起压掉**：全局 `.page { min-height: 100% }` 会兜住，
+   而 CSS 里 **min-height 优先于 max-height** —— 只写 max-height 时实测
+   `max-height: 998px` 明明生效了，`height` 却还是 1063px，
+   症状是「我明明改了高度却没反应」。
+   （本轮第一版就只写了 height/max-height，被这条静默吃掉。） */
+@media (min-width: 1024px) {
+  .chat {
+    height: calc(100dvh - var(--xk-sitenav-h));
+    max-height: calc(100dvh - var(--xk-sitenav-h));
+    min-height: calc(100dvh - var(--xk-sitenav-h));
+  }
+}
+
 .scroller {
   flex: 1 1 auto;
   min-height: 0;
@@ -747,9 +783,15 @@ onBeforeUnmount(() => {
   display: block;
   width: 160px;
   height: 160px;
-  object-fit: cover;
+  /* ⚠️ 必须是 contain，不能是 cover。
+     160×160 的方框里用 cover 会把 461×367 的截图裁到只剩中间一块，
+     430×900 的竖图更只剩一条 —— 收件人根本看不出对方发的是什么，
+     而「看不清对方发了什么」在聊天里比「图不好看」严重得多。
+     contain 保持方框（网格不散）又能看全，空白处露出 .thumb 的底色。 */
+  object-fit: contain;
   /* 限定最大宽高，竖图不会被撑成一整屏 */
   max-width: 100%;
+  background: var(--xk-surface-2);
 }
 
 /* file input 隐藏但**仍可被脚本点击**（不能用 display:none，
@@ -904,24 +946,21 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
-.peer {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--xk-space-2);
-  min-width: 0;
-  color: inherit;
-  text-decoration: none;
-}
+/* ⚠️ 这里原本有一整段 `.peer { display: inline-flex; color: inherit;
+   text-decoration: none }` + `.peer .avatar` + `.peer .name`，已删除。
+   那是 P22 老版「聊天页头部显示对方资料卡」布局留下的样式，P31 重做
+   header（改成 `<RouterLink class="peer-link">`）时删了模板、没删样式。
 
-.peer .avatar { border-radius: 50%; object-fit: cover; flex: none; }
+   删不掉它的后果不是"多几行废代码"，而是**把整个聊天列表布局弄坏**：
+   `.peer` 既是那段死规则的宿主，又同时是消息行 `:class` 里的类名
+   （`mine(r.msg) ? 'me' : 'peer'`）。于是每一条**对方**消息的 `<li class="row">`
+   都命中 `display: inline-flex`，`<li>` 从块级变成行内元素 → 消息横向流式排布、
+   挤在同一行。**自己这一侧不带 peer 类，所以发送方看起来完全正常** ——
+   这正是它能一路逃过 674 条 CDP 断言的原因。
 
-.peer .name {
-  font-size: var(--xk-fs-16);
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+   教训：重做布局时，「删模板」与「删对应 CSS」必须当成同一件事做。
+   残留选择器不会报错、不会警告，只在它碰巧同名时静默改变别人的布局。 */
+
 
 .entry {
   margin-left: auto;

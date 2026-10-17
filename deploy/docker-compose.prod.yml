@@ -165,6 +165,12 @@ services:
       XK_MACHINE_ID: ${XK_MACHINE_ID:-1}
       XK_INIT_DEMO_DATA: "false"
       XK_STORAGE_TYPE: ${XK_STORAGE_TYPE:-local}
+      # P33：容器内的 ffmpeg（静态 Linux build，随镜像 COPY 进去）。
+      # ⚠️ 必须显式给：application.yml 的默认值是 dev 的 Windows 路径，
+      # 容器里不存在该路径 → 每次上传都静默降级为「保留原文件」，
+      # 而 prod 界面看不出任何异常。
+      XK_FFMPEG_PATH: /usr/local/bin/ffmpeg
+      XK_FFPROBE_PATH: /usr/local/bin/ffprobe
       XK_LOG_FILE: /app/logs/xiaoku-backend.log
       TZ: Asia/Shanghai
     volumes:

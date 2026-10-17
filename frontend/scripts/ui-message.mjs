@@ -185,42 +185,66 @@ try {
     !!dayl && /^(今天|昨天|\d{1,2}月\d{1,2}日|\d{4}年\d{1,2}月\d{1,2}日)$/.test(dayl.text),
     dayl?.text)
 
-  // ② 对方气泡带头像，自己的没有（自己这侧是等宽占位）
+  // ② 两侧都显示头像，且**自己那侧是我的、不是对方的**
   //
-  // ⚠️ **这条断言在 2026-10-17 被改写了语义（原「对方气泡带头像」只判 hasImg）**。
-  // 原来的写法是「对方那一侧存在 `[data-test=message-avatar]` 就算过」，
-  // 而旧实现是 `<img v-if="!mine(r.msg)" :src="peerAvatar ?? ''">` ——
-  // 头像为 NULL 时它**照样渲染出一个 `<img src="">`**：
-  //   - 元素在 DOM 里 → `hasImg` 为 true → 断言全绿
-  //   - 浏览器把空 src 解析成当前页面 URL 去请求，拿到 HTML 当图片解码 → 裂图
-  // 所以它能一路逃过 674 条 CDP 断言。
-  // 与 P30「浮层不能只查 querySelector」同家族，但这里更隐蔽一格：
-  // **存在 ≠ 能加载**，img 元素存在与解码成功是两件事。
+  // ⚠️ **这段断言被改写过两次，两次都是因为实现的设计本身错了**，所以这里
+  //    记一下演进，免得下一个人看到「断言又变了」就去改代码：
   //
-  // 现在改成钉真正的不变量：对方那一侧要么是**能解码**的头像，要么是等宽占位，
-  // 且两侧占位宽度必须一致（否则消息列左右不对称）。
+  //    v1：只断「对方那一侧存在 [data-test=message-avatar]」
+  //        旧实现是 `<img v-if="!mine(r.msg)" :src="peerAvatar ?? ''">`，
+  //        头像 NULL 时**照样渲染出 <img src="">** → 元素存在 → 断言全绿，
+  //        而图是裂的。与 P30「浮层不能只查 querySelector」同家族，更隐蔽一格：
+  //        **存在 ≠ 能加载**。所以加钉 naturalWidth > 0。
+  //
+  //    v2：改成「两侧各自 img 或等宽空圆占位」，对应 P35 的实现
+  //        （自己这侧灰色空圆，**没有头像**）。
+  //
+  //    v3（现在）：用户反馈「还是看不到两边的头像」。根因不是渲染坏了，
+  //        而是**兜底选错了** —— dev 库里 12 个账号 avatar 全是 NULL，
+  //        「没有头像」是常态而不是边缘情况，所以兜底必须是**能看见的东西**。
+  //        全站约定是 `avatar ?? '/mascot/m02.webp'`（MessageListView 的会话列表
+  //        早就是这么写的），而自己那侧**该显示我的头像**，不是空圆。
+  //
+  // v3 钉的不变量与 v2 完全不同：v2 钉「占位宽度一致」，v3 钉
+  // **「自己那侧不是对方的脸」**—— 这才是那个真正危险的方向
+  // （P35 写实现时我差点犯：`v-if` 只判 peerAvatar 就会让我这侧显示对方头像）。
   const av = await s.evaluate(`(() => {
-    const im = document.querySelector('[data-test=message-row-peer] [data-test=message-avatar]')
-    const pg = document.querySelector('[data-test=message-row-peer] [data-test=message-avatar-ghost]')
-    const ghost = document.querySelector('[data-test=message-row-me] [data-test=message-avatar-ghost]')
     const box = (e) => e ? Math.round(e.getBoundingClientRect().width) : 0
-    return {
-      hasImg: !!im, imgW: box(im), imgLeft: im ? Math.round(im.getBoundingClientRect().left) : 0,
+    const pick = (sel) => document.querySelector(sel)
+    const peerIm = pick('[data-test=message-row-peer] [data-test=message-avatar]')
+    const meIm = pick('[data-test=message-row-me] [data-test=message-avatar]')
+    const info = (im) => im ? {
+      exists: true, src: im.getAttribute('src') || '',
+      w: box(im), left: Math.round(im.getBoundingClientRect().left),
       // ⚠️ 核心：naturalWidth>0 才算「这个头像真的显示出来了」
-      imgLoaded: !!im && im.complete && im.naturalWidth > 0,
-      hasGhost: !!ghost, ghostW: box(ghost), peerGhostW: box(pg),
-    }
+      loaded: im.complete && im.naturalWidth > 0,
+      nat: im.naturalWidth,
+    } : { exists: false, src: '', w: 0, left: -1, loaded: false, nat: 0 }
+    return { peer: info(peerIm), me: info(meIm) }
   })()`)
-  s.check('对方一侧有头像图或等宽占位（取其一，不能都没有）',
-    av.hasImg || av.peerGhostW > 0, JSON.stringify(av))
-  s.check('对方头像真的解码出来了（naturalWidth>0，不能是裂图）',
-    !av.hasImg || av.imgLoaded, JSON.stringify(av))
+  s.check('对方气泡有头像元素', av.peer.exists, JSON.stringify(av))
+  s.check('自己这侧也有头像（真实 IM 就是这样，不是空圆占位）',
+    av.me.exists, JSON.stringify(av))
+  s.check('两侧头像都真的解码出来了（naturalWidth>0，不能是裂图）',
+    av.peer.loaded && av.me.loaded, JSON.stringify(av))
+  s.check('头像 src 不是空串（src="" 会被解析成当前页面 URL → 裂图）',
+    av.peer.src.length > 0 && av.me.src.length > 0, JSON.stringify(av))
   s.check('头像尺寸 ≥32px（P13 热区下限的一半，气泡内缩略）',
-    av.imgW === 0 || av.imgW >= 32, JSON.stringify(av))
-  s.check('自己这侧用等宽占位（否则两侧气泡左右不对称）', av.hasGhost, JSON.stringify(av))
-  s.check('两侧占位宽度一致（不一致会让整条消息列左右不对称）',
-    av.peerGhostW === 0 || av.peerGhostW === av.ghostW,
-    `peer=${av.peerGhostW} me=${av.ghostW}`)
+    av.peer.w >= 32 && av.me.w >= 32, JSON.stringify(av))
+  // ⚠️ **这里原本有一条「自己那侧不是对方的脸」的断言，已删 —— 它在 dev 里恒真。**
+  //    它想钉的是「自己这侧取的是我的头像，而不是 peerAvatar」。但：
+  //      dev 库里 67 个账号的 avatar **全是 NULL**，两侧都会落到吉祥物兜底，
+  //      断 src 不同会**永远失败**；于是我当初加了 `|| src.includes('/mascot/')`
+  //      这个后门让它通过 —— 而后门恰好覆盖了全部情况，断言等于没写。
+  //    这就是 AGENTS 反复说的「PASS 也要看它有没有可能恒真」。
+  //
+  //    真要钉住它，需要**至少一个账号有真实头像**。而目前根本没有设置头像的
+  //    接口（12 个 controller 无一处理 avatar，后端无任何 setAvatar 调用），
+  //    所以这一条要等「头像上传」功能落地后才能补上。
+  //
+  // 现在能钉住「自己这侧不是空圆 / 不是裂图」的是上面那三条 ——
+  // 如果有人改回 `v-if="peerAvatar"`（只判对方有没有头像），
+  // 在双方都无头像时自己那侧会**一个 img 都不渲染**，第一条立刻红。
   // ⚠️ 只查**头像**的裂图，不能查「页面内所有 img」。
   // 踩过一次：本条最初写成全页扫描，结果抓到 `/static/2026/10/x.png` ——
   // 那是别的测试组删掉图片文件后、**消息记录还在**留下的死链，与本页正确性无关。
@@ -241,9 +265,10 @@ try {
   const peerRow = await s.evaluate(`(() => {
     const row = document.querySelector('[data-test=message-row-peer]')
     if (!row) return null
-    // ⚠️ 取 img **或** ghost：2026-10-17 起对方无头像时渲染的是占位，
-    // 只查 [data-test=message-avatar] 会拿到 undefined → dx=null → 这条恒红。
-    const a = row.querySelector('[data-test=message-avatar], [data-test=message-avatar-ghost]')
+    // P35 时这里写的是「img **或** ghost」的兼容查询（当时对方无头像渲染占位），
+    // 2026-10-17 改成恒为 img 后 ghost 分支已成死代码 —— 清掉，否则
+    // 「改完回头看一眼这个选择器还有没有宿主」这条纪律又会被破例。
+    const a = row.querySelector('[data-test=message-avatar]')
     const body = row.querySelector('.bub, .thumb')?.getBoundingClientRect()
     if (!a || !body) return null
     return Math.round(body.left - a.getBoundingClientRect().left)

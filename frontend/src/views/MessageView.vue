@@ -29,6 +29,29 @@ const userStore = useUserStore()
 const peerId = computed(() => String(route.params.id ?? ''))
 const myId = computed(() => userStore.userInfo?.id)
 
+/**
+ * 没有头像时显示什么 —— 全站约定：`avatar ?? '/mascot/m02.webp'`
+ *
+ * ⚠️ 这个约定在**同一个功能的隔壁**就已经这么写了：
+ *   MessageListView「私信会话列表」 `:src="s.peerAvatar ?? '/mascot/m02.webp'"`
+ *   NotificationView             `:src="n.actorAvatar ?? '/mascot/m02.webp'"`
+ *   HomeView / ProfileView / UserView / FollowListView … 直接写死 m02
+ * 2026-10-17 的 P35 却在聊天页发明了「三分支 v-if + 灰色空圆占位」，
+ * 既违背约定，又让两侧都看不见头像（dev 库里 12 个账号 avatar 全是 NULL，
+ * 所以「没有头像」是**常态而不是边缘情况** —— 兜底必须好看，
+ * 因为几乎所有人看到的都是它）。
+ *
+ * ⚠️ 用 `||` 而不是 `??`：空串同样会让浏览器把 `src=""` 解析成当前页面 URL
+ * 去请求（拿到 HTML 当图片解码 → 裂图 + alt 糊在气泡边）。`??` 放不掉空串。
+ * 顺带的好处是**根本没有空串这条路径**，`src=""` 结构上不可能再发生。
+ */
+const MASCOT = '/mascot/m02.webp'
+
+/** 自己这侧显示**我的**头像 —— 不是占位、也不是对方的脸。 */
+const myAvatar = computed(() => userStore.userInfo?.avatar || MASCOT)
+const myName = computed(
+  () => userStore.userInfo?.nickname || userStore.userInfo?.username || '我')
+
 const peerName = ref('对方')
 const peerAvatar = ref<string | null>(null)
 const list = ref<MessageVO[]>([])
@@ -305,6 +328,15 @@ function mine(m: MessageVO): boolean {
   return m.senderId === myId.value
 }
 
+/** 某一行的头像：自己这侧用我的，对方那侧用他的，都没有则吉祥物兜底。 */
+function avatarOf(m: MessageVO): string {
+  return (mine(m) ? userStore.userInfo?.avatar : peerAvatar.value) || MASCOT
+}
+
+function altOf(m: MessageVO): string {
+  return mine(m) ? myName.value : peerName.value
+}
+
 /* ================= P31 对齐小红书：日期线 / 头像 / 时间戳 ================= */
 
 /**
@@ -416,9 +448,8 @@ onBeforeUnmount(() => {
       <!-- 对方昵称是**导航目标**（点去看 TA 的主页），所以是 RouterLink -->
       <RouterLink class="peer" :to="{ name: 'user', params: { id: peerId } }" data-test="message-peer">
         <img
-          v-if="peerAvatar"
           class="avatar"
-          :src="peerAvatar ?? ''"
+          :src="peerAvatar || MASCOT"
           :alt="`${peerName} 的头像`"
           width="28"
           height="28"
@@ -471,32 +502,25 @@ onBeforeUnmount(() => {
             :data-msg-anchor="r.msg.id"
             :data-test="mine(r.msg) ? 'message-row-me' : 'message-row-peer'"
           >
-            <!-- 对方的气泡带头像；自己这侧留一个等宽的占位，
-                 否则两侧气泡会左右错位（同一条消息的左右内边距不对称） -->
             <!--
-                ⚠️ **必须是三分支，不能只判 peerAvatar**：
-                「自己这侧显示什么」和「对方有没有头像」是两个独立问题。
-                只写 `v-if="peerAvatar"` 会让我这一侧也去渲染对方头像。
-                而 `:src="peerAvatar ?? ''"` 在头像为空时会渲染 `<img src="">`，
-                浏览器把空串解析成**当前页面 URL** 去请求，拿到 HTML 当图片解码 →
-                裂图 + alt 文字糊在气泡左边。
-                ⚠️ 这不是边缘情况：dev 库里 12 个账号的 avatar **全是 NULL**。
-                写法与 ImmerseView 的作者头像一致。
+                两侧都显示头像：**自己这侧是我的头像**（真实 IM 就是这样 ——
+                微信/QQ 自己发的消息右边挂的是自己的脸），不是占位、也不是对方的脸。
+                2026-10-17 的 P35 把它做成了「自己这侧恒为灰色空圆」，理由是
+                「怕显示成对方的头像」—— 那个担心是对的（v-if 只判 peerAvatar
+                确实会让我的气泡旁出现对方的脸），但解法错了：
+                应该取**我的** avatar，而不是两边都不显示。
+                用户反馈「还是看不到两边的头像」正是这一点。
+
+                `avatarOf()` 内部用 `|| MASCOT` 兜底，所以这里**不需要 v-if**：
+                没有头像时也有图（吉祥物），`src=""` 结构上不可能发生。
               -->
             <img
-              v-if="!mine(r.msg) && peerAvatar"
               class="avatar"
-              :src="peerAvatar"
-              :alt="peerName"
+              :src="avatarOf(r.msg)"
+              :alt="altOf(r.msg)"
               width="34"
               height="34"
               data-test="message-avatar"
-            >
-            <span
-              v-else
-              class="avatar avatar-ghost"
-              aria-hidden="true"
-              data-test="message-avatar-ghost"
             />
 
             <div class="col">
@@ -536,7 +560,7 @@ onBeforeUnmount(() => {
           class="row me"
           data-test="message-failed-row"
         >
-          <span class="avatar-ghost" aria-hidden="true" />
+          <img class="avatar" :src="myAvatar" :alt="myName" width="34" height="34" data-test="message-avatar" />
           <div class="col">
             <!-- 失败重发也要能重发图片 -->
             <button
@@ -717,13 +741,15 @@ onBeforeUnmount(() => {
   background: var(--xk-surface-2);
 }
 
-/* 自己这侧的等宽占位 —— 不留的话两侧气泡左右内边距不对称，
-   同一条消息的两端对不齐，看起来像"排版没居中" */
-.avatar-ghost {
-  flex: 0 0 auto;
-  width: 34px;
-  height: 34px;
-}
+/* ⚠️ 这里原本有一段 `.avatar-ghost { flex:0 0 auto; width:34px; height:34px }`，
+   已删除 —— 它是 P35「自己这侧用灰色空圆占位」的配套样式。现在两侧都用
+   `<img class="avatar">`，`.avatar` 自己已经声明了 flex/size，
+   留着就是一条死规则。
+
+   顺带记一句 P35 的教训（方向相反的同一个病）：那次是**模板删了、CSS 没删**，
+   残留的 `.peer { display:inline-flex }` 把整个消息列表布局弄坏。
+   这次是**改设计后忘了删配套 CSS**。两种都会静默留着，
+   所以「改完要回头看一眼这个选择器还有没有宿主」。 */
 
 .col {
   display: flex;

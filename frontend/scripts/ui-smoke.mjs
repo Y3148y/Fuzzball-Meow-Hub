@@ -62,6 +62,20 @@ try {
   s.check('登录成功并跳转到 #/', (await s.evaluate('location.hash')) === '#/',
     await s.evaluate('location.hash'))
 
+  // 3-bis. dev 下**不得**出现 prod 的测试账号提示
+  //
+  // ⚠️ 这条钉的是 `showDemo` 那个守卫：登录页有两套入口（dev 的「用演示账号填充」
+  // 与 prod 的「测试账号 xk_ui_admin / xk_ui_admin2」），靠 import.meta.env.DEV 互斥。
+  // 一旦这个守卫写错（比如从 `v-if` 改成只用 CSS 隐藏），prod 用户会看到
+  // 一个点了必然失败的入口，而报错「用户名或密码错误」与「这账号不存在」之间
+  // 没有任何提示 —— 这正是 2026-10-17 那轮手测卡住的地方。
+  //
+  // ⚠️ 只能在这里钉 dev 侧：**prod 的两个账号列表没法用 CDP 验**，因为测试跑的是
+  // dev 服务器（import.meta.env.DEV 为 true）。prod 侧靠部署后的人工/脚本核对。
+  s.check('dev 下不出现 prod 测试账号提示（两套入口互斥）',
+    !(await s.evaluate(`!!document.querySelector('[data-test=prod-hint]')`)),
+    'prod-hint 不应存在于 dev 构建')
+
   // 4. 双 token 落库
   const tokens = await s.evaluate(
     "JSON.stringify({a: !!localStorage.getItem('xk_token'), r: !!localStorage.getItem('xk_refresh_token')})",

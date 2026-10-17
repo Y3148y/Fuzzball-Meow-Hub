@@ -55,8 +55,22 @@ const DEMO = showDemo ? { username: 'xiaoku_demo', password: 'Xk@123456' } : nul
  * 把口令印在登录页上等于把测试账号公开 —— 对一个真实部署的站点不合适，
  * 对本项目（个人作品、要给人看界面）却是必要的，否则没人登得进去。
  * 所以这行**只在生产构建里出现**，且没有文案解释它是什么。
+ *
+ * <p>**为什么要两个**：私信要能看到「对方」，只有一个账号就没法自测收发两侧
+ * （P35 那轮用户正是从接收方视角发现问题）。第一版只列了
+ * `xk_ui_admin`，于是手测时得改口令或手工注册第二个，属于半截。
+ *
+ * <p>⚠️ 口令相同是刻意的：两个 fixture 在 AGENTS 里就是同一个口令，
+ * 手测时少一次「记错哪个」的失败点。UI 上把两者都列出来，
+ * 点哪一行就填哪一行 —— 用两个按钮而不是一段文字，
+ * 因为「点了要发生什么」得是可见的控件，不能靠猜。
  */
-const PROD_TEST = showDemo ? null : { username: 'xk_ui_admin', password: 'Xk@2026peer' }
+const PROD_TEST = showDemo
+  ? null
+  : [
+      { username: 'xk_ui_admin', password: 'Xk@2026peer', label: '管理员' },
+      { username: 'xk_ui_admin2', password: 'Xk@2026peer', label: '管理员 2' },
+    ]
 
 function fillDemo() {
   if (!DEMO) return
@@ -69,11 +83,11 @@ function fillDemo() {
   msgTone.value = 'error'
 }
 
-function fillProdHint() {
+function fillProdHint(acc: { username: string; password: string }) {
   if (!PROD_TEST) return
   mode.value = 'login'
-  form.username = PROD_TEST.username
-  form.password = PROD_TEST.password
+  form.username = acc.username
+  form.password = acc.password
   errorMsg.value = ''
   msgTone.value = 'error'
 }
@@ -242,10 +256,29 @@ async function submit() {
       <!--
         prod 上给出真实可用的账号 —— 「没有演示账号」不该表现为「演示账号密码错误」。
         同样只在生产模式显示，避免 dev 用户被这行干扰（dev 有演示账号可用）。
+
+        ⚠️ **逐账号一行、各自可点**，而不是一行文字两个名字 ——
+        「点了会发生什么」必须是看得见的控件（点哪行填哪个账号），
+        一段并列的名字只能让人自己猜该点哪儿。
+
+        ⚠️ 用 `<button>` 而不是 clickable `<p>`：点一下填表单是**动作**不是导航
+        （AGENTS P21 的「导航归 a、动作归 button」），读屏软件只派发 click
+        给可聚焦的原生控件，而 `<p>` 没有 role、没有 tab 序、没有键盘可达性。
       -->
-      <p v-else class="prod-hint" data-test="prod-hint" @click="fillProdHint">
-        测试账号 <code>xk_ui_admin</code> / <code>Xk@2026peer</code>
-      </p>
+      <div v-else class="prod-hints" data-test="prod-hint">
+        <button
+          v-for="acc in PROD_TEST"
+          :key="acc.username"
+          type="button"
+          class="prod-hint"
+          :data-test="'prod-hint-' + acc.username"
+          :aria-label="'用测试账号 ' + acc.username + ' 填充表单'"
+          @click="fillProdHint(acc)"
+        >
+          测试账号 <code>{{ acc.username }}</code> / <code>{{ acc.password }}</code>
+          <span class="tag">{{ acc.label }}</span>
+        </button>
+      </div>
     </section>
 
     <p class="foot">P2 用户模块 · JWT 双令牌鉴权</p>
@@ -455,25 +488,52 @@ async function submit() {
 /*
  * 生产环境的测试账号提示。
  *
- * ⚠️ 不用 .demo 的样式：它没有 `cursor: pointer`（不是按钮），
- * 但 hover 反馈要给 —— 否则用户看不出这行是可交互的，
- * 而它其实**可点**（点一下复制账号更省事，见 fillProdHint）。
+ * ⚠️ 不用 .demo 的样式：视觉语言接近，但这里的元素是 <button>，
+ * 而 .demo 已经是 button，两者只需要共享 code / tag 的观感。
  */
+.prod-hints {
+  display: flex;
+  flex-direction: column;
+  gap: var(--xk-space-2);
+  margin-top: var(--xk-space-4);
+}
+
 .prod-hint {
-  margin: 14px 0 0;
+  /* button 的默认外观/字体全要复位，否则会带出原生按钮的边框与背景 */
+  appearance: none;
+  border: 0;
+  background: none;
+  font: inherit;
   text-align: center;
   font-size: var(--xk-fs-12);
   color: var(--xk-text-3);
   cursor: pointer;
+  /* P13 热区下限：只有 12px 的一行字时，热区约 20px，手指点不准 */
+  min-height: 40px;
+  padding: var(--xk-space-2) 0;
+  border-radius: var(--xk-radius-md, 10px);
   -webkit-tap-highlight-color: transparent;
+  transition: color 0.15s, background-color 0.15s;
 }
-.prod-hint:hover { color: var(--xk-text-2); }
+.prod-hint:hover { color: var(--xk-text-2); background: var(--xk-surface-2); }
 .prod-hint code {
   padding: 1px 5px;
   border-radius: 6px;
   background: var(--xk-surface-2);
   color: var(--xk-text-2);
   font-size: var(--xk-fs-12);
+}
+.prod-hint:hover code { background: var(--xk-bg-soft); }
+
+/* 账号用途标签：说明「为什么是两个」而不是「这是什么」——
+   这是个给人看界面的作品站，测试账号不该被误当成产品功能 */
+.tag {
+  margin-left: var(--xk-space-2);
+  padding: 1px 6px;
+  border: 1px solid var(--xk-border);
+  border-radius: 999px;
+  font-size: var(--xk-fs-12);
+  color: var(--xk-text-3);
 }
 
 .foot {

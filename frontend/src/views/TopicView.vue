@@ -12,6 +12,7 @@ import { onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { listTopicNotes } from '@/api/topic'
 import type { NoteListItemVO } from '@/api/types'
+import UserAvatar from '@/components/UserAvatar.vue'
 
 const route = useRoute()
 
@@ -81,7 +82,7 @@ onMounted(load)
           <p class="title">{{ item.title }}</p>
         </RouterLink>
         <RouterLink class="author" :to="`/user/${item.authorId}`">
-          <img class="avatar" src="/mascot/m02.webp" alt="" width="24" height="24" />
+          <UserAvatar :avatar="item.authorAvatar" :nickname="item.authorNickname" :size="24" test="topic-avatar" />
           <span class="nick">{{ item.authorNickname }}</span>
         </RouterLink>
       </li>

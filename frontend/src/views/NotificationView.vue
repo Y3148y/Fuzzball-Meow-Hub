@@ -15,6 +15,7 @@ import { useRouter } from 'vue-router'
 import { listNotifications, markAllRead, markRead } from '@/api/notification'
 import type { NotificationVO } from '@/api/types'
 import { formatDateTime } from '@/utils/datetime'
+import UserAvatar from '@/components/UserAvatar.vue'
 
 const router = useRouter()
 
@@ -120,7 +121,7 @@ onMounted(load)
           :data-test="n.isRead === 0 ? 'notification-item-unread' : 'notification-item'"
           :data-type="n.type"
         >
-          <img class="avatar" :src="n.actorAvatar ?? '/mascot/m02.webp'" alt="" width="34" height="34" />
+          <UserAvatar :avatar="n.actorAvatar" :nickname="n.actorNickname" :size="34" />
           <div class="body">
             <p class="line">
               <b class="who">{{ n.actorNickname }}</b>

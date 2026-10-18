@@ -13,6 +13,7 @@ import { listSessions } from '@/api/message'
 import { useMessageUnread } from '@/composables/useMessageUnread'
 import type { MessageSessionVO } from '@/api/types'
 import { formatRelative } from '@/utils/datetime'
+import UserAvatar from '@/components/UserAvatar.vue'
 
 const router = useRouter()
 
@@ -83,13 +84,10 @@ onBeforeUnmount(() => {
             data-test="session-row"
             :to="{ name: 'message', params: { id: String(s.peerId) } }"
           >
-            <img
-              class="avatar"
-              :src="s.peerAvatar ?? '/mascot/m02.webp'"
-              :alt="`${s.peerNickname} 的头像`"
-              width="44"
-              height="44"
-            />
+            <!-- ⚠️ 这里原来写的是 `?? '/mascot/m02.webp'`，与 UserAvatar 的兜底重复 ——
+         既然有了单一来源，就不该再散落一份（AGENTS 记过的「三套并存」）。 -->
+            <UserAvatar :avatar="s.peerAvatar ?? undefined" :nickname="s.peerNickname"
+                        :size="44" test="session-avatar" />
             <div class="body">
               <p class="line">
                 <b class="who">{{ s.peerNickname }}</b>

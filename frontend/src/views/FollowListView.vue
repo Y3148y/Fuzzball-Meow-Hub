@@ -13,6 +13,7 @@ import {
 import { ErrorCode } from '@/api/types'
 import type { FollowUserVO } from '@/api/types'
 import { useUserStore } from '@/stores/user'
+import UserAvatar from '@/components/UserAvatar.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -150,7 +151,7 @@ onMounted(load)
     <ul v-else class="list" data-test="follow-list" :data-mode="mode">
       <li v-for="row in rows" :key="row.id" class="row" data-test="follow-row">
         <RouterLink class="user" :to="`/user/${row.id}`">
-          <img class="avatar" src="/mascot/m02.webp" alt="" width="40" height="40" />
+          <UserAvatar :avatar="row.avatar" :nickname="row.nickname" :size="40" test="follow-avatar" />
           <span class="names">
             <span class="nick" data-test="follow-nick">{{ row.nickname }}</span>
             <!-- P30：同上。列表里只有昵称。 -->

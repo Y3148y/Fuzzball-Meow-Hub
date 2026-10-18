@@ -8,6 +8,7 @@ import com.xiaoku.module.user.dto.UserLoginDTO;
 import com.xiaoku.module.user.dto.UserProfileUpdateDTO;
 import com.xiaoku.module.user.dto.UserRegisterDTO;
 import com.xiaoku.module.user.service.UserService;
+import com.xiaoku.module.user.support.AvatarPresets;
 import com.xiaoku.module.user.vo.LoginVO;
 import com.xiaoku.module.user.vo.UserVO;
 import io.swagger.v3.oas.annotations.Operation;
@@ -16,6 +17,8 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
+import java.util.List;
+
 import org.springframework.web.bind.annotation.*;
 
 /**
@@ -63,10 +66,27 @@ public class UserController {
         return Result.success(userService.getCurrentUserVO());
     }
 
-    @Operation(summary = "修改个人资料", description = "部分更新：只提交要改的字段即可")
+    @Operation(summary = "修改个人资料", description = "部分更新：只提交要改的字段即可。头像只接受预设或本站上传地址")
     @PutMapping("/profile")
     public Result<UserVO> updateProfile(@RequestBody @Valid UserProfileUpdateDTO dto) {
         return Result.success(userService.updateProfile(dto));
+    }
+
+    /**
+     * 预设头像列表。
+     *
+     * <p>⚠️ <b>刻意做成接口而不是让前端写死常量</b>：这份名单同时是
+     * {@code AvatarPresets.PRESETS}（服务端校验用）与前端的渲染依据。
+     * 前端硬编码一份的话，加图要改两个地方，漏一处就会出现
+     * 「界面能选、提交被拒 10008」或者反过来「能提交但 404」。
+     * 单一数据源在这里。
+     *
+     * <p>不要求登录：这个列表是静态资源，不泄露任何用户数据。
+     */
+    @Operation(summary = "预设头像列表", description = "返回可直接用作 avatar 字段的预设地址，按展示顺序")
+    @GetMapping("/avatar-presets")
+    public Result<List<String>> avatarPresets() {
+        return Result.success(AvatarPresets.PRESETS);
     }
 
     @Operation(summary = "当前登录用户ID", description = "调试用：验证 ThreadLocal 上下文是否正确注入")

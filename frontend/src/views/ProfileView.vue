@@ -1,16 +1,67 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { showSuccessToast } from 'vant'
 import { BizError } from '@/api/request'
 import { ErrorCode } from '@/api/types'
-import { updateProfile } from '@/api/user'
+import { getAvatarPresets, updateProfile } from '@/api/user'
+import { uploadImage } from '@/api/note'
 import { getUserNotes } from '@/api/feed'
 import type { NoteListItemVO, ProfilePatch } from '@/api/types'
 import { useUserStore } from '@/stores/user'
 import ThemeToggle from '@/components/ThemeToggle.vue'
+import UserAvatar from '@/components/UserAvatar.vue'
 import { useUnreadCount } from '@/composables/useUnreadCount'
 import { useMessageUnread } from '@/composables/useMessageUnread'
+
+/* ---------------- 头像选择（预设 + 上传） ---------------- */
+
+/**
+ * 预设头像列表，**从后端取**而不是写死在前端。
+ * 单一数据源：后端 AvatarPresets.PRESETS 既是校验白名单也是这里的返回值，
+ * 两边再各写一份就会出现「能选但提交 10008」或「能提交但图 404」。
+ */
+const presets = ref<string[]>([])
+onMounted(async () => {
+  try {
+    presets.value = await getAvatarPresets()
+  } catch {
+    // 拿不到预设不该让整页不可用 —— 至少还能上传自定义头像
+    presets.value = []
+  }
+})
+
+/** 本次编辑选中的头像（空串 = 清空）。初始值来自服务端，在 startEdit 里同步。 */
+const avatar = ref('')
+const uploading = ref(false)
+const uploadErr = ref('')
+
+async function onPickFile(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  // ⚠️ 无论成败都要把 value 清掉：同一个文件再选一次时
+  //    不清空的话 change 事件**不会再次触发**（浏览器认为没变化），
+  //    症状是「传错了想重传同一个文件，没反应」。
+  input.value = ''
+  if (!file) return
+  uploadErr.value = ''
+  if (!/^image\/(png|jpeg|webp)$/.test(file.type)) {
+    uploadErr.value = '只支持 PNG / JPEG / WebP 格式'
+    return
+  }
+  uploading.value = true
+  try {
+    // ⚠️ uploadImage 的 TS 返回类型**已经解包过**（ImageUploadVO），
+//    所以直接取 res.url。裸 fetch 写脚本时才是 `{ json }` 包一层
+//    ——AGENTS P20 那条坑指的是后者，两者别混。
+    const res = await uploadImage(file)
+    avatar.value = res.url
+  } catch {
+    uploadErr.value = '上传失败，请重试'
+  } finally {
+    uploading.value = false
+  }
+}
 
 const router = useRouter()
 const userStore = useUserStore()
@@ -78,6 +129,7 @@ function syncFromStore() {
   nickname.value = u?.nickname ?? ''
   bio.value = u?.bio ?? ''
   gender.value = u?.gender ?? 0
+  avatar.value = u?.avatar ?? ''
 }
 
 watch(() => userStore.userInfo, syncFromStore, { immediate: true })
@@ -109,6 +161,10 @@ async function save() {
     const patch: ProfilePatch = { bio: bio.value.trim(), gender: gender.value }
     const trimmedNick = nickname.value.trim()
     if (trimmedNick) patch.nickname = trimmedNick
+    // ⚠️ 头像与昵称/简介不同：**空串是有意义��取值**（清空），
+    // 所以不能写 `if (avatar.value) patch.avatar = ...` —— 那样用户永远清不掉头像。
+    // 与上面 bio 的坑同源，注释已写明，这里只补一句「别重复犯」。
+    patch.avatar = avatar.value
 
     const updated = await updateProfile(patch)
     userStore.userInfo = updated
@@ -150,7 +206,12 @@ async function logout() {
     <div class="side">
       <section class="card xk-card">
       <div class="who">
-        <img class="avatar" src="/mascot/m02.webp" alt="" width="62" height="62" />
+        <UserAvatar
+          :avatar="userStore.userInfo?.avatar"
+          :nickname="userStore.userInfo?.nickname"
+          :size="62"
+          test="me-avatar"
+        />
         <div class="names">
           <h1 class="nickname" data-test="me-nickname">
             {{ userStore.userInfo?.nickname || '加载中…' }}
@@ -205,6 +266,49 @@ async function logout() {
     </section>
 
     <section v-if="editing" class="card xk-card" data-test="me-form">
+      <!--
+        头像选择：8 个预设 + 上传自定义。
+        ⚠️ **点预设只是本地选中，不立即提交** —— 与同表单里的昵称/简介一起
+        点「保存」才写库。头像换一个就发一次 PUT 的话，用户连着试 3 个预设
+        就打满 3 次请求，而且中途点「取消」时界面和库里已经不一致了。
+      -->
+      <div class="av-field">
+        <span class="label">头像</span>
+        <div class="avatar-pick" data-test="me-avatar-picker">
+          <button
+            v-for="p in presets"
+            :key="p"
+            class="preset"
+            :class="{ on: avatar === p }"
+            type="button"
+            :aria-label="'使用预设头像 ' + p"
+            :aria-pressed="avatar === p"
+            :data-test="'me-avatar-' + p.split('/').pop()"
+            @click="avatar = p"
+          >
+            <img :src="p" alt="" width="44" height="44">
+          </button>
+        </div>
+        <label class="upload">
+          <!--
+            label 包 input：点「上传自定义头像」等价于点文件选择框，
+            而 input 本身 display:none 后仍可被脚本点击。
+            ⚠️ 不能用 @change 直接绑 <label>，键盘用户到不了。
+          -->
+          <input
+            class="file"
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            data-test="me-avatar-file"
+            @change="onPickFile"
+          >
+          <span class="upload-btn" data-test="me-avatar-upload">
+            {{ uploading ? '上传中…' : '上传自定义头像' }}
+          </span>
+        </label>
+        <p v-if="uploadErr" class="err" role="alert" data-test="me-avatar-error">{{ uploadErr }}</p>
+      </div>
+
       <label class="field">
         <span class="label">昵称</span>
         <input
@@ -594,6 +698,83 @@ class="xk-input area"
   color: var(--xk-amber-ink);
   font-weight: 700;
 }
+
+/* ---------------- 头像选择器 ---------------- */
+
+/*
+ * ⚠️ 这里**不能复用 .field**。
+ * .field 是 `display:grid` + `grid-template-columns: minmax(0,1fr) auto` 的
+ * 两列栅格，还带一条 `.field > :not(.label):not(.count) { grid-column: 1/-1 }`
+ * 的兜底 —— 那套契约是给「标签 + 控件 + 字数」三件套设计的。
+ * 头像块里有 **3 个**并排元素（标签 / 九宫格 / 上传钮），塞进去会被
+ * 自动排布挤到**重叠**：实测 .avatar-pick top=303、.upload top=315，
+ * 高度都是 170+，于是上传钮直接压在第一行两个头像上面。
+ * 所以自己开一个纵向 flex 块，不去挤那套栅格。
+ */
+.av-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--xk-space-2);
+  margin-bottom: 16px;
+}
+
+/* 8 个预设排成 4 列两行 —— 手机一屏放得下 8 个，且每格 ≥44px 便于点选 */
+.avatar-pick {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--xk-space-2);
+}
+
+.preset {
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  background: none;
+  cursor: pointer;
+  line-height: 0;
+  transition: border-color 0.15s, transform 0.1s;
+}
+.preset img {
+  width: 100%;
+  height: 100%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  object-fit: cover;
+  display: block;
+}
+.preset:hover { transform: scale(1.05); }
+/*
+ * 选中态 = **外侧留白 3px + 外侧琥珀环 2px**，而不是在头像本身上描边。
+ * ⚠️ 实测踩过：最初写的是 `border-color: 琥珀` + `inset` 内缩，结果选中
+ *    金色底那张（第 6 个）时，琥珀环压在金色底上**几乎看不出选中** ——
+ *    选中色和头像底色撞了。留白 + 外环的形状保证在任意底色上都能看见。
+ * 双信号（颜色 + 形状）也是 a11i 要求：不能只靠单一感官通道。
+ */
+.preset.on {
+  box-shadow: 0 0 0 3px var(--xk-surface), 0 0 0 5px var(--xk-amber-text);
+}
+.preset:focus-visible { outline: 2px solid var(--xk-amber-text); outline-offset: 2px }
+
+.upload { display: block; margin-top: var(--xk-space-3); }
+/* input 隐藏但**仍可被脚本/label 点击** —— 用 display:none 会让键盘用户彻底到不了 */
+.file { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+
+.upload-btn {
+  display: inline-block;
+  padding: var(--xk-space-2) var(--xk-space-4);
+  border: var(--xk-stroke-w) solid var(--xk-border);
+  border-radius: 999px;
+  background: var(--xk-surface-2);
+  color: var(--xk-text-2);
+  font-size: var(--xk-fs-13);
+  cursor: pointer;
+  /* P13：热区 ≥40px */
+  min-height: 40px;
+  line-height: 24px;
+}
+.upload-btn:hover { border-color: var(--xk-amber); color: var(--xk-amber-text); }
+/* 键盘焦点必须可见 —— input 被隐藏了，样式挂到 label 上 */
+.upload:focus-within .upload-btn { outline: 2px solid var(--xk-amber-text); outline-offset: 2px }
 
 .row {
   display: flex;

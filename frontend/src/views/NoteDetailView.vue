@@ -78,6 +78,7 @@ import { useShare } from '@/composables/useShare'
 import { blockUser } from '@/api/report'
 import MentionPicker from '@/components/MentionPicker.vue'
 import { useMentionPicker } from '@/composables/useMentionPicker'
+import UserAvatar from '@/components/UserAvatar.vue'
 
 const router = useRouter()
 const userStore = useUserStore()
@@ -806,7 +807,7 @@ onBeforeUnmount(() => {
 
           <ul v-else class="c-list" data-test="comment-list">
             <li v-for="c in comments" :key="c.id" class="c-item" data-test="comment-item">
-              <img class="c-avatar" src="/mascot/m02.webp" alt="" width="28" height="28" />
+              <UserAvatar class="c-avatar" :avatar="c.avatar" :nickname="c.nickname" :size="28" />
               <div class="c-main">
               <p class="c-nick">{{ c.nickname }}</p>
               <!--
@@ -1073,7 +1074,7 @@ onBeforeUnmount(() => {
         -->
         <div class="col-text">
           <div class="who">
-            <img class="avatar" src="/mascot/m02.webp" alt="" width="34" height="34" />
+            <UserAvatar :avatar="note.authorAvatar" :nickname="note.authorNickname" :size="34" test="note-avatar" />
             <div class="names">
               <p class="nickname" data-test="note-detail-author">{{ note.authorNickname }}</p>
               <p class="time">{{ formatDateTime(note.createTime) }}</p>

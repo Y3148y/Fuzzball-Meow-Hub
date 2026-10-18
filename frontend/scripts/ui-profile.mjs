@@ -130,6 +130,7 @@ try {
       set('[data-test=me-nickname-input]', ${JSON.stringify(NEW_NICK)})
       set('[data-test=me-bio-input]', ${JSON.stringify(NEW_BIO)})
       document.querySelector('[data-test=me-gender-2]').click()
+      document.querySelector('[data-test="me-avatar-06.png"]').click()
     })()
   `)
   await sleep(250)
@@ -153,10 +154,71 @@ try {
   s.check('落库：nickname 真的变了', me1?.nickname === NEW_NICK, `实际 ${me1?.nickname}`)
   s.check('落库：bio 真的变了', me1?.bio === NEW_BIO, `实际 ${me1?.bio}`)
   s.check('落库：gender 真的变了', me1?.gender === 2, `实际 ${me1?.gender}`)
+  // 头像：必须是**库里那个值**，不能只断言「页面上有个图」
+  // —— 页头头像曾经是写死的吉祥物（三个视图都写死），那种情况下这条断言恒真。
+  s.check('落库：avatar 真的变成了选中的预设', me1?.avatar === '/avatars/06.png',
+    `实际 ${me1?.avatar}`)
+  s.check('页头头像跟着换成了新预设（不是吉祥物）',
+    (await s.evaluate(`(document.querySelector('[data-test=me-avatar]')?.getAttribute('src') || '')
+      === '/avatars/06.png'`)),
+    await s.evaluate(`document.querySelector('[data-test=me-avatar]')?.getAttribute('src')`))
+  s.check('页头头像真的解码出来了（naturalWidth>0，不是裂图）',
+    await s.evaluate(`(() => { const i = document.querySelector('[data-test=me-avatar]')
+      return !!i && i.complete && i.naturalWidth > 0 })()`))
 
   // ---- 10. 取消不写库
   await s.evaluate("document.querySelector('[data-test=me-edit]').click()")
   await s.waitFor("document.querySelector('[data-test=me-nickname-input]')", '再次进入编辑')
+
+  // ---- 10-bis. 头像选择器本身
+  // ⚠️ 预设列表来自 /api/user/avatar-presets，**不在前端硬编码** ——
+  //    所以断言只断「数量与格式」，不断具体是哪 8 个（后端加图不必改这里）。
+  const picker = await s.evaluate(`(() => {
+    const ps = [...document.querySelectorAll('[data-test^=me-avatar-0]')]
+    return {
+      n: ps.length,
+      allPng: ps.every((p) => /^\\/avatars\\/0[1-8]\\.png$/.test(
+        p.getAttribute('data-test').replace('me-avatar-', '/avatars/'))),
+      decoded: ps.every((p) => { const i = p.querySelector('img')
+        return i && i.complete && i.naturalWidth > 0 }),
+      pressed: ps.filter((p) => p.getAttribute('aria-pressed') === 'true')
+        .map((p) => p.getAttribute('data-test')),
+      gridCols: (() => { const g = document.querySelector('[data-test=me-avatar-picker]')
+        return g ? getComputedStyle(g).gridTemplateColumns.split(' ').length : 0 })(),
+    }
+  })()`)
+  s.check('头像选择器列出 8 个预设', picker.n === 8, JSON.stringify(picker))
+  s.check('每个预设都是合法的 /avatars/0N.png', picker.allPng, JSON.stringify(picker))
+  s.check('8 张预设图全部解码成功（不是 404 占位）', picker.decoded, JSON.stringify(picker))
+  s.check('当前头像对应的预设处于选中态（回填正确）',
+    picker.pressed.length === 1, JSON.stringify(picker))
+  s.check('预设排成 4 列两行（手机一屏放得下）', picker.gridCols === 4, JSON.stringify(picker))
+
+  // 点另一个预设：只改本地选中，**不立即发请求**（否则连点 3 个就发 3 次）
+  await s.evaluate(`document.querySelector('[data-test="me-avatar-03.png"]').click()`)
+  await sleep(200)
+  s.check('点预设后选中态跟着换',
+    (await s.evaluate(`document.querySelector('[data-test="me-avatar-03.png"]')
+      .getAttribute('aria-pressed')`)) === 'true')
+  s.check('点预设不会立刻写库（要连同表单一起保存）',
+    (await fetchMe(token))?.avatar === '/avatars/06.png',
+    `实际 ${(await fetchMe(token))?.avatar}`)
+
+  // 上传：非图片要在前端就拦下（不能等 415 再报错）
+  const badFile = await s.evaluate(`(() => {
+    const i = document.querySelector('[data-test=me-avatar-file]')
+    const dt = new DataTransfer()
+    dt.items.add(new File(['x'], 'a.txt', { type: 'text/plain' }))
+    i.files = dt.files
+    i.dispatchEvent(new Event('change', { bubbles: true }))
+    return true
+  })()`)
+  await sleep(400)
+  s.check('上传非图片被前端拦下并给出提示',
+    (await s.evaluate(`!!document.querySelector('[data-test=me-avatar-error]')`)))
+  s.check('上传失败后没有把脏地址写进头像',
+    (await s.evaluate(`document.querySelector('[data-test="me-avatar-03.png"]')
+      .getAttribute('aria-pressed')`)) === 'true')
   await s.evaluate(`
     (() => {
       const el = document.querySelector('[data-test=me-nickname-input]')

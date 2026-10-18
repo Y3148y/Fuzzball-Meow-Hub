@@ -15,6 +15,7 @@ import { BizError } from '@/api/request'
 import { listBlockedUsers, unblockUser } from '@/api/report'
 import { ErrorCode } from '@/api/types'
 import type { BlockedUserVO } from '@/api/types'
+import UserAvatar from '@/components/UserAvatar.vue'
 
 const router = useRouter()
 
@@ -92,7 +93,7 @@ onMounted(load)
     <ul v-else class="list" data-test="blocks-list">
       <li v-for="row in rows" :key="row.id" class="row" data-test="block-row">
         <RouterLink class="user" :to="`/user/${row.id}`">
-          <img class="avatar" src="/mascot/m02.webp" alt="" width="40" height="40" />
+          <UserAvatar :avatar="row.avatar" :nickname="row.nickname" :size="40" test="block-avatar" />
           <span class="names">
             <span class="nick" data-test="block-nick">{{ row.nickname }}</span>
             <!-- P30：同上。黑名单里只有昵称。 -->

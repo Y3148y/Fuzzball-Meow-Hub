@@ -47,6 +47,11 @@ public class MvcConfig implements WebMvcConfigurer {
             "/api/user/register",
             "/api/user/login",
             "/api/user/refresh",
+            // 预设头像：静态常量列表，不含任何用户数据，且「我的」页在
+            // 登录前就要能渲染（登录失败时不至于整页空掉）。
+            // ⚠️ 它是 AvatarPresets.PRESETS 的只读出口 —— 白名单里加了它，
+            //    前端就不必自己抄一份名单（否则两处会漂）。
+            "/api/user/avatar-presets",
             // 接口文档
             "/doc.html",
             "/favicon.ico",

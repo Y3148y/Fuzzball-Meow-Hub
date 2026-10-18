@@ -40,3 +40,13 @@ export function getCurrentUser() {
 export function updateProfile(data: ProfilePatch) {
   return put<UserVO>('/user/profile', data)
 }
+/**
+ * 预设头像列表。
+ *
+ * ⚠️ **不硬编码在前端**：这份名单同时是后端 `AvatarPresets.PRESETS` 的校验依据。
+ * 前端再写一份的话，加图要改两处，漏一处就会出现
+ * 「界面能选、提交被拒 10008」或反过来「能提交但图 404」。
+ */
+export function getAvatarPresets() {
+  return get<string[]>('/user/avatar-presets')
+}

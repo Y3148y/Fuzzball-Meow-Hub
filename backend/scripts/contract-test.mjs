@@ -215,7 +215,20 @@ async function main() {
     check('UserVO 也没有漏出 status/deleted 等内部字段',
       !keys.includes('status') && !keys.includes('deleted'),
       `字段=${keys.join(',')}`)
-    eq('未传 nickname 时回落到 username', json?.data?.nickname, `ct2_${stamp}`)
+    // ⚠️ 2026-10-18（P36）**改的是断言不是实现**：默认昵称从「回落到 username」
+    //    改成「毛球喵社用户 + id 末四位」。
+    //    理由：P30 起用户名已退出界面（只在 AdminView 保留），把 `ct2_ab12cd`
+    //    当昵称会让新用户在**每一个他人能看到的地方**显示一串测试标识。
+    //    这里钉的是「新旧都不为空、且不是 username」这个真正的不变量。
+    check('未传 nickname 时给的是默认昵称',
+      !!json?.data?.nickname && json.data.nickname !== `ct2_${stamp}`,
+      `实际 ${json?.data?.nickname}`)
+    check('默认昵称形如「毛球喵社用户NNNN」',
+      /^毛球喵社用户\d+$/.test(json?.data?.nickname ?? ''),
+      `实际 ${json?.data?.nickname}`)
+    check('注册即带默认头像（不是 null，否则列表里一片空圆）',
+      typeof json?.data?.avatar === 'string' && json.data.avatar.length > 0,
+      `实际 ${json?.data?.avatar}`)
   }
   {
     const { json } = await post('/api/user/register', { body: { username: U, password: P } })
@@ -843,7 +856,14 @@ async function main() {
     const { json } = await get(`/api/follow/user/${ct2Id}`, { token: auth })
     codeIs('作者卡片查询成功', json, 0)
     eq('作者卡片是目标用户', json?.data?.id, ct2Id)
-    eq('作者卡片带昵称', json?.data?.nickname, `ct2_${stamp}`)
+    // ⚠️ 2026-10-18（P36）：这里原本硬断言等于 `ct2_${stamp}`，那是「默认昵称
+    //    = username」的旧行为。现在默认昵称是「毛球喵社用户NNNN」，
+    //    而这条断言的本意只是「作者卡片**带**昵称字段」（不是漏出）。
+    //    所以改成断「非空且不是用户名」，不去钉具体是哪一个 ——
+    //    昵称内容由注册时是否显式传入决定，不是接口该管的事。
+    check('作者卡片带昵称（非空、且不是用户名）',
+      !!json?.data?.nickname && json.data.nickname !== `ct2_${stamp}`,
+      `实际 ${json?.data?.nickname}`)
     eq('当前登录者已关注 → followed=true', json?.data?.followed, true)
     check('作者卡片没有漏 password', !Object.keys(json?.data ?? {}).includes('password'))
   }

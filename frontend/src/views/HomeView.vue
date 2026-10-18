@@ -9,6 +9,7 @@ import type { NoteListItemVO } from '@/api/types'
 import { useUserStore } from '@/stores/user'
 import { usePullToRefresh } from '@/composables/usePullToRefresh'
 import ThemeToggle from '@/components/ThemeToggle.vue'
+import UserAvatar from '@/components/UserAvatar.vue'
 
 const router = useRouter()
 const userStore = useUserStore()
@@ -192,7 +193,12 @@ onMounted(loadFeed)
     -->
     <section class="card xk-card who-card">
       <div class="who">
-        <img class="avatar" src="/mascot/m02.webp" alt="" width="62" height="62" />
+        <UserAvatar
+          :avatar="userStore.userInfo?.avatar"
+          :nickname="userStore.userInfo?.nickname"
+          :size="62"
+          test="home-avatar"
+        />
         <div class="names">
           <h1 class="nickname">{{ userStore.displayName || '加载中…' }}</h1>
         <!-- P30：同上，用户名不再展示。 -->

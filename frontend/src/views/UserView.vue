@@ -13,6 +13,7 @@ import { useUserStore } from '@/stores/user'
 import MoreSheet, { type MoreAction } from '@/components/MoreSheet.vue'
 import ReportSheet from '@/components/ReportSheet.vue'
 import { useReportSheet } from '@/composables/useReportSheet'
+import UserAvatar from '@/components/UserAvatar.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -173,7 +174,7 @@ onMounted(load)
     <template v-else-if="author">
       <section class="card xk-card">
         <div class="who">
-          <img class="avatar" src="/mascot/m02.webp" alt="" width="62" height="62" />
+          <UserAvatar :avatar="author?.avatar" :nickname="author?.nickname" :size="62" test="user-avatar" />
           <div class="names">
             <h1 class="nickname" data-test="user-nickname">{{ author.nickname }}</h1>
             <!-- P30：用户名不再展示给人看（决策：username 退回为纯登录标识）。历史上这里是唯一的用户名出口。 -->

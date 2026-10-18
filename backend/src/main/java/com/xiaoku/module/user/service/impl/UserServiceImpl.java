@@ -16,6 +16,7 @@ import com.xiaoku.module.user.entity.UserEntity;
 import com.xiaoku.module.user.mapper.UserMapper;
 import com.xiaoku.module.user.service.UserQueryService;
 import com.xiaoku.module.user.service.UserService;
+import com.xiaoku.module.user.support.AvatarPresets;
 import com.xiaoku.module.user.vo.LoginVO;
 import com.xiaoku.module.user.vo.UserVO;
 import lombok.RequiredArgsConstructor;
@@ -40,6 +41,7 @@ public class UserServiceImpl implements UserService {
     private final JwtProperties jwtProperties;
     private final SnowflakeIdGenerator snowflakeIdGenerator;
     private final BCryptPasswordEncoder passwordEncoder;
+    private final AvatarPresets avatarPresets;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -59,7 +61,20 @@ public class UserServiceImpl implements UserService {
         user.setUsername(dto.getUsername());
         // BCrypt 自带随机盐，同一口令每次加密结果都不同，所以登录时不能用 SQL 比对口令
         user.setPassword(passwordEncoder.encode(dto.getPassword()));
-        user.setNickname(StringUtils.hasText(dto.getNickname()) ? dto.getNickname() : dto.getUsername());
+        // ⚠️ 默认昵称**不能回退成 username**：
+        // P30 起用户名已退出界面（只在 AdminView 保留），新注册用户若把
+        // `ct_a1b2c3` 当昵称，会在**每一个**他人能看到的地方显示一串测试标识 ——
+        // 而昵称是全站可见的展示名。改成「毛球喵社用户 + id 末四位」，
+        // 可读、唯一性够用（nickname 本来就没有唯一索引，不承担唯一性职责）。
+        String nick = StringUtils.hasText(dto.getNickname())
+                ? dto.getNickname()
+                : "毛球喵社用户" + String.valueOf(user.getId() % 10000);
+        user.setNickname(nick);
+        // ⚠️ 头像在 schema 里是可空的，但「每个新用户都长一样」比「可空」更糟：
+        // 首页/关注流/私信列表会并排显示几十个同款默认脸。
+        // 这里按 id 分配一个稳定默认头像（AvatarPresets#defaultFor），
+        // 用户随后可以在「我的」页换成预设或上传自定义。
+        user.setAvatar(AvatarPresets.defaultFor(user.getId()));
         user.setGender(0);
         user.setFollowCount(0);
         user.setFansCount(0);
@@ -154,9 +169,23 @@ public class UserServiceImpl implements UserService {
         // update-strategy: not_null，值为 null 的字段不会出现在 UPDATE 语句里，
         // 因此这里直接透传 DTO 即可实现「部分更新」，
         // 不会出现「用户只改了昵称，结果简介被清空」的问题。
-        update.setNickname(dto.getNickname());
+update.setNickname(dto.getNickname());
         update.setBio(dto.getBio());
         update.setGender(dto.getGender());
+        // ⚠️ 头像必须在 service 里过白名单（AvatarPresets#validate），
+        // 不能只靠 DTO 的 @Size —— 那只管长度，挡不住外链 / javascript: / data:。
+        // 见 AvatarPresets 的类注释：这是这个字段唯一的安全边界。
+        //
+        // ⚠️ 「清空头像」传空串时 validate 返回 null，而 update-strategy: not_null
+        // 会把 null 剔除掉 —— 也就是说**空串清空在这里是不生效的**。
+        // 与 bio 的坑同源（AGENTS P3 已记：'' 能写进去，null 会被剔除）。
+        // 所以显式用 LambdaUpdateWrapper 把 null 也写进去。
+        String avatar = avatarPresets.validate(dto.getAvatar());
+        if (dto.getAvatar() != null) {
+            userMapper.update(null, Wrappers.<UserEntity>lambdaUpdate()
+                    .eq(UserEntity::getId, userId)
+                    .set(UserEntity::getAvatar, avatar));
+        }
         userMapper.updateById(update);
 
         // 顺序：先改库、再删缓存。反过来的话，一旦 updateById 失败，

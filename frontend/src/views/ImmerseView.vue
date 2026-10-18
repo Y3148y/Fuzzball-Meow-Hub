@@ -23,6 +23,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { immerseFeed } from '@/api/feed'
 import type { ImmerseCardVO } from '@/api/types'
+import UserAvatar from '@/components/UserAvatar.vue'
 
 const router = useRouter()
 
@@ -173,9 +174,14 @@ onBeforeUnmount(() => {
           <p v-if="c.contentBrief" class="brief" data-test="immerse-brief">{{ c.contentBrief }}</p>
 
           <div class="who">
-            <img v-if="c.authorAvatar" class="avatar" :src="c.authorAvatar" :alt="c.authorNickname"
-                 width="32" height="32">
-            <span v-else class="avatar ghost" aria-hidden="true" />
+            <!--
+              ⚠️ 原来是「v-if 有头像渲染 img / v-else 渲染一个灰色空圆 ghost」。
+              用户表回填预设头像后**所有用户都有头像**，那条 ghost 分支成了死代码 ——
+              而留着它就是 AGENTS 记过的那个病（改设计后忘了删配套 CSS）。
+              统一走 UserAvatar：没头像时它兜底吉祥物，不需要分支。
+            -->
+            <UserAvatar :avatar="c.authorAvatar" :nickname="c.authorNickname" :size="32"
+                        square test="immerse-avatar" />
             <RouterLink class="nick" :to="'/user/' + c.authorId" data-test="immerse-author">
               {{ c.authorNickname }}
             </RouterLink>
@@ -335,7 +341,9 @@ onBeforeUnmount(() => {
   border-radius: 50%;
   object-fit: cover;
 }
-.avatar.ghost { background: rgba(255, 255, 255, 0.18); }
+/* ⚠️ 这里原本有 `.avatar.ghost { background: rgba(255,255,255,0.18) }`，
+   是「无头像时渲染灰色空圆」的配套样式。模板改成 UserAvatar 后已无宿主，
+   留着就是死规则 —— 与 AGENTS 记的 P35 死 CSS 是同一个病。 */
 .nick { color: #fff; font-size: var(--xk-fs-15); font-weight: 600; }
 .counts {
   margin-left: auto;

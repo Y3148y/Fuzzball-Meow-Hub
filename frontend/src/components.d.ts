@@ -22,6 +22,7 @@ declare module 'vue' {
     SiteNav: typeof import('./components/SiteNav.vue')['default']
     TabBar: typeof import('./components/TabBar.vue')['default']
     ThemeToggle: typeof import('./components/ThemeToggle.vue')['default']
+    UserAvatar: typeof import('./components/UserAvatar.vue')['default']
     VanActionSheet: typeof import('vant/es')['ActionSheet']
     VanIcon: typeof import('vant/es')['Icon']
     VanLoading: typeof import('vant/es')['Loading']

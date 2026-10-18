@@ -203,9 +203,24 @@ http.interceptors.response.use(
     return Promise.reject(new BizError(body.code, body.message))
   },
   (error) => {
-    // 网络层错误：超时、断网、后端 5xx
-    const message =
-      error.code === 'ECONNABORTED' ? '请求超时，请稍后重试' : error.message || '网络异常'
+    // 网络层错误：超时、断网、后端 5xx、以及 **nginx 挡下来的请求**
+    //
+    // ⚠️ 413 必须单独翻译：nginx 的 client_max_body_size 拒绝时返回的是
+    //    **HTML 错误页而不是 JSON**，所以走不到上面那个「按业务码提示」的分支，
+    //    用户会看到 axios 的原始文案 "Request failed with status code 413" ——
+    //    而「文件太大」这件事只有用户自己知道，不告诉他就无从下手。
+    const status = error.response?.status
+    let message: string
+    if (status === 413) {
+      message = '文件太大，传不上去（换个短一点的视频或压缩后再试）'
+    } else if (status === 502 || status === 504) {
+      // 8.5 记过：重建 backend 容器后 nginx 缓存了旧 upstream IP 就是这个症状
+      message = '服务暂时不可用，稍后再试'
+    } else if (error.code === 'ECONNABORTED') {
+      message = '请求超时，请稍后重试'
+    } else {
+      message = error.message || '网络异常'
+    }
     const config = (error.config ?? {}) as XkConfig
     if (!config._xkSilent) {
       showFailToast(message)

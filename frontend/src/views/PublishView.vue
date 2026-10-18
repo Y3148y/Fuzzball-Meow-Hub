@@ -158,8 +158,14 @@ function onVideoPicked(ev: Event) {
     input.value = ''
     return
   }
-  if (f.size > VIDEO_MAX) {
-    videoError.value = '视频不能超过 200MB'
+if (f.size > VIDEO_MAX) {
+    // ⚠️ 只说「200MB」不够用：用户不知道自己录的算不算长。
+    // 手机 1080p 大约 **每秒 1MB**（8Mbps），200MB ≈ 3~4 分钟 ——
+    // 录了 5 分钟的人撞上「不能超过 200MB」会一脸茫然，
+    // 而告诉他「约 3~4 分钟」他能立刻判断该压缩还是该分段。
+    const mins = Math.floor(VIDEO_MAX / (1024 * 1024) / 1.0 / 60)
+    videoError.value = `视频不能超过 200MB（约 ${mins} 分钟，手机 1080p 每秒约 1MB）。`
+      + '可以调低录制分辨率/帧率，或用系统自带剪辑压缩后再传'
     input.value = ''
     return
   }

@@ -445,6 +445,52 @@ async function setVal(sel, value) {
     '切到视频模式后图片选择框消失（两者互斥）',
     (await s.evaluate("!!document.querySelector('[data-test=note-file]')")) === false,
   )
+
+  // ⚠️ 用**假 files 对象**触发体积/格式校验，不真造 200MB 文件：
+  //    AGENTS 记过这台机内存只剩 1.1GB，而真造一个 200MB 的 Blob
+  //    在全量连跑时可能被 OOM 掉 —— 那会让本组假红，真因隔了十万八千里。
+  //    onVideoPicked 只读 f.type / f.size / f.name，假对象足够。
+  const pickFakeVideo = async (over) => s.evaluate(`(() => {
+    const input = document.querySelector('[data-test=note-video-file]')
+    const fake = ${over ? "{ type: 'video/mp4', name: 'big.mp4', size: 300 * 1024 * 1024 }"
+                        : "{ type: 'text/plain', name: 'a.txt', size: 1024 }"}
+    Object.defineProperty(input, 'files', { value: [fake], configurable: true })
+    input.dispatchEvent(new Event('change', { bubbles: true }))
+    return true
+  })()`)
+
+  await pickFakeVideo(false)
+  await sleep(300)
+  s.check('选了非 mp4/webm 的文件被前端拦下（提示转格式）',
+    await s.evaluate(`(() => {
+      const e = document.querySelector('[data-test=note-video-error]')
+      return !!e && /mp4|格式/.test(e.textContent)
+    })()`),
+    await s.evaluate(`document.querySelector('[data-test=note-video-error]')?.textContent?.trim()`))
+
+  await pickFakeVideo(true)
+  await sleep(300)
+  const sizeErr = await s.evaluate(
+    `document.querySelector('[data-test=note-video-error]')?.textContent?.trim() || ''`)
+  s.check('超过 200MB 的视频被前端拦下', /200MB/.test(sizeErr), sizeErr)
+  // ⚠️ 这条钉的是「文案要给可操作的换算」：只说 200MB，用户不知道自己录的算不算长。
+  // 手机 1080p 约每秒 1MB → 200MB 约 3 分钟。
+  s.check('体积提示带「大约几分钟」的换算（只说 MB 用户无从判断）',
+    /分钟/.test(sizeErr), sizeErr)
+  s.check('静态提示与实际上限一致（页面写着 200MB）',
+    await s.evaluate(`/200MB/.test(
+      document.querySelector('.video-hint')?.textContent || '')`),
+    await s.evaluate(`document.querySelector('.video-hint')?.textContent?.trim()`))
+
+  // ⚠️ **必须重新加载页面**：上面用 defineProperty 造的假 files 覆盖了 input.files，
+  // 而处理函数里的 `input.value = ''` 清不掉它（那是自定义属性，不是原生 FileList）。
+  // 不恢复的话，后面 CDP.setFileInputFiles 设真文件会静默失败，
+  // 于是「选完视频后显示文件名」「详情页播放器」连带假红 ——
+  // 症状在十几行之外，真因是这一行 defineProperty。
+  await s.goto(`${BASE}/#/publish`)
+  await s.waitFor("document.querySelector('[data-test=note-video-mode]')", '发布页重载', 20000)
+  await click('note-video-mode')
+  await s.waitFor("!!document.querySelector('[data-test=note-video-file]')", '再次切到视频模式', 10000)
   s.check(
     '切到视频模式后按钮变成「图文模式」（可切回）',
     (await text('note-video-mode')) === '图文模式',

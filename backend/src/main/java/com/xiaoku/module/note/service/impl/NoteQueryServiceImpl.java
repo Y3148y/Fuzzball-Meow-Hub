@@ -203,6 +203,38 @@ public class NoteQueryServiceImpl implements NoteQueryService {
     }
 
     /**
+     * 我赞过的笔记（个人主页的「赞过」Tab）
+     *
+     * <p>与 {@link #pageMyCollections} 同构，所以整段照抄 —— 但**刻意保留成两个方法**
+     * 而不是抽公共泛型：泛型化要引入 {@code Function} 参数把 authorIds/mine 传进去，
+     * 对两个用例来说抽象成本高于收益，而且一旦以后两者规则分叉（收藏夹可能加
+     * 「已失效笔记」标记、赞过可能加时间分组），共用的那段反而成了要拆的负担。
+     */
+    @Override
+    public PageVO<NoteListItemVO> pageMyLikedNotes(int page, int size) {
+        Long myId = UserContextHolder.requireUserId();
+
+        long total = noteLikeMapper.countLikedNotes(myId);
+        long offset = (long) (page - 1) * size;
+        List<NoteEntity> notes = noteLikeMapper.pageLikedNotes(myId, offset, size);
+        if (notes.isEmpty()) {
+            return PageVO.of(List.of(), total, page, size);
+        }
+
+        List<Long> authorIds = notes.stream().map(NoteEntity::getUserId).distinct().toList();
+        Map<Long, UserVO> authors = userQueryService.findUserVOMap(authorIds);
+        Set<Long> mine = userFollowQueryService.batchFollowingIds(myId, authorIds);
+
+        counterStore.applyCounts(notes);
+        List<NoteListItemVO> voList = notes.stream()
+                .map(note -> NoteConverter.toListItemVO(note, authors.get(note.getUserId()),
+                        mine.contains(note.getUserId())))
+                .toList();
+
+        return PageVO.of(voList, total, page, size);
+    }
+
+    /**
      * 取笔记并按 P3 门禁校验当前用户能不能看。
      *
      * <p><b>为什么抽出来</b>：点赞人/收藏人列表也是「这篇笔记的读取入口」，

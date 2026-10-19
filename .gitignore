@@ -53,3 +53,12 @@ backend/src/main/resources/application-local.yml
 
 # mvnw 重定向的 stderr（后端本地启动日志）
 *.log.err
+
+# ===== 本地验收产物（一轮就清，绝不入库）=====
+# img/ 是截图目录，几十 MB 且结论都已写进 AGENTS.md
+img/
+logs-vite.txt
+# frontend/scripts/_*.mjs：一次性探针/截图脚本。带下划线前缀就是为了
+# 「一眼看出不是正式测试」，但光靠约定不够，这里再兜一道 —— 否则
+# 某轮探针混进提交里，prod 验收脚本就跟着入库了。
+frontend/scripts/_*.mjs

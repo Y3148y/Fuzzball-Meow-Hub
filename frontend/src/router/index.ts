@@ -28,6 +28,19 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '我的', requiresAuth: true },
   },
   {
+    // P38：编辑资料独立成页。原来是 ProfileView 里就地展开的表单 ——
+    // 后退键不管用（不是一次导航），而且桌面端表单会把左栏资料卡撑高、
+    // 右栏笔记瀑布整个跳一下。小红书是单独一页。
+    //
+    // ⚠️ requiresAuth 不能省：漏了它未登录也能进编辑页，
+    // 页面本身不会崩（保存才 401），但用户会看到一个填不满的表单 ——
+    // 与其等提交失败才发现，不如进来就弹回登录页。
+    path: '/profile/edit',
+    name: 'profile-edit',
+    component: () => import('@/views/ProfileEditView.vue'),
+    meta: { title: '编辑资料', requiresAuth: true },
+  },
+  {
     path: '/publish',
     name: 'publish',
     component: () => import('@/views/PublishView.vue'),

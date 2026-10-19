@@ -37,3 +37,14 @@ export function getUserNotes(userId: SnowflakeId, page = 1, size = 20) {
 export function getMyCollections(page = 1, size = 20) {
   return get<PageVO<NoteListItemVO>>('/note/collections', { page, size })
 }
+
+/**
+ * 我赞过的笔记（个人主页的「赞过」Tab）。
+ *
+ * ⚠️ 刻意**不收 userId**：与收藏夹同源的理由 ——
+ * 「我赞过什么」是私有数据，能传 id 就等于允许越权遍历别人的点赞历史。
+ * 后端也不提供「TA 赞过的笔记」这种视图。
+ */
+export function getMyLiked(page = 1, size = 20) {
+  return get<PageVO<NoteListItemVO>>('/note/liked', { page, size })
+}

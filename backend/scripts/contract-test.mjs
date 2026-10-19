@@ -568,6 +568,64 @@ async function main() {
     codeIs('未登录访问收藏夹返回 10005', anon.json, 10005)
   }
   {
+    // P38「赞过」列表（个人主页的赞过 Tab）。与收藏夹同源的理由：
+    // **私有数据，只查自己的，不传 userId** —— 能传 id 就等于允许越权遍历
+    // 别人的点赞历史。
+    const empty = await get('/api/note/liked?page=1&size=20', { token: actorAuth })
+    codeIs('赞过列表查询成功', empty.json, 0)
+    eq('赞过 total 是 JSON number（不是 "1" 那种字符串）',
+      typeof empty.json?.data?.total, 'number')
+    eq('此时赞过是空的（本段之前已取消点赞）', empty.json?.data?.list?.length, 0)
+
+    await put(`/api/note/${noteId}/like`, { token: actorAuth })
+    const { json } = await get('/api/note/liked?page=1&size=20', { token: actorAuth })
+    codeIs('点赞后赞过列表查询成功', json, 0)
+    eq('赞过里有刚赞的那篇',
+      (json?.data?.list ?? []).map((n) => n.id).includes(noteId), true)
+    const row = json?.data?.list?.[0]
+    check('赞过卡片带作者信息',
+      typeof row?.authorId === 'string' && typeof row?.authorNickname === 'string'
+        && row.authorNickname.length > 0,
+      `author=${row?.authorNickname}`)
+    check('赞过卡片的 authorFollowed 是布尔（要实时判断）',
+      typeof row?.authorFollowed === 'boolean', `${row?.authorFollowed}`)
+    check('赞过卡片没有漏 password', !Object.keys(row ?? {}).includes('password'))
+
+    // ⚠️ **隐私断言**：接口刻意不收 userId，所以传了也无效 ——
+    //   拿到的是**调用者自己**的赞过列表，不是别人的。
+    //   这条钉的正是「不收 userId」这个决定（与收藏夹同款）。
+    //   「别人的 id」从笔记详情里现取，不依赖外层变量（本轮先写成 `authId`
+    //   又写成 `ownId`，两个都因为声明在更后面而 ReferenceError ——
+    //   **测试里引用一个看不见的变量，报错会指向那一行而不是「你用错了变量」**）。
+    const authorOf = (await get(`/api/note/${noteId}`, { token: auth })).json?.data?.authorId
+    const spoof = await get(`/api/note/liked?page=1&size=20&userId=${authorOf}`,
+      { token: actorAuth })
+    eq('传别人的 userId 无效（返回的仍是自己那份）',
+      (spoof.json?.data?.list ?? []).length, (json?.data?.list ?? []).length)
+
+    // 已下架的笔记不该出现在赞过里（点进去会撞 20002）
+    await put(`/api/note/${noteId}/status`, { token: auth, body: { status: 2 } })
+    const down = await get('/api/note/liked?page=1&size=20', { token: actorAuth })
+    check('笔记下架后从赞过消失（不给点不开的条目）',
+      !(down.json?.data?.list ?? []).some((n) => n.id === noteId),
+      `ids=${(down.json?.data?.list ?? []).map((n) => n.id).join(',')}`)
+    await put(`/api/note/${noteId}/status`, { token: auth, body: { status: 1 } })
+    const back = await get('/api/note/liked?page=1&size=20', { token: actorAuth })
+    check('重新上架后回到赞过',
+      (back.json?.data?.list ?? []).some((n) => n.id === noteId), '')
+
+    // 分页夹取：size 传超大也不能一次拉爆
+    const huge = await get('/api/note/liked?page=1&size=99999', { token: actorAuth })
+    check('size 传 99999 时返回条数 ≤ total（分页被夹取）',
+      (huge.json?.data?.list ?? []).length <= (huge.json?.data?.total ?? 0),
+      `list=${(huge.json?.data?.list ?? []).length} total=${huge.json?.data?.total}`)
+
+    // 复原：取消点赞 + 匿名必须被拒
+    await del(`/api/note/${noteId}/like`, { token: actorAuth })
+    const anon = await get('/api/note/liked')
+    codeIs('未登录访问赞过列表返回 10005', anon.json, 10005)
+  }
+  {
     // 点赞和收藏是两套独立关系，任何一边都不该动另一边的计数。
     // 先收藏让 collectCount 变成 1，再点赞，回来时 collectCount 必须仍是 1
     // ——如果实现里两边共用了同一个字段或同一个自增语句，这里就会变成 0 或 2

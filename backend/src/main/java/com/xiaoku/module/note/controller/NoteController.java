@@ -146,6 +146,18 @@ public class NoteController {
         return Result.success(noteQueryService.pageMyCollections(safePage, safeSize));
     }
 
+    @Operation(summary = "我赞过的笔记",
+            description = "当前登录用户点赞过的、仍已发布的笔记，按点赞时间倒序；不含已下架。"
+                    + "刻意不收 userId —— 「我赞过什么」是私有数据，能传 id 就等于允许越权遍历别人的点赞历史")
+    @GetMapping("/liked")
+    public Result<PageVO<NoteListItemVO>> myLiked(
+            @Parameter(description = "页码，从 1 开始") @RequestParam(defaultValue = "1") long page,
+            @Parameter(description = "每页条数") @RequestParam(defaultValue = "20") long size) {
+        int safeSize = safeSize(size);
+        int safePage = safePage(page);
+        return Result.success(noteQueryService.pageMyLikedNotes(safePage, safeSize));
+    }
+
     @Operation(summary = "谁赞了这篇笔记",
             description = "点赞人列表，按点赞时间倒序；与笔记详情同一套可见性门禁")
     @GetMapping("/{id}/likes")

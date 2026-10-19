@@ -41,6 +41,18 @@ public interface NoteQueryService {
     PageVO<NoteListItemVO> pageMyCollections(int page, int size);
 
     /**
+     * 我赞过的笔记，按点赞时间倒序
+     *
+     * <p><b>同样不传 userId</b>，理由与收藏夹一模一样：「我赞过什么」是私有数据，
+     * 能传 id 就等于允许越权遍历别人的点赞历史。
+     * 也不提供「TA 赞过的笔记」这种视图 —— 小红书同样没有。
+     *
+     * @param page 页码，从 1 开始
+     * @param size 每页条数
+     */
+    PageVO<NoteListItemVO> pageMyLikedNotes(int page, int size);
+
+    /**
      * 谁赞了这篇笔记（点赞人列表，按点赞时间倒序）
      *
      * <p>「谁赞了」和「多少人赞了」是两件事：计数只有数字，社交感来自人名。

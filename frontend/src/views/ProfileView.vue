@@ -1,67 +1,18 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+// ⚠️ P38 把编辑表单整体搬到 ProfileEditView.vue 之后，这里只剩「展示 + 我的笔记」。
+//    搬走时顺带清掉了随之无用的 import（computed/onMounted/showSuccessToast/
+//    BizError/ErrorCode/getAvatarPresets/updateProfile/uploadImage/ProfilePatch）——
+//    留着会让 typecheck 报 TS6133，而且它们暗示「这页还能编辑」，
+//    下一个人会照着找错地方。
+import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { showSuccessToast } from 'vant'
-import { BizError } from '@/api/request'
-import { ErrorCode } from '@/api/types'
-import { getAvatarPresets, updateProfile } from '@/api/user'
-import { uploadImage } from '@/api/note'
-import { getUserNotes } from '@/api/feed'
-import type { NoteListItemVO, ProfilePatch } from '@/api/types'
+import { getMyCollections, getMyLiked, getUserNotes } from '@/api/feed'
+import type { NoteListItemVO } from '@/api/types'
 import { useUserStore } from '@/stores/user'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 import UserAvatar from '@/components/UserAvatar.vue'
 import { useUnreadCount } from '@/composables/useUnreadCount'
 import { useMessageUnread } from '@/composables/useMessageUnread'
-
-/* ---------------- 头像选择（预设 + 上传） ---------------- */
-
-/**
- * 预设头像列表，**从后端取**而不是写死在前端。
- * 单一数据源：后端 AvatarPresets.PRESETS 既是校验白名单也是这里的返回值，
- * 两边再各写一份就会出现「能选但提交 10008」或「能提交但图 404」。
- */
-const presets = ref<string[]>([])
-onMounted(async () => {
-  try {
-    presets.value = await getAvatarPresets()
-  } catch {
-    // 拿不到预设不该让整页不可用 —— 至少还能上传自定义头像
-    presets.value = []
-  }
-})
-
-/** 本次编辑选中的头像（空串 = 清空）。初始值来自服务端，在 startEdit 里同步。 */
-const avatar = ref('')
-const uploading = ref(false)
-const uploadErr = ref('')
-
-async function onPickFile(e: Event) {
-  const input = e.target as HTMLInputElement
-  const file = input.files?.[0]
-  // ⚠️ 无论成败都要把 value 清掉：同一个文件再选一次时
-  //    不清空的话 change 事件**不会再次触发**（浏览器认为没变化），
-  //    症状是「传错了想重传同一个文件，没反应」。
-  input.value = ''
-  if (!file) return
-  uploadErr.value = ''
-  if (!/^image\/(png|jpeg|webp)$/.test(file.type)) {
-    uploadErr.value = '只支持 PNG / JPEG / WebP 格式'
-    return
-  }
-  uploading.value = true
-  try {
-    // ⚠️ uploadImage 的 TS 返回类型**已经解包过**（ImageUploadVO），
-//    所以直接取 res.url。裸 fetch 写脚本时才是 `{ json }` 包一层
-//    ——AGENTS P20 那条坑指的是后者，两者别混。
-    const res = await uploadImage(file)
-    avatar.value = res.url
-  } catch {
-    uploadErr.value = '上传失败，请重试'
-  } finally {
-    uploading.value = false
-  }
-}
 
 const router = useRouter()
 const userStore = useUserStore()
@@ -69,121 +20,73 @@ const { unread } = useUnreadCount()
 const { unread: messageUnread } = useMessageUnread()
 
 /*
- * 「我的笔记」——桌面端右侧瀑布用的就是这份数据。
- * 走 /api/note/user/{id}（作者主页同一条接口），本人视角 status=1 的可见，
- * 所以草稿/下架不会出现在这里。
+ * P38：三个 tab 的列表。**每个 tab 独立缓存**，切回来不用重新拉 ——
+ * 用户在「笔记 → 赞过 → 笔记」之间来回看是常态，每次重拉会明显卡一下，
+ * 而这三个列表都是「我自己的」数据，不存在被别人改掉的场景。
  */
-const notes = ref<NoteListItemVO[]>([])
-const notesLoading = ref(true)
+type TabKey = 'notes' | 'collected' | 'liked'
 
-async function loadNotes() {
-  const id = userStore.userInfo?.id
-  if (!id) return
-  notesLoading.value = true
+const TABS: { key: TabKey; label: string }[] = [
+  { key: 'notes', label: '笔记' },
+  { key: 'collected', label: '收藏' },
+  { key: 'liked', label: '赞过' },
+]
+
+const EMPTY_TEXT: Record<TabKey, string> = {
+  notes: '还没有笔记，去发一篇吧',
+  collected: '还没有收藏，看到喜欢的点个收藏',
+  liked: '还没有赞过，看到喜欢的点个赞',
+}
+
+const tab = ref<TabKey>('notes')
+const lists = ref<Record<TabKey, NoteListItemVO[]>>({ notes: [], collected: [], liked: [] })
+const loading = ref<Record<TabKey, boolean>>({ notes: false, collected: false, liked: false })
+/** 已经拉过的 tab，用来避免重复请求 */
+const loaded = ref<Record<TabKey, boolean>>({ notes: false, collected: false, liked: false })
+
+const list = computed(() => lists.value[tab.value])
+const listLoading = computed(() => loading.value[tab.value])
+
+async function loadTab(key: TabKey, force = false) {
+  if (loaded.value[key] && !force) return
+  loading.value[key] = true
   try {
-    const page = await getUserNotes(id, 1, 24)
-    notes.value = page.list
+    if (key === 'notes') {
+      const id = userStore.userInfo?.id
+      // ⚠️ 没有 id 就**不要**把 loaded 置 true —— 否则 userInfo 到位后
+      // 不会再拉一次，笔记区会永远空着（这个坑在原 watch 里踩过）
+      if (!id) return
+      lists.value.notes = (await getUserNotes(id, 1, 24)).list
+    } else if (key === 'collected') {
+      lists.value.collected = (await getMyCollections(1, 24)).list
+    } else {
+      lists.value.liked = (await getMyLiked(1, 24)).list
+    }
+    loaded.value[key] = true
   } catch {
-    // 首页已经有完整错误态，这里静默清空即可，别把整个页面拖成失败
-    notes.value = []
+    // 已经有完整错误态了，这里静默清空即可，别把整个页面拖成失败
+    lists.value[key] = []
+    loaded.value[key] = true   // 失败也标记：否则每次切 tab 都会重试一次失败的请求
   } finally {
-    notesLoading.value = false
+    loading.value[key] = false
   }
+}
+
+function switchTab(key: TabKey) {
+  tab.value = key
+  void loadTab(key)
 }
 
 /*
  * immediate: 必须有 —— 本视图没有 onMounted，登录时 userInfo 就已经填好，
  * 只 watch 变化的话这次挂载永远不会触发加载（笔记区会一直转圈）。
+ *
+ * ⚠️ 只 watch **id**：改昵称/换头像不该重新拉列表（列表内容跟资料无关），
+ * 那样每次改资料都会让笔记区闪一下加载中。
  */
-watch(() => userStore.userInfo?.id, (id) => { if (id) void loadNotes() }, { immediate: true })
-
-const editing = ref(false)
-const saving = ref(false)
-const errorMsg = ref('')
-
-const nickname = ref('')
-const bio = ref('')
-const gender = ref(0)
-
-/** 与后端 UserProfileUpdateDTO 的校验保持一致：昵称 ≤32、简介 ≤255 */
-const NICKNAME_MAX = 32
-const BIO_MAX = 255
-
-const nicknameLen = computed(() => nickname.value.length)
-const bioLen = computed(() => bio.value.length)
-const nicknameOver = computed(() => nicknameLen.value > NICKNAME_MAX)
-const bioOver = computed(() => bioLen.value > BIO_MAX)
-
-const canSave = computed(
-  () =>
-    !saving.value &&
-    nickname.value.trim().length > 0 &&
-    !nicknameOver.value &&
-    !bioOver.value,
-)
-
-/** 表单从 store 回填；编辑中不覆盖，避免用户改到一半被后台刷新冲掉 */
-function syncFromStore() {
-  if (editing.value) return
-  const u = userStore.userInfo
-  nickname.value = u?.nickname ?? ''
-  bio.value = u?.bio ?? ''
-  gender.value = u?.gender ?? 0
-  avatar.value = u?.avatar ?? ''
-}
-
-watch(() => userStore.userInfo, syncFromStore, { immediate: true })
-
-function startEdit() {
-  syncFromStore()
-  editing.value = true
-  errorMsg.value = ''
-}
-
-function cancelEdit() {
-  editing.value = false
-  errorMsg.value = ''
-  syncFromStore()
-}
-
-async function save() {
-  if (!canSave.value) return
-  saving.value = true
-  errorMsg.value = ''
-  try {
-    // 区分两种"没填"，这是踩过的坑：
-    // 后端 MyBatis-Plus 配的是 update-strategy: not_null，只有 null 才会被
-    // 从 UPDATE 语句里去掉。所以「不传」和「传空串」在语义上完全不同：
-    //   - 不传 nickname = 保持原昵称（但昵称是必填的，这里本来就非空）
-    //   - 不传 bio     = 保持原简介
-    //   - bio: ''      = **清空**简介
-    // 之前对 bio 也做了 if (trimmed) 判断，结果用户永远清不掉简介。
-    const patch: ProfilePatch = { bio: bio.value.trim(), gender: gender.value }
-    const trimmedNick = nickname.value.trim()
-    if (trimmedNick) patch.nickname = trimmedNick
-    // ⚠️ 头像与昵称/简介不同：**空串是有意义��取值**（清空），
-    // 所以不能写 `if (avatar.value) patch.avatar = ...` —— 那样用户永远清不掉头像。
-    // 与上面 bio 的坑同源，注释已写明，这里只补一句「别重复犯」。
-    patch.avatar = avatar.value
-
-    const updated = await updateProfile(patch)
-    userStore.userInfo = updated
-    editing.value = false
-    showSuccessToast('已保存')
-  } catch (e) {
-    if (e instanceof BizError) {
-      errorMsg.value = e.message
-      // 10005/10006 交给拦截器跳登录，这里不再重复提示
-      if (e.code === ErrorCode.UNAUTHORIZED || e.code === ErrorCode.TOKEN_INVALID) {
-        return
-      }
-    } else {
-      errorMsg.value = '保存失败，请稍后重试'
-    }
-  } finally {
-    saving.value = false
-  }
-}
+watch(() => userStore.userInfo?.id, (id) => {
+  if (id) void loadTab('notes', true)
+}, { immediate: true })
 
 async function logout() {
   userStore.logout()
@@ -218,15 +121,12 @@ async function logout() {
           </h1>
           <!-- P30：用户名不再展示给人看 —— 界面上只有昵称，用户不必记两个名字。 -->
         </div>
-        <button
-          v-if="!editing"
-          class="edit"
-          type="button"
-          data-test="me-edit"
-          @click="startEdit"
-        >
-          编辑
-        </button>
+        <!--
+          P38：「编辑资料」从**就地展开的表单**改成**独立页面**。
+          它现在是 RouterLink 而不是 `<button @click>` —— 去另一个页面是**导航**，
+          P21 的规矩「导航归 a、动作归 button」。顺带后退键也就管用了。
+        -->
+        <RouterLink class="edit" to="/profile/edit" data-test="me-edit">编辑资料</RouterLink>
       </div>
 
       <p v-if="userStore.userInfo?.bio" class="bio" data-test="me-bio">
@@ -265,116 +165,13 @@ async function logout() {
       </dl>
     </section>
 
-    <section v-if="editing" class="card xk-card" data-test="me-form">
-      <!--
-        头像选择：8 个预设 + 上传自定义。
-        ⚠️ **点预设只是本地选中，不立即提交** —— 与同表单里的昵称/简介一起
-        点「保存」才写库。头像换一个就发一次 PUT 的话，用户连着试 3 个预设
-        就打满 3 次请求，而且中途点「取消」时界面和库里已经不一致了。
-      -->
-      <div class="av-field">
-        <span class="label">头像</span>
-        <div class="avatar-pick" data-test="me-avatar-picker">
-          <button
-            v-for="p in presets"
-            :key="p"
-            class="preset"
-            :class="{ on: avatar === p }"
-            type="button"
-            :aria-label="'使用预设头像 ' + p"
-            :aria-pressed="avatar === p"
-            :data-test="'me-avatar-' + p.split('/').pop()"
-            @click="avatar = p"
-          >
-            <img :src="p" alt="" width="44" height="44">
-          </button>
-        </div>
-        <label class="upload">
-          <!--
-            label 包 input：点「上传自定义头像」等价于点文件选择框，
-            而 input 本身 display:none 后仍可被脚本点击。
-            ⚠️ 不能用 @change 直接绑 <label>，键盘用户到不了。
-          -->
-          <input
-            class="file"
-            type="file"
-            accept="image/png,image/jpeg,image/webp"
-            data-test="me-avatar-file"
-            @change="onPickFile"
-          >
-          <span class="upload-btn" data-test="me-avatar-upload">
-            {{ uploading ? '上传中…' : '上传自定义头像' }}
-          </span>
-        </label>
-        <p v-if="uploadErr" class="err" role="alert" data-test="me-avatar-error">{{ uploadErr }}</p>
-      </div>
-
-      <label class="field">
-        <span class="label">昵称</span>
-        <input
-          v-model="nickname"
-          class="xk-input"
-          type="text"
-          maxlength="40"
-          aria-label="昵称"
-          data-test="me-nickname-input"
-        />
-        <span class="count" :class="{ over: nicknameOver }">{{ nicknameLen }}/{{ NICKNAME_MAX }}</span>
-      </label>
-
-      <label class="field">
-        <span class="label">简介</span>
-        <textarea
-          v-model="bio"
-class="xk-input area"
-          maxlength="300"
-          placeholder="介绍一下自己…"
-          aria-label="个人简介"
-          data-test="me-bio-input"
-        />
-        <span class="count" :class="{ over: bioOver }">{{ bioLen }}/{{ BIO_MAX }}</span>
-      </label>
-
-      <div class="field">
-        <span class="label">性别</span>
-        <div class="genders">
-          <button
-            v-for="g in [
-              { v: 0, t: '保密' },
-              { v: 1, t: '男' },
-              { v: 2, t: '女' },
-            ]"
-            :key="g.v"
-            class="chip"
-            :class="{ on: gender === g.v }"
-            type="button"
-            :data-test="`me-gender-${g.v}`"
-            @click="gender = g.v"
-          >
-            {{ g.t }}
-          </button>
-        </div>
-      </div>
-
-      <p v-if="errorMsg" class="err" role="alert" data-test="me-error">{{ errorMsg }}</p>
-
-      <div class="row">
-        <button class="xk-btn xk-btn--ghost" type="button" data-test="me-cancel" @click="cancelEdit">
-          取消
-        </button>
-        <button
-          class="xk-btn"
-          type="button"
-          :disabled="!canSave"
-          data-test="me-save"
-          @click="save"
-        >
-          {{ saving ? '保存中…' : '保存' }}
-        </button>
-      </div>
-    </section>
-
-    <section v-else class="card xk-card xk-card--flat">
+    <!--
+      ⚠️ 原来是 `v-else`（与编辑表单的 `v-if="editing"` 成对）。P38 把编辑表单
+      搬到 ProfileEditView 之后 `v-if` 没了，只留 `v-else` 会编译失败 ——
+      「v-else/v-else-if has no adjacent v-if」。
+      而这一条 **vue-tsc 没抓到，是 `npm run build` 才报出来的**，所以别只跑 typecheck。
+    -->
+    <section class="card xk-card xk-card--flat">
       <!--
         通知入口放在「我」页里（小红书移动端就是这个位置），因为移动端页面
         顶栏右上角已经有主题切换/返回，再塞一个浮动铃铛会压上去（实测布局体检
@@ -419,19 +216,52 @@ class="xk-input area"
     </section>
     </div><!-- /.side -->
 
-    <!-- 我的笔记。移动端是单列列表，桌面端是右侧 3 列瀑布（布局在下面的媒体查询里） -->
-    <section class="card xk-card xk-card--flat notes" data-test="me-notes">
-      <h2 class="notes-title">我的笔记</h2>
+<!--
+      P38：个人主页 Tab 化（笔记 / 收藏 / 赞过）。
+      ⚠️ Tab 用 `<button role=tab>` 而不是路由跳转 —— 切 Tab 是**动作**不是导航
+      （P21 的「导航归 a、动作归 button」，与首页「发现/关注」那两个 tab 同款）。
+      所以它不写进 URL，也就没有「后退键切回上一个 tab」这种体验 ——
+      这和小红书一致（小红书切 Tab 也不改地址栏）。
 
-      <p v-if="notesLoading" class="hint" data-test="me-notes-loading">加载中…</p>
-      <p v-else-if="!notes.length" class="hint" data-test="me-notes-empty">
-        还没有笔记，去发一篇吧
+      三个数据源：
+        notes  → /api/note/user/{id}   （自己的作品）
+        collected → /api/note/collections （收藏夹，P15）
+        liked  → /api/note/liked       （P38 新增，同样不收 userId）
+      ⚠️ **懒加载**：切到某个 tab 才第一次拉，不在 onMounted 里把三个都拉一遍 ——
+      三个列表都拉会让主页首屏慢一倍，而用户多数只看第一个。
+    -->
+    <section class="card xk-card xk-card--flat notes" data-test="me-notes">
+      <div class="tabs" role="tablist" aria-label="我的内容">
+        <button
+          v-for="t in TABS"
+          :key="t.key"
+          class="tab"
+          :class="{ on: tab === t.key }"
+          type="button"
+          role="tab"
+          :aria-selected="tab === t.key"
+          :data-test="'me-tab-' + t.key"
+          @click="switchTab(t.key)"
+        >
+          {{ t.label }}
+        </button>
+      </div>
+
+      <!--
+        ⚠️ 三个 data-test 都必须**跟着 tab 变**（`me-' + tab + '-…'`）。
+        写死成 me-notes-loading 时，测试里 `[data-test=me-liked-loading]`
+        这个选择器**永远不存在** → 「到达终态」那半边恒真，看起来在等加载、
+        其实那半个条件根本没参与判断。AGENTS 反复强调「PASS 也要看它有没有可能恒真」。
+      -->
+      <p v-if="listLoading" class="hint" :data-test="'me-' + tab + '-loading'">加载中…</p>
+      <p v-else-if="!list.length" class="hint" :data-test="'me-' + tab + '-empty'">
+        {{ EMPTY_TEXT[tab] }}
       </p>
 
-      <ul v-else class="items" data-test="me-notes-list">
-        <li v-for="item in notes" :key="item.id" class="item" data-test="profile-note">
+      <ul v-else class="items" :data-test="'me-' + tab + '-list'">
+        <li v-for="item in list" :key="item.id" class="item" data-test="profile-note">
           <RouterLink class="main" :to="`/note/${item.id}`">
-            <img class="cover" :src="item.cover ?? '/mascot/m02.webp'" alt="" loading="lazy" />
+            <img class="cover" :src="item.cover ?? '/mascot/m02.webp'" alt="" loading="lazy">
             <div class="body">
               <p class="title">{{ item.title }}</p>
               <p class="meta">♥ {{ item.likeCount }} · ★ {{ item.collectCount }}</p>
@@ -444,16 +274,44 @@ class="xk-input area"
 </template>
 
 <style scoped>
-/* ---------- 我的笔记（移动端 = 单列列表，桌面端由上面的媒体查询改成瀑布） ---------- */
+/* ---------- 内容 Tab（移动端 = 单列列表，桌面端由下面的媒体查询改成瀑布） ---------- */
 
 .notes {
   padding: var(--xk-card-pad);
 }
 
-.notes-title {
-  margin: 0 0 4px;
-  font-size: var(--xk-fs-15);
+/*
+ * 三个 tab 横排。
+ * ⚠️ 激活态用 border-bottom 而不是给每个 tab 加边框：那条下划线要**横贯整格**
+ * 才像「选中」，两侧留白会让它看着像被截断。
+ * ⚠️ flex:1 是为了三等分：否则窄屏上「笔记/收藏/赞过」挤在左边、右边一大片空白。
+ */
+.tabs {
+  display: flex;
+  gap: var(--xk-space-1);
+  margin-bottom: var(--xk-space-3);
+  border-bottom: var(--xk-stroke-w) solid var(--xk-border);
 }
+
+.tab {
+  flex: 1;
+  min-height: 44px;          /* P13 热区下限 */
+  padding: var(--xk-space-2) 0;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--xk-text-3);
+  font-size: var(--xk-fs-15);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.tab:hover { color: var(--xk-text-2); }
+.tab.on {
+  color: var(--xk-amber-text);
+  border-bottom-color: var(--xk-amber);
+  font-weight: 600;
+}
+.tab:focus-visible { outline: 2px solid var(--xk-amber-text); outline-offset: -2px }
 
 .hint {
   margin: 8px 0;
@@ -627,170 +485,12 @@ class="xk-input area"
   font-weight: 700;
 }
 
-/* 计数摆位：见 PublishView 同段注释（绝对定位的计数会压住正文最后一行）。
- * 性别那一组没有 .count，它的 .genders 会自动落进第 2 行。 */
-.field {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  column-gap: 8px;
-  margin-bottom: 16px;
-}
-
-.label {
-  grid-column: 1;
-  grid-row: 1;
-  margin-bottom: 6px;
-  font-size: var(--xk-fs-13);
-  color: var(--xk-text-3);
-}
-
-/* 表单控件一律第 2 行跨两列。
- * 不写这条的话「性别」那组（没有 .count 占位）会自动落进第 1 行第 2 列，
- * 变成按钮跟标签并排。 */
-.field > :not(.label):not(.count) {
-  grid-column: 1 / -1;
-  grid-row: 2;
-}
-
-.xk-input {
-  width: 100%;
-  box-sizing: border-box;
-}
-
-.area {
-  height: 90px;
-  resize: none;
-  line-height: 1.6;
-  font-family: inherit;
-}
-
-.count {
-  grid-column: 2;
-  grid-row: 1;
-  align-self: start;
-  justify-self: end;
-  font-size: var(--xk-fs-12);
-  color: var(--xk-text-3);
-}
-
-.over {
-  color: var(--xk-danger);
-  font-weight: 700;
-}
-
-.genders {
-  display: flex;
-  gap: 8px;
-}
-
-.chip {
-  padding: 7px 16px;
-  border: var(--xk-stroke-w) solid var(--xk-border);
-  border-radius: 999px;
-  background: var(--xk-surface-2);
-  color: var(--xk-text-2);
-  font-size: var(--xk-fs-13);
-  cursor: pointer;
-}
-
-.chip.on {
-  background: var(--xk-amber);
-  color: var(--xk-amber-ink);
-  font-weight: 700;
-}
-
-/* ---------------- 头像选择器 ---------------- */
-
-/*
- * ⚠️ 这里**不能复用 .field**。
- * .field 是 `display:grid` + `grid-template-columns: minmax(0,1fr) auto` 的
- * 两列栅格，还带一条 `.field > :not(.label):not(.count) { grid-column: 1/-1 }`
- * 的兜底 —— 那套契约是给「标签 + 控件 + 字数」三件套设计的。
- * 头像块里有 **3 个**并排元素（标签 / 九宫格 / 上传钮），塞进去会被
- * 自动排布挤到**重叠**：实测 .avatar-pick top=303、.upload top=315，
- * 高度都是 170+，于是上传钮直接压在第一行两个头像上面。
- * 所以自己开一个纵向 flex 块，不去挤那套栅格。
- */
-.av-field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--xk-space-2);
-  margin-bottom: 16px;
-}
-
-/* 8 个预设排成 4 列两行 —— 手机一屏放得下 8 个，且每格 ≥44px 便于点选 */
-.avatar-pick {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: var(--xk-space-2);
-}
-
-.preset {
-  padding: 0;
-  border: 2px solid transparent;
-  border-radius: 50%;
-  background: none;
-  cursor: pointer;
-  line-height: 0;
-  transition: border-color 0.15s, transform 0.1s;
-}
-.preset img {
-  width: 100%;
-  height: 100%;
-  aspect-ratio: 1;
-  border-radius: 50%;
-  object-fit: cover;
-  display: block;
-}
-.preset:hover { transform: scale(1.05); }
-/*
- * 选中态 = **外侧留白 3px + 外侧琥珀环 2px**，而不是在头像本身上描边。
- * ⚠️ 实测踩过：最初写的是 `border-color: 琥珀` + `inset` 内缩，结果选中
- *    金色底那张（第 6 个）时，琥珀环压在金色底上**几乎看不出选中** ——
- *    选中色和头像底色撞了。留白 + 外环的形状保证在任意底色上都能看见。
- * 双信号（颜色 + 形状）也是 a11i 要求：不能只靠单一感官通道。
- */
-.preset.on {
-  box-shadow: 0 0 0 3px var(--xk-surface), 0 0 0 5px var(--xk-amber-text);
-}
-.preset:focus-visible { outline: 2px solid var(--xk-amber-text); outline-offset: 2px }
-
-.upload { display: block; margin-top: var(--xk-space-3); }
-/* input 隐藏但**仍可被脚本/label 点击** —— 用 display:none 会让键盘用户彻底到不了 */
-.file { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
-
-.upload-btn {
-  display: inline-block;
-  padding: var(--xk-space-2) var(--xk-space-4);
-  border: var(--xk-stroke-w) solid var(--xk-border);
-  border-radius: 999px;
-  background: var(--xk-surface-2);
-  color: var(--xk-text-2);
-  font-size: var(--xk-fs-13);
-  cursor: pointer;
-  /* P13：热区 ≥40px */
-  min-height: 40px;
-  line-height: 24px;
-}
-.upload-btn:hover { border-color: var(--xk-amber); color: var(--xk-amber-text); }
-/* 键盘焦点必须可见 —— input 被隐藏了，样式挂到 label 上 */
-.upload:focus-within .upload-btn { outline: 2px solid var(--xk-amber-text); outline-offset: 2px }
-
-.row {
-  display: flex;
-  gap: 10px;
-}
-
-.row .xk-btn {
-  flex: 1;
-}
-
-.err {
-  margin: 0 0 12px;
-  color: var(--xk-danger);
-  font-size: var(--xk-fs-13);
-  line-height: 1.5;
-}
+/* ⚠️ 这里原本有一整套表单样式（.field / .label / .count / .xk-input / .area /
+   .genders / .chip / .av-field / .avatar-pick / .preset* / .upload* / .file / .row /
+   .over / .err），P38 把编辑表单搬到 ProfileEditView.vue 之后**全部无宿主**，
+   已随规则一起删除。
+   留着就是 AGENTS P35 记的死 CSS：它不报错不警告，只在碰巧同名时静默改变布局。
+   表单样式的唯一宿主现在是 ProfileEditView.vue。 */
 
 .link {
   display: block;

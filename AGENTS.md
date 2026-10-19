@@ -9,9 +9,9 @@
 |---|---|
 | 阶段 | **P0 → P38 已完成**（详见第 7 节各阶段小节） |
 | 测试 | 契约 **726** 条 · CDP **710** 条，全部绿 |
-| prod | `18080`，跑的是 **P37 前端 + P36 后端**（P38 待部署） |
+| prod | `18080`，跑的是 **P38 前后端**（编辑独立成页 + 三 Tab + `/api/note/liked`） |
 | 重建 prod 的坑 | 见第 8 节：8.2 镜像构建三道墙 / 8.5 nginx 缓存旧 IP / 8.6 `--no-deps` |
-| 上一次部署 | P37（纯前端：nginx 体积上限对齐 + 413 文案）· 长视频实测 **4/4** |
+| 上一次部署 | P38（前后端一起）· prod 真调用 **接口 10/10 + 界面 19/19** |
 | 待做 | 用户中心剩下的对齐（主页两列瀑布 / 背景头图 / 隐私设置）· 视频多码率与进度条（都不急） |
 | 重启后 | 照 **2.0 节**那张顺序清单 |
 
@@ -3841,3 +3841,51 @@ ReferenceError，而**那个 catch 是空的** → 异常被静默吞掉 →
 - **`loadTab` 失败也把 `loaded` 置 true**：一次网络抖动后该 Tab 会一直空到
   重进页面。取舍是「不反复重试一个失败的请求」，已写在代码注释里。
 - 背景头图 / 隐私设置 / 主页两列瀑布都**不在本轮**。
+
+### P38 prod 部署与真调用
+
+部署顺序（8.2 / 8.5 / 8.6 三条都适用）：
+`mvnw -DskipTests package`（**不带 `-o`**）→ 临时 Dockerfile 只复刻运行时阶段
+（**不装 curl**、静态 Linux 版 ffmpeg/ffprobe 直接 `docker cp` 从旧容器取出再
+COPY 进去，因为本机 `tar -xJf` 解不了 xz）→ `.dockerignore` 临时放行 jar
+→ build backend → `--no-deps --force-recreate backend` → `docker build frontend` →
+`--no-deps --force-recreate frontend`。
+
+⚠️ 这次**没踩 8.5 的 nginx 502**（后端容器重建后 IP 可能变，但这次 nginx
+恰好还能连上）。判据照旧：`502` + `容器内 curl 正常` = 重启 nginx。
+prod 探针笔记数仍为 **0**（本轮只读不写，没有造任何数据）。
+
+prod 真调用：**接口 10/10**（`/api/note/liked` 返回 PageVO、未登录 `10005`、
+伪造 `userId` 不改变结果、size/page 夹取）+ **界面 19/19**
+（三 Tab / 编辑资料是 `<a href="#/profile/edit">` / 独立页有返回键 /
+取消回主页 / P35-d 两个 prod 账号、P36 头像选择器、P27 service worker 都还在）。
+
+#### ⚠️ P24 那条「抓 prod 的 chunk 查特征串」在 P38 **失效了**
+
+P24 记的方法是「别比入口 chunk 的哈希，去抓 prod 实际提供的懒加载 chunk
+再查特征串」。本轮照做，四条全红：
+
+```
+FAIL  编辑页 chunk 含 P38 的返回键 data-test   153
+FAIL  ProfileView 里有 /profile/edit 链接       undefined
+```
+
+真因：**Vite 把懒加载 chunk 拆成了 re-export stub**，`ProfileEditView-*.js`
+只有 **153 字节**，真正的字符串在它 `import` 的下一层 chunk 里 —— 而
+**JS chunk 的文件名不能用来猜它 import 的文件叫什么**。
+P24 那条方法在「一个 chunk 打天下」时成立，代码一拆就恒假。
+
+> 改成在浏览器里真驱动界面（CDP）之后 19/19 全绿，
+> 而且**「未登录访问 `/profile/edit` 被守卫拦下」本来就只能这么验**
+> —— 静态查 chunk 无论如何都验不到路由守卫。
+> 判据：**要验的是「用户看到的」，就去驱动界面；要验的是「产物存在」，去数文件。**
+
+#### 探针脚本自己踩的两个坑（都不是产品问题）
+
+1. **`LoginVO` 的字段是 `accessToken` 不是 `token`。** 写成 `token` 拿到
+   `undefined`，然后 `Bearer undefined` 打到每个接口上 —— 但脚本第一句报的是
+   「登录失败」，与「字段名写错了」隔了整整一行。AGENTS P29 记过同一形状。
+2. **改行尾时别把 CJK 码点截断**：`readFileSync(p,'latin1')` 之后拼上真正的
+   中文字符串再 `writeFileSync(p, s,'latin1')`，中文会变乱码
+   （码点 > 0xFF 被截成低字节）。**全程 `Buffer` 才安全**。
+   这条与 P22 记的「只有 node 的 `spawnSync({input})` 能让字节原样送达」同源。

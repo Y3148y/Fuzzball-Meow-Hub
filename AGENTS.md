@@ -13,7 +13,7 @@
 | 重建 prod 的坑 | 见第 8 节：8.2 镜像构建三道墙 / 8.5 nginx 缓存旧 IP / 8.6 `--no-deps` |
 | 上一次部署 | P38（前后端一起）· prod 真调用 **接口 10/10 + 界面 19/19** |
 | 待做 | 用户中心剩下的对齐（主页两列瀑布 / 背景头图 / 隐私设置）· 视频多码率与进度条（都不急） |
-| 重启后 | 照 **2.0 节**那张顺序清单 |
+| 重启后 | **跑 `tools\dev-up.cmd`**（见 2.0 节）。手工清单留在 2.0 的折叠块里兜底 |
 
 **最近三个阶段做了什么**：P36 头像上传 + 8 个小哭猫预设 + 默认昵称 ·
 P37 长视频实测（172MiB 端到端 43.5s，抓出 nginx 只允许 100m 的三层不一致）·
@@ -120,9 +120,48 @@ GitHub 完全不认识 gitee.com 这个隐匿邮箱域名，于是 09-27 到 10-
 - Elasticsearch `9250`、Kafka `9092`、后端 `8088`、前端 dev `5180`
 - 仓库根目录 `.env` 提供 `MYSQL_ROOT_PASSWORD`（**永不提交**）
 
-### 2.0 重启电脑后：一张顺序清单
+### 2.0 重启电脑后：**先跑一条命令**
 
-⚠️ **这一节是为「重启后把所有运行时状态拉回来」写的**。上面第 2 节记的
+```powershell
+D:\IDEAprojects\red-book\tools\dev-up.cmd          # 双击也行
+D:\IDEAprojects\red-book\tools\dev-up.cmd -WithProd   # 顺带拉起 18080
+D:\IDEAprojects\red-book\tools\dev-down.cmd        # 停（加 -WithContainers 连中间件一起停）
+```
+
+它把下面那张手工清单**整个自动化了**：探 Docker 引擎（没起就自己拉起并轮询到就绪）
+→ 中间件并发 `up -d` → `up -d --wait` **阻塞到 mysql/redis 真正 healthy** →
+后端与前端**并行**启动 → 轮询两个服务就绪 → 打印就绪报告与各阶段耗时。
+
+实测（2026-10-19）：**冷启动 27.5s**（后端 11.0s + 前端），**全已在跑时 15.2s**
+（全是 skip，幂等）。原本要手动开 4~5 个窗口、轮询 `docker ps`、盯后端起来。
+
+日志落在 `logs/dev-backend.out.log` / `dev-frontend.out.log`（`logs/` 已被 gitignore）：
+
+```powershell
+Get-Content logs\dev-backend.out.log -Tail 50 -Wait
+```
+
+⚠️ 三条**从 AGENTS 里的血泪教训直接搬进脚本**的（脚本层面堵死，别再手踩）：
+① `.env` 缺失 / `MYSQL_ROOT_PASSWORD` 没设会**提前失败并说明白**，而不是让你
+对着 `Access denied for user 'root'@'172.20.0.1'` 猜；② 后端超时会**自动打印
+日志最后 30 行**并按「先 `docker ps` 看 redis → 再 `echo $env:XK_MYSQL_PASSWORD`」
+的顺序提示；③ `dev-down` **按端口杀进程而不是按 PID 文件** —— PID 文件记的是
+`mvnw.cmd` / `npm.cmd` 启动器，真正占着 8088 的是它 fork 出来的孙进程，
+杀启动器只会让孙进程变孤儿继续占端口，于是下次 `dev-up` 看到「端口已监听」
+就跳过，你对着一个**旧进程**测半天。
+
+⚠️ **脚本只驱动 Docker 与本机进程，不碰 prod 数据库/文件**；
+`-WithProd` 才碰 prod 栈，且默认不带（这台机 16GB，全开只剩 2.9GB，
+P21 记过内存不足导致的 flake）。
+
+⚠️ 输出**重定向到文件时是 GBK**（PowerShell 5.1 用控制台代码页写输出）。
+在控制台里双击运行显示正常；要读落盘文件得用 GBK 解码，
+`Read` 工具按 UTF-8 读会满屏乱码 —— **那不是脚本出错**。
+
+<details>
+<summary>手工清单（脚本挂了时的兜底，也可以照着理解依赖顺序）</summary>
+
+⚠️ 下面这张表是为「重启后把所有运行时状态拉回来」写的。上面第 2 节记的
 是各零件的端口与前提，但**没有把它们串成顺序** —— 2026-10-11 因为没有这张表，
 Docker Desktop 整个停掉时绕了一圈才定位到 redis。**照下面这个顺序做**：
 
@@ -159,6 +198,8 @@ docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.prod up 
 **别假设 prod 会自己回来**：它的容器都带 `restart: unless-stopped`，
 Docker 起来后通常会自动重启，但 2026-10-11 那次是**全部手动起来的**。
 起完 Docker 先 `docker ps` 看一眼 `xiaoku-prod-*` 有没有，缺了就按 ⑤ 拉。
+
+</details>
 
 **重启后想直接跑测试，还要确认这三样**：
 后端 8088、前端 5180、`xiaoku-redis` —— 缺任何一个的症状都长得不一样，

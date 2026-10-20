@@ -45,6 +45,33 @@ const keyword = ref('')
 /** 举报 tab 的状态过滤：默认只看待处理，否则处置完的和新来的混在一起 */
 const reportStatus = ref(0)
 
+/**
+ * 处置动作按被举报对象的类型过滤。
+ *
+ * <p>⚠️ 后端本来就拦「给评论下架笔记」（返「评论不能下架，请改用「删除作者」或「驳回」」），
+ * 但 UI 把四个动作全摆出来 —— 运营点了才看到报错，
+ * 那不是「更严谨」，是让人以为系统坏了。
+ * 评论能做的只有「驳回」与「禁用作者」。
+ */
+function actionsFor(r: AdminReportVO) {
+  const isNote = r.targetType === 1
+  return REPORT_ACTIONS.filter((a) => (isNote ? true : a.action !== 2 && a.action !== 3))
+}
+
+/**
+ * 每一页用**人话**说明它是干什么的。
+ *
+ * <p>为什么要这个：运营后台原本只有三个 tab（举报/用户/笔记）+ 一堆操作按钮，
+ * 第一次进来根本不知道该看哪、「驳回」和「下架笔记」差在哪。
+ * 报错文案再准确，也救不回「不知道这是干什么」这件事。
+ */
+const TAB_HELP: Record<TabKey, string> = {
+  report:
+    '用户举报的内容在这里。一条举报 = 一个人举报了某条笔记或评论；处置后状态变成「已受理」或「已驳回」。',
+  user: '搜索并处置账号。禁用后对方立刻无法发布与评论，也登不进来；「恢复」可以解除。',
+  note: '搜索并处置内容。强制下架后笔记从所有列表里消失，用户点进去会看到「该笔记已下架」。',
+}
+
 function tabOf(k: string) {
   return tab.value === k
 }
@@ -230,6 +257,13 @@ onMounted(async () => {
       </button>
     </div>
 
+    <!--
+      当前页是干什么的（说人话）。
+      ⚠️ 刻意**不是**一句总的说明 —— 三个页签管三件不同的事，
+      一次只说当前这一件，运营才知道此刻该看哪儿。
+    -->
+    <p class="help" data-test="admin-help">{{ TAB_HELP[tab] }}</p>
+
     <label v-if="tab !== 'report'" class="search">
       <input
         v-model="keyword"
@@ -257,11 +291,20 @@ onMounted(async () => {
 
     <p v-if="errorMsg" class="err" role="alert" data-test="admin-error">{{ errorMsg }}</p>
     <p v-else-if="loading" class="tip">加载中…</p>
+    <!--
+      空态也要说清楚「为什么是空的」和「东西从哪来」——
+      原来只有一句「没有待处理举报」，运营会以为功能坏了。
+    -->
     <p v-else-if="tab === 'report' && reports.length === 0" class="tip" data-test="admin-empty">
-      没有{{ reportStatus === 0 ? '待处理' : '' }}举报
+      当前没有{{ reportStatus === 0 ? '待处理' : '' }}举报。
+      用户在笔记或评论上点「⋯ → 举报」之后，内容就会出现在这里。
     </p>
-    <p v-else-if="tab === 'user' && users.length === 0" class="tip" data-test="admin-empty">没有匹配的用户</p>
-    <p v-else-if="tab === 'note' && notes.length === 0" class="tip" data-test="admin-empty">没有匹配的笔记</p>
+    <p v-else-if="tab === 'user' && users.length === 0" class="tip" data-test="admin-empty">
+      没有匹配的用户。试试只输入昵称的一部分。
+    </p>
+    <p v-else-if="tab === 'note' && notes.length === 0" class="tip" data-test="admin-empty">
+      没有匹配的笔记。试试只输入标题的一部分。
+    </p>
 
     <!-- ============ 举报 ============ -->
     <ul v-else-if="tab === 'report'" class="list">
@@ -271,29 +314,64 @@ onMounted(async () => {
           <strong>{{ r.reasonText ?? '其他' }}</strong>
           <time>{{ formatDateTime(r.createTime) }}</time>
         </div>
-        <p v-if="r.detail" class="detail">补充：{{ r.detail }}</p>
-        <p class="what">
-          被举报内容
-          <template v-if="r.targetTitle">：{{ r.targetTitle }}</template>
-          <template v-if="r.targetContent"> — {{ r.targetContent }}</template>
+
+        <!--
+          举报人自己写的话（detail）。刻意**不叫「补充」** ——
+          「补充」不知道是谁补的，而它其实是举报人填的原文。
+        -->
+        <p v-if="r.detail" class="detail" data-test="admin-report-detail">
+          举报人补充：{{ r.detail }}
         </p>
+
+        <!--
+          被举报的内容。⚠️ **内容不存在时不要显示「被举报内容」这个空标签** ——
+          原来是无条件渲染标签、再在下面补一句「内容已不存在」，
+          读起来像漏了内容。现在合成一行说清楚。
+        -->
+        <p class="what" data-test="admin-report-content">
+          <template v-if="r.targetExists">
+            被举报的{{ r.targetType === 1 ? '笔记' : '评论' }}：{{ r.targetTitle || '（无标题）' }}
+            <span v-if="r.targetContent" class="quote">「{{ r.targetContent }}」</span>
+          </template>
+          <template v-else>
+            被举报的内容<b>已不存在</b>（作者自删或已被处置）
+          </template>
+        </p>
+
+        <!--
+          两个人分开写，各带标签。
+          原来挤成「作者（已注销）· 举报人」一行，
+          中间隔一个「·」—— 读起来像一个人的两个属性。
+        -->
         <p class="who">
-          作者 <b>{{ r.targetAuthorNickname ?? '（已注销）' }}</b>
-          <span class="sep">·</span>
-          举报人 {{ r.reporterNickname ?? r.reporterUsername }}
+          <span class="k">被举报人</span>
+          {{ r.targetAuthorNickname ?? '（已注销）' }}
+          <span class="k">举报人</span>
+          {{ r.reporterNickname ?? r.reporterUsername ?? '（已注销）' }}
         </p>
+
         <p v-if="!r.targetExists" class="warn" data-test="admin-target-gone">
-          内容已不存在（作者自删或已被处置），建议直接驳回
+          目标已不存在，处置只会改这条举报的状态 —— 建议直接驳回。
         </p>
-        <p v-if="r.handleNote" class="handled">处置备注：{{ r.handleNote }}</p>
+        <p v-if="r.handleNote" class="handled" data-test="admin-report-note">
+          处置备注：{{ r.handleNote }}
+        </p>
+
         <div v-if="r.status === 0" class="ops">
+          <!--
+            ⚠️ 处置按钮**按被举报对象的类型过滤**。
+            后端本来就拦「给评论下架笔记」（会报「评论不能下架」），
+            但 UI 把四个动作全摆出来，运营点了才看到报错 ——
+            那不是「更严谨」，是让人以为系统坏了。
+            评论能做的只有「驳回」与「禁用作者」。
+          -->
           <button
-            v-for="a in REPORT_ACTIONS"
+            v-for="a in actionsFor(r)"
             :key="a.action"
             type="button"
             data-test="admin-act"
             :title="a.hint"
-            :disabled="busy === r.id || (!r.targetExists && (a.action === 2 || a.action === 3))"
+            :disabled="busy === r.id || (!r.targetExists && a.action === 4)"
             @click="doHandle(r, a.action, a.label)"
           >
             {{ a.label }}
@@ -301,6 +379,7 @@ onMounted(async () => {
         </div>
         <p v-else class="done" data-test="admin-report-done">
           {{ r.status === 1 ? '已受理' : '已驳回' }}
+          <template v-if="r.handleTime"> · {{ formatDateTime(r.handleTime) }}</template>
         </p>
       </li>
     </ul>
@@ -368,6 +447,37 @@ onMounted(async () => {
 
 <style scoped>
 /* 字号/间距一律走 main.css 的字阶与间距阶 token（P13 起全站规矩） */
+
+/*
+ * 说明块：说这一页是干什么的。
+ *
+ * ⚠️ 刻意**不用** `.tip` 的样式（那是给空态/错误用的）——
+ * 它是常驻内容，不该长得像一条错误提示。
+ */
+.help {
+  margin: 0 0 var(--xk-space-3);
+  padding: var(--xk-space-3);
+  border: var(--xk-stroke-w) solid var(--xk-border);
+  border-left: 3px solid var(--xk-amber);
+  border-radius: var(--xk-radius-blob-sm);
+  background: var(--xk-surface-2);
+  color: var(--xk-text-2);
+  font-size: var(--xk-fs-13);
+  line-height: 1.6;
+}
+
+/*
+ * 列表宽度上限。
+ *
+ * ⚠️ 原来没有上限，于是桌面 1920px 下整行拉满 ——
+ *    左边是内容、右边孤零零一个时间戳在 1700px 处，
+ *    中间一千多像素的空白。**那不是「留白」，是排版失控。**
+ * 880px 是一行字能读舒服的宽度，超出的部分不要。
+ */
+.list {
+  max-width: 880px;
+}
+
 .head {
   display: flex;
   gap: var(--xk-space-2);
@@ -382,6 +492,8 @@ onMounted(async () => {
 .head time {
   font-size: var(--xk-fs-12);
   color: var(--xk-text-3);
+  /* 时间戳跟着标题走，不要被 flex 甩到行尾 */
+  flex: none;
 }
 .badge {
   font-size: var(--xk-fs-12);
@@ -415,11 +527,39 @@ onMounted(async () => {
   margin-top: var(--xk-space-1);
   overflow-wrap: anywhere;
 }
+
+/* 被举报内容的原文：引号 + 更弱一点，别跟标题抢注意力 */
+.quote {
+  color: var(--xk-text-3);
+}
+
 .who {
   font-size: var(--xk-fs-13);
   color: var(--xk-text-3);
   margin-top: var(--xk-space-1);
 }
+
+/*
+ * 「被举报人」「举报人」两个标签。
+ *
+ * ⚠️ 原来是把两个人挤成「作者（已注销）· 举报人」一行，
+ *    中间只隔一个「·」—— 读起来像**一个人的两个属性**，
+ *    而这恰恰是这页最需要说清的一件事（谁举报了谁）。
+ * 现在各自带一个标签，一眼能看出这是两个人。
+ */
+.who .k {
+  display: inline-block;
+  margin: 0 var(--xk-space-2) 0 0;
+  padding: 1px var(--xk-space-2);
+  border: var(--xk-stroke-w) solid var(--xk-border);
+  border-radius: 999px;
+  color: var(--xk-text-3);
+  font-size: var(--xk-fs-12);
+}
+.who .k + .k {
+  margin-left: var(--xk-space-3);
+}
+
 .sep {
   margin: 0 var(--xk-space-1);
 }

@@ -26,6 +26,8 @@ export interface AdminReportVO {
   /** false = 内容已经不存在（作者自己删了 / 被前一次处置删了），此时应当驳回 */
   targetExists: boolean
   createTime: string
+  /** 处置时间（被处置的时刻）；未处置时为 null */
+  handleTime: string | null
 }
 
 /** 运营视角的用户行 */

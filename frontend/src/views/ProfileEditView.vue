@@ -444,13 +444,17 @@ async function save() {
 }
 
 /*
- * 预览用 16/9 而不是主页上的横幅比例：
- * 编辑区在卡片内，宽度有限，而**用户要确认的是"这张图"**而不是它的裁切效果 ——
- * 主页上是 object-fit: cover，裁掉多少在这里看不出来，
- * 所以这里给一个能看全的框（object-fit: contain），别让人以为图被切了。
+ * 预览用 3:1 的横幅比例 + cover。
+ *
+ * ⚠️ 第一版用 `object-fit: contain`，理由是「用户要确认的是这张图而不是它的裁切效果」。
+ * 但截图里那样子**两侧一大片空白**，看起来像「图片没加载出来 / 没对齐」——
+ * 而实际主页上横幅就是被 cover 裁的。
+ * 所以改成 cover + 3:1（与移动端主页横幅的比例一致），
+ * 看到的就是**发布之后的样子**（WYSIWYG），也不会有「空了两块」的错觉。
  */
 .bg-preview {
-  height: 150px;
+  height: auto;
+  aspect-ratio: 3 / 1;
   border: var(--xk-stroke-w) solid var(--xk-border);
   border-radius: var(--xk-radius-blob-sm);
   background: var(--xk-surface-2);
@@ -460,7 +464,7 @@ async function save() {
   display: block;
   width: 100%;
   height: 100%;
-  object-fit: contain;
+  object-fit: cover;
 }
 
 .bg-none {
@@ -478,8 +482,48 @@ async function save() {
   align-items: center;
   gap: var(--xk-space-2);
 }
-.bg-actions .upload { margin-top: 0; }
-.bg-clear { flex: none; }
+
+/*
+ * ⚠️⚠️ **这一段是被真实截图逼出来的**（2026-10-20）。
+ *
+ * 症状：「换一张」被压成**竖排单字**（换/一/张 三个字一行），
+ * 「清除」按钮横向溢出卡片右缘。
+ *
+ * 根因：全站的 `.xk-btn` 是 `width: 100%`（main.css）——
+ * 那是给「保存 / 发布 / 登录」这类**通栏主行动**设计的。
+ * 而「清除」复用了它，放进 flex 容器后它的 flex base size = 100%，
+ * 于是把「换一张」挤到只剩一个字宽（文字就逐字换行），自己还溢出容器。
+ *
+ * 修法：这一行里的按钮**都不能是通栏**。
+ *   - `.bg-clear`：覆盖 `.xk-btn` 的 width:100%，并 flex:none
+ *   - `.upload`（包着「换一张」）：flex:none + nowrap，
+ *     否则它会被压扁后逐字换行
+ */
+.bg-actions .upload {
+  margin-top: 0;
+  flex: none;
+}
+
+.bg-actions .upload-btn {
+  white-space: nowrap;
+}
+
+.bg-clear {
+  width: auto;
+  flex: none;
+  min-height: 40px;
+  padding: 0 var(--xk-space-4);
+  font-size: var(--xk-fs-13);
+  font-weight: 400;
+  letter-spacing: 0;
+  background: none;
+  color: var(--xk-text-2);
+  box-shadow: none;
+}
+.bg-clear:hover {
+  border-color: var(--xk-amber);
+  color: var(--xk-amber-text);
+}
 
 .field {
   display: grid;

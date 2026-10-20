@@ -420,6 +420,13 @@ try {
     })()`)
     s.check('能在背景图输入框里塞进一张真 PNG', madeFile)
     await s.waitFor("document.querySelector('[data-test=me-bg-preview-img]')", '背景图预览出现', 20000)
+    // ⚠️ **必须等解码完成**，不能只等元素出现（AGENTS P32 的坑）：
+    //    `waitFor` 只保证 <img> 在 DOM 里，而 naturalWidth 在解码完之前是 0 ——
+    //    那一刻读出来就是「裂图」，而其实图是好的。
+    //    布局一变（注入验证时）加载时序也会变，于是这条偶发假红。
+    await s.waitFor(
+      "document.querySelector('[data-test=me-bg-preview-img]')?.naturalWidth > 0",
+      '背景图预览解码完成', 15000)
     const bgPreview = await s.evaluate(`(() => {
       const img = document.querySelector('[data-test=me-bg-preview-img]')
       return { w: img?.naturalWidth ?? 0, h: img?.naturalHeight ?? 0, src: img?.getAttribute('src') || '' }
@@ -430,6 +437,52 @@ try {
       bgPreview.w === 64 && bgPreview.h === 32, JSON.stringify(bgPreview))
     s.check('背景图预览走的是本站上传路径',
       bgPreview.src.startsWith('/static/uploads/'), bgPreview.src)
+
+    /*
+     * P41：背景图这一行的两个按钮**不能互相压**。
+     *
+     * ⚠️ 原来的 bug：全站 `.xk-btn` 是 `width: 100%`（通栏主行动），
+     *    「清除」复用了它 → 在 flex 容器里 base size = 100%，
+     *    把「换一张」挤到只剩一个字宽，文字**竖排**（换/一/张），
+     *    而「清除」自己溢出卡片右缘。
+     *
+     * ⚠️ **必须显式切到 430px**：默认视口是浏览器窗口大小（不确定），
+     *    而这个 bug 只在**窄容器**下才出现 —— 容器够宽时「换一张」
+     *    放得下三个字，挤不出来。用户那张截图就是 430 宽。
+     *
+     * ⚠️ **布局体检抓不到它**：溢出检查量的是「内容溢出容器」，
+     *    而这里「清除」并没有溢出（flex-shrink 把它缩回去了），
+     *    被压扁的是**另一个**元素。体检量不到「flex item 被挤扁」。
+     *    所以只能在这里断 —— 而且必须是**「清除」存在的时刻**
+     *    （没有背景图时它不渲染，两个按钮不并排，bug 也不会出现）。
+     */
+    await s.send('Emulation.setDeviceMetricsOverride', { width: 430, height: 900, deviceScaleFactor: 1, mobile: true })
+    await sleep(600)
+    const bgBtns = await s.evaluate(`(() => {
+      const up = document.querySelector('[data-test=me-bg-upload]')
+      const cl = document.querySelector('[data-test=me-bg-clear]')
+      const act = document.querySelector('[data-test=me-bg-file]')?.closest('.bg-actions')
+      const u = up?.getBoundingClientRect()
+      const c = cl?.getBoundingClientRect()
+      const a = act?.getBoundingClientRect()
+      return JSON.stringify({
+        upW: u ? Math.round(u.width) : null,
+        upH: u ? Math.round(u.height) : null,
+        clW: c ? Math.round(c.width) : null,
+        clRight: c ? Math.round(c.right) : null,
+        actRight: a ? Math.round(a.right) : null,
+        actClientW: act?.clientWidth ?? null,
+        actScrollW: act?.scrollWidth ?? null,
+      })
+    })()`)
+    const bb = JSON.parse(bgBtns)
+    // 单行文字的按钮：高 40~44px；「换一张」竖排三行会是 ~70px
+    s.check('430px 下背景图的「换一张」没被压成竖排单字（宽度够一行文字、高度不是三行）',
+      bb.upW !== null && bb.upW >= 60 && bb.upH !== null && bb.upH <= 48, bgBtns)
+    s.check('「清除」按钮没有溢出它所在的那一行',
+      bb.clRight !== null && bb.actRight !== null && bb.clRight <= bb.actRight, bgBtns)
+    await s.send('Emulation.clearDeviceMetricsOverride')
+    await sleep(400)
 
     // 保存 → 回查后端
     await s.evaluate("document.querySelector('[data-test=me-save]').click()")

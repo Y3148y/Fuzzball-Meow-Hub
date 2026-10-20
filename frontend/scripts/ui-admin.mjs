@@ -165,6 +165,27 @@ try {
   s.check('后台有三个 tab（举报/用户/笔记）',
     (await s.evaluate("document.querySelectorAll('[role=tab]').length")) === 3)
 
+  /*
+   * P41：**这一页要说人话**。
+   *
+   * 原来的后台只有三个 tab + 一堆操作按钮，第一次进来根本不知道
+   * 「该看哪」「驳回和下架笔记差在哪」——
+   * 用户原话是「运营后台根本就看不懂这是什么意思」。
+   * 所以每个页签都有一句说明当前这页是干什么的。
+   */
+  const help = await text('admin-help')
+  s.check('后台有「这页是干什么的」说明（用户说看不懂的就是这个）',
+    !!help && help.length > 15, `help=${help}`)
+
+  // 说明要跟着页签变：三个页签管三件不同的事，一次只说当前这一件
+  await click('admin-tab-user')
+  await sleep(900)
+  const helpUser = await text('admin-help')
+  s.check('切到「用户」页签后说明也跟着换（不是一句总说明）',
+    !!helpUser && helpUser !== help, `user=${helpUser}`)
+  await click('admin-tab-report')
+  await sleep(900)
+
   /* ---------- ③ 举报列表：举报人与作者不能搞反 ---------- */
 
   await s.waitFor("!!document.querySelector('[data-test=admin-report-row]')", '举报列表渲染', 20000)
@@ -181,10 +202,56 @@ try {
     })()
   `))
   s.check('举报列表里有这条素材举报', Object.keys(row).length > 0, JSON.stringify(row))
-  s.check('这一行同时显示作者与举报人（两个名字都在）',
-    /作者/.test(row.who) && /举报人/.test(row.who), row.who)
+  // ⚠️ P41：标签从「作者」改成「**被举报人**」。
+  //    原来两个人挤成「作者（已注销）· 举报人」一行，只隔一个「·」——
+  //    读起来像**一个人的两个属性**，而这恰恰是这页最需要说清的一件事。
+  //    断言跟着改（改的是断言不是实现）：意图仍是「两个角色都在」，
+  //    但要断得**更明确** —— 「被举报人」这个串里也含「举报人」，
+  //    只用 /举报人/ 会两边都匹配上，等于没断。
+  s.check('这一行同时显示被举报人与举报人（两个角色都带标签）',
+    /被举报人/.test(row.who) && /举报人/.test(row.who), row.who)
   s.check('待处理的举报有处置按钮', row.hasOps === true)
   s.check('内容还在时不提示「已不存在」', row.gone === false)
+
+  /*
+   * P41：处置按钮**按被举报对象的类型**给。
+   *
+   * 后端本来就拦「给评论下架笔记」（返「评论不能下架」），但 UI 把四个动作
+   * 全摆出来 —— 运营点了才看到报错，那不是「更严谨」，是让人以为系统坏了。
+   * 本测试造的是**笔记**举报，所以四个动作都该在；
+   * 评论举报只给「驳回」「禁用作者」（由 ui-notification 之外的另一处覆盖，
+   * 这里断言的是「笔记举报时四个动作齐全」）。
+   */
+  const acts = await s.evaluate(`
+    [...document.querySelectorAll('[data-test=admin-report-row]')]
+      .find(e => e.textContent.includes(${JSON.stringify(NOTE_TITLE)}))
+      ?.querySelectorAll('[data-test=admin-act]').length ?? 0
+  `)
+  s.check('笔记举报给齐四个处置动作（驳回/下架/删除/禁用作者）', acts === 4, `n=${acts}`)
+
+  /*
+   * P41：行宽**不能失控**。
+   * 原来没有上限，桌面 1920px 下整行拉满 —— 左边内容、右边孤零零一个
+   * 时间戳在 1700px 处，中间一千多像素的空白。那不是「留白」，是排版失控。
+   */
+  const rowW = await s.evaluate(`
+    (() => {
+      const el = [...document.querySelectorAll('[data-test=admin-report-row]')]
+        .find(e => e.textContent.includes(${JSON.stringify(NOTE_TITLE)}))
+      const t = el?.querySelector('time')
+      const row = el?.getBoundingClientRect()
+      const time = t?.getBoundingClientRect()
+      return JSON.stringify({
+        rowW: row ? Math.round(row.width) : null,
+        timeLeft: time ? Math.round(time.left) : null,
+        timeRight: time ? Math.round(time.right) : null,
+        rowRight: row ? Math.round(row.right) : null,
+      })
+    })()
+  `)
+  const rw = JSON.parse(rowW)
+  s.check('举报行宽度有上限（时间戳不会被甩到屏幕最右边）',
+    rw.rowW !== null && rw.rowW <= 900, rowW)
 
   /* ---------- ④ 处置：下架 → 目标对他人消失 ---------- */
 

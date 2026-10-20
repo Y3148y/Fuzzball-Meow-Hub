@@ -253,6 +253,32 @@ try {
   s.check('举报行宽度有上限（时间戳不会被甩到屏幕最右边）',
     rw.rowW !== null && rw.rowW <= 900, rowW)
 
+  /*
+   * P41：加重色要落在**「删除笔记」**上，不能靠「最后一个按钮」。
+   * 原来用 `.ops button:last-child`，而最后一个是「禁用作者」——
+   * 而**最不可逆的其实是「删除笔记」**（级联删掉评论与点赞收藏，不可恢复）。
+   * 改成按动作号显式标记，这里钉住它。
+   */
+  const danger = await s.evaluate(`
+    (() => {
+      const el = [...document.querySelectorAll('[data-test=admin-report-row]')]
+        .find(e => e.textContent.includes(${JSON.stringify(NOTE_TITLE)}))
+      const btns = [...(el?.querySelectorAll('[data-test=admin-act]') ?? [])]
+      return JSON.stringify(btns.map(b => ({
+        label: b.textContent.trim(),
+        danger: b.classList.contains('danger'),
+        color: getComputedStyle(b).color,
+      })))
+    })()
+  `)
+  const dg = JSON.parse(danger)
+  const delBtn = dg.find((b) => b.label === '删除笔记')
+  const banBtn = dg.find((b) => b.label === '禁用作者')
+  s.check('「删除笔记」是唯一被加重（标 danger）的按钮 —— 不可逆的那个要显眼',
+    !!delBtn && delBtn.danger === true && dg.filter((b) => b.danger).length === 1, danger)
+  s.check('「禁用作者」不再被加重（它不是最不可逆的）',
+    !!banBtn && banBtn.danger === false, danger)
+
   /* ---------- ④ 处置：下架 → 目标对他人消失 ---------- */
 
   // 点「下架笔记」。第 2 个按钮（顺序与后端 REPORT_ACTIONS 一致：驳回/下架/删除/禁言）

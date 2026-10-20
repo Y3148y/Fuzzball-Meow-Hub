@@ -370,6 +370,7 @@ onMounted(async () => {
             :key="a.action"
             type="button"
             data-test="admin-act"
+            :class="{ danger: a.action === 3 }"
             :title="a.hint"
             :disabled="busy === r.id || (!r.targetExists && a.action === 4)"
             @click="doHandle(r, a.action, a.label)"
@@ -593,8 +594,17 @@ onMounted(async () => {
 .ops button:disabled {
   opacity: 0.45;
 }
-/* 处置「下架/删除」这类不可逆的按钮单独加重，避免和「驳回」被一起点 */
-.ops button:last-child {
+/*
+ * 「删除笔记」单独加重，避免和「驳回」被一起点。
+ *
+ * ⚠️ 原来用的是 `.ops button:last-child`（加重最后一个）——
+ * 那是四个动作按 驳回/下架/删除/**禁用作者** 排序时的写法，
+ * 于是加重色落在了「禁用作者」上，而**最不可逆的其实是「删除笔记」**
+ * （它会级联删掉评论与点赞收藏，不可恢复）。
+ * 改成按动作号显式标记，不再依赖「谁排在最后」。
+ */
+.ops button.danger {
   color: var(--xk-amber-text);
+  border-color: var(--xk-amber-text);
 }
 </style>

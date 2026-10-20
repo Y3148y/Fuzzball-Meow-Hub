@@ -1684,6 +1684,12 @@ async function main() {
   // 压测残留等一堆别人的笔记，写死数字每加一次种子数据就得重写这条断言。
   // 钉的是「集合关系 + 排序规则」这两件真正会回归的事。
   {
+    // ⚠️ 取样时刻要在**发请求之前**取：服务端的 NOW() 是查询执行的那一刻，
+    //    而测试侧如果在拿到响应之后才取 Date.now()，两者差了一个网络往返。
+    //    差 1 秒不会影响分数本身，但会**跨过整点边界**时把某篇笔记的
+    //    小时桶算错一格 —— 100 篇笔记时这个概率约 3%，
+    //    而它恰好落在「几乎同分」的一对上就会让断言假红。
+    const nowMs = Date.now()
     const { json } = await get('/api/feed/discover?page=1&size=100', { token: auth })
     codeIs('发现流查询成功', json, 0)
     const list = json?.data?.list ?? []
@@ -1716,7 +1722,25 @@ async function main() {
     // 而重算等于把 (1+3赞+4藏+5评)/(天数+7)^0.5 这个形状钉死 ——
     // 谁改了 FeedMapper 里的常数而没同步这里，这条会立刻红。
     const hotScore = (n) => {
-      const days = (Date.now() - new Date(n.createTime).getTime()) / 3600000 / 24
+      // ⚠️⚠️ **必须与服务端 SQL 的口径逐字对齐**：
+      //   服务端： / POW(TIMESTAMPDIFF(HOUR, n.create_time, NOW()) / 24 + 7, 0.5) DESC
+      //   —— TIMESTAMPDIFF(HOUR, ...) 取的是**整小时**（截断，不是小数）
+      //
+      //   第一版这里写的是小数天（(Date.now() - t) / 3600000 / 24），
+      //   看着是同一回事，实际差最多 1/24 天。而除数是 sqrt(days+7)，
+      //   那个 0.06% 的差别在**两篇笔记几乎同分**时会翻转顺序 ——
+      //   症状是「热度分非递增」这条随机假红，而服务端排序完全正确。
+      //
+      //   实测抓到的一组（2026-10-19）：
+      //     2026-10-18 赞1 → 截断 4/sqrt(25/24+7)=1.4106 ，小数 4/sqrt(25.898/24+7)=1.4073
+      //     2026-10-08 评1 → 截断 6/sqrt(267/24+7)=1.4094，小数 6/sqrt(267.264/24+7)=1.4089
+      //   服务端按截断口径 → 前者略高 → 排序正确；
+      //   测试按小数口径 → 后者略高 → 断言说「非递增」断了。
+      //
+      //   修完这条断言反而**更强**了：它现在连「SQL 用的是整小时截断」
+      //   一起钉住 —— 哪天有人把 TIMESTAMPDIFF 改成别的粒度，这里立刻红。
+      const hours = Math.floor((nowMs - new Date(n.createTime).getTime()) / 3600000)
+      const days = hours / 24
       return (1 + 3 * (n.likeCount ?? 0) + 4 * (n.collectCount ?? 0) + 5 * (n.commentCount ?? 0))
         / Math.pow(days + 7, 0.5)
     }
@@ -3278,6 +3302,100 @@ const lastTwo = (hist?.list ?? []).slice(-2)
       codeIs('P34 未登录被拒（10005）', (await get('/api/feed/immerse?page=1&size=6')).json, 10005)
     }
   }
+/* ================================================================
+   * 26. P39 主页背景图：user.background
+   *
+   * 本段钉三件事，每件都有具体的失败方式：
+   *
+   * 1. **上传地址可用**（走现成的 /api/note/image，限流与内容类型白名单共用）。
+   * 2. **白名单挡住和头像一样的攻击样本** —— 背景图与头像都是
+   *    「用户可写的 URL 字段」，规则必须一样严。
+   *    ⚠️ 这里刻意**复用头像那一组攻击样本**而不是另编一组：
+   *    两处规则不同步的话（新字段少挡一条），症状是「背景图能指向内网」，
+   *    而背景图是一次页面渲染几十个的位置，危害比头像更大。
+   * 3. **「被拒后没把原值改坏」** —— 白名单校验失败必须整条更新不落库，
+   *    而不能是先写后校验。
+   *
+   * 另外钉一条容易漏的：**空串 = 清空**。后端 update-strategy: not_null
+   * 会把 null 剔除掉，所以「清空」必须靠空串 + 显式 set null。
+   *
+   * 本段**不注册新账号**（register 10/min/IP），复用常驻 fixture（同 23/24/25 段）。
+   * ⚠️ 但它会**改 xk_ui_smoke 的背景图**——所以本段最后必须还原，
+   *    否则 fixture 的主页多一条横幅，而 ui-smoke 组的断言不关心它、
+   *    却会被 layout 体检扫到（症状是「别的组莫名失败」）。
+   * ================================================================ */
+  {
+    const l39 = await post('/api/user/login', { body: { username: 'xk_ui_smoke', password: 'Xk@123456' } })
+    const t39 = `Bearer ${l39.json?.data?.accessToken}`
+    if (check('P39 fixture 能登录', !!t39 && t39 !== 'Bearer undefined', `token=${t39?.slice(0, 24)}`)) {
+      // 记下原值，最后还原
+      const me39 = await get('/api/user/me', { token: t39 })
+      const origBg = me39.json?.data?.background ?? ''
+
+      /* ---------- 上传地址可用 ---------- */
+      const up39 = await uploadImage(t39, { name: 'bg.png', type: 'image/png' })
+      const bgUrl = up39.json?.data?.url
+      check('P39 图片上传返回地址', up39.json?.code === 0 && typeof bgUrl === 'string' && bgUrl.length > 0,
+        `code=${up39.json?.code} url=${bgUrl}`)
+
+      const setBg = await put('/api/user/profile', { token: t39, body: { background: bgUrl } })
+      check('P39 背景图写入成功', setBg.json?.code === 0, `code=${setBg.json?.code} msg=${setBg.json?.message}`)
+      eq('P39 回读背景图与上传地址一致', setBg.json?.data?.background, bgUrl)
+
+      const meAfter = await get('/api/user/me', { token: t39 })
+      eq('P39 /api/user/me 也带得出背景图', meAfter.json?.data?.background, bgUrl)
+
+      /* ---------- 白名单：和头像同一组攻击样本 ---------- */
+      const attacks = [
+        ['外链', 'https://evil.example.com/x.png'],
+        ['javascript:', 'javascript:alert(1)'],
+        ['data:', 'data:text/html;base64,PHNjcmlwdD4='],
+        ['路径穿越', '/static/uploads/../../secret.png'],
+        ['带 query', `${bgUrl}?a=b`],
+        ['反斜杠', '/static/uploads\\..\\x.png'],
+        ['重复斜杠', '/static/uploads//x.png'],
+        ['结尾斜杠', '/static/uploads/2026/10/'],
+        ['片段', `${bgUrl}#x`],
+      ]
+      for (const [label, bad] of attacks) {
+        const r = await put('/api/user/profile', { token: t39, body: { background: bad } })
+        codeIs(`P39 背景图拒绝「${label}」（10009，不是 100001）`, r.json, 10009)
+      }
+
+      /* ---------- 被拒后没把原值改坏 ---------- */
+      const meAfterBad = await get('/api/user/me', { token: t39 })
+      eq('P39 一串攻击之后背景图仍是上传地址', meAfterBad.json?.data?.background, bgUrl)
+
+      /* ---------- 空串 = 清空 ---------- */
+      const cleared = await put('/api/user/profile', { token: t39, body: { background: '' } })
+      check('P39 清空背景图返回 code=0', cleared.json?.code === 0, `code=${cleared.json?.code}`)
+      const meCleared = await get('/api/user/me', { token: t39 })
+      // ⚠️ non_null 策略：清空后字段会整个从 JSON 里消失 → 拿到 undefined
+      check('P39 清空后背景图没有值（字段消失或为 null）',
+        meCleared.json?.data?.background == null,
+        `实际 ${JSON.stringify(meCleared.json?.data?.background)}`)
+
+      /* ---------- 不传 = 保持原值 ---------- */
+      const kept = await put('/api/user/profile', { token: t39, body: { background: bgUrl } })
+      eq('P39 重新设置成功', kept.json?.data?.background, bgUrl)
+      const noChange = await put('/api/user/profile', { token: t39, body: { nickname: '小哭猫' } })
+      eq('P39 不传 background 时保持原值（不被清空）', noChange.json?.data?.background, bgUrl)
+
+      /* ---------- 还原 fixture ---------- */
+      if (origBg) {
+        await put('/api/user/profile', { token: t39, body: { background: origBg } })
+      } else {
+        await put('/api/user/profile', { token: t39, body: { background: '' } })
+      }
+      const restored = await get('/api/user/me', { token: t39 })
+      eq('P39 fixture 已还原（不留横幅给别的组）', restored.json?.data?.background ?? '', origBg)
+
+      /* ---------- 未登录 ---------- */
+      codeIs('P39 未登录改背景图被拒（10005）',
+        (await put('/api/user/profile', { body: { background: bgUrl } })).json, 10005)
+    }
+  }
+
   const total = passed + failed
   console.log(`\n===== ${passed}/${total} 通过 =====`)
   if (failed > 0) {

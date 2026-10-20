@@ -12,6 +12,7 @@ import { onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { listTopicNotes } from '@/api/topic'
 import type { NoteListItemVO } from '@/api/types'
+import { useCoverRatio } from '@/composables/useCoverRatio'
 import UserAvatar from '@/components/UserAvatar.vue'
 
 const route = useRoute()
@@ -19,8 +20,8 @@ const route = useRoute()
 const notes = ref<NoteListItemVO[]>([])
 const loading = ref(true)
 const errorMsg = ref('')
-/** 封面真实宽高比，key 是笔记 id */
-const ratios = ref<Record<string, string>>({})
+/** 封面真实宽高比，key 是笔记 id（P39 起改用共用的 useCoverRatio） */
+const { coverRatio: ratios, onCoverLoad } = useCoverRatio()
 const topicName = ref('')
 
 async function load() {
@@ -39,14 +40,6 @@ async function load() {
   } finally {
     loading.value = false
   }
-}
-
-function onCoverLoad(item: NoteListItemVO, ev: Event) {
-  const img = ev.target as HTMLImageElement
-  const w = img.naturalWidth
-  const h = img.naturalHeight
-  if (!w || !h || ratios.value[item.id]) return
-  ratios.value = { ...ratios.value, [item.id]: `${w} / ${h}` }
 }
 
 // 从一个话题点进另一个话题时组件不重新挂载，必须 watch

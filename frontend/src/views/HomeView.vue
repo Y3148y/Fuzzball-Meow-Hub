@@ -8,6 +8,7 @@ import { ErrorCode } from '@/api/types'
 import type { NoteListItemVO } from '@/api/types'
 import { useUserStore } from '@/stores/user'
 import { usePullToRefresh } from '@/composables/usePullToRefresh'
+import { useCoverRatio } from '@/composables/useCoverRatio'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 import UserAvatar from '@/components/UserAvatar.vue'
 
@@ -123,31 +124,14 @@ async function logout() {
 
 /* ---------------- 封面真实宽高比（瀑布卡片高度自适应） ---------------- */
 
-/**
- * 封面高度按图片**真实**宽高比自适应，而不是一律裁成 3/4 或方块。
- *
- * <p>VO 里没有图片尺寸，加载前也不知道，所以：未加载时先用 3/4 占位（避免 CLS），
- * `@load` 拿到 naturalWidth/naturalHeight 后改写成真实比例。值写进
- * `coverRatio[id]`，模板上以 `--r` 内联变量喂给 `.cover` 的 `aspect-ratio`。
- *
- * <p>刻意**不用**给 `<img>` 写 width/height 属性：真实比例只有解码后才知道，
- * 写死的值必然是错的（详情页封面同理，见 AGENTS.md）。
+/*
+ * P39：这段逻辑原先在本文件里抄了一份（另有两份在 CollectionsView / TopicView），
+ * 现在收进共用的 `useCoverRatio` —— 抄多份的必然结果是一处改了另一处没改，
+ * 而症状是「某个列表的卡片高度和别处不一样」，极难归因。
+ * 顺带修好了 CollectionsView 那份**漏掉** P21 的「无封面不写 --r」守卫
+ * （于是收藏夹里没封面的笔记被写成吉祥物的横图比例，卡片比别的矮一截）。
  */
-const coverRatio = ref<Record<string, string>>({})
-
-function onCoverLoad(item: NoteListItemVO, ev: Event) {
-  // ⚠️ P21：无封面（cover 为 null）时**不要**把图片的真实宽高比写进 --r。
-  // 兜底图是吉祥物（方图），写进去会让这张卡的高度与其它 3/4 卡不一致 ——
-  // 2026-10-08 手测的「关注搭子的笔记大小和其他不符」就是这个。
-  // 真正的问题是「这篇笔记没有封面」，不是「吉祥物不是 3/4」：
-  // 让这类卡保持 3/4，视觉上它就是一张普通卡，而不是一个比例异常的卡。
-  if (!item.cover) return
-  const img = ev.target as HTMLImageElement
-  const w = img.naturalWidth
-  const h = img.naturalHeight
-  if (!w || !h || coverRatio.value[item.id]) return
-  coverRatio.value = { ...coverRatio.value, [item.id]: `${w} / ${h}` }
-}
+const { coverRatio, onCoverLoad } = useCoverRatio()
 
 // 进来先把用户信息拉齐（守卫只校验 token 有没有，资料还是要后端给）
 void userStore.loadProfile().catch(() => {

@@ -386,6 +386,159 @@ try {
   s.check('取消后表单回填的是库里的值',
     (await s.evaluate("document.querySelector('[data-test=me-nickname]').textContent.trim()")) === NEW_NICK)
 
+  // ---- 12. P39 主页背景图 + 移动端两列瀑布
+  //
+  // ⚠️ 这一段刻意放在**最后**（紧挨 finally）：它会改演示账号的背景图，
+  //    还原逻辑在 finally 里，与昵称的还原走同一段代码。
+  {
+    // ---- 12.1 编辑页上传背景图
+    await s.goto(`${BASE}/#/profile/edit`)
+    await s.waitFor("document.querySelector('[data-test=me-bg-upload]')", '编辑页背景图入口', 20000)
+    s.check('编辑页有背景图上传入口', true)
+    s.check('没有背景图时显示空态提示',
+      (await s.evaluate("!!document.querySelector('[data-test=me-bg-empty]')")))
+
+    // ⚠️ **不能用契约测试里那个 TINY_PNG**：它是截断的，只用来过服务端的
+    //    内容类型白名单，从不需要解码。而这里要断言「背景图真的显示出来了」，
+    //    就必须是一张**能解码**的图（P32 记过同一个坑）。
+    //    用 canvas 现场画一张，天然可解码，且尺寸已知（64×32 = 2:1）。
+    const madeFile = await s.evaluate(`(() => {
+      const c = document.createElement('canvas')
+      c.width = 64; c.height = 32
+      const g = c.getContext('2d')
+      g.fillStyle = '#e5484d'; g.fillRect(0, 0, 64, 32)
+      const bin = atob(c.toDataURL('image/png').split(',')[1])
+      const bytes = new Uint8Array(bin.length)
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+      const file = new File([bytes], 'bg.png', { type: 'image/png' })
+      const i = document.querySelector('[data-test=me-bg-file]')
+      const dt = new DataTransfer()
+      dt.items.add(file)
+      i.files = dt.files
+      i.dispatchEvent(new Event('change', { bubbles: true }))
+      return true
+    })()`)
+    s.check('能在背景图输入框里塞进一张真 PNG', madeFile)
+    await s.waitFor("document.querySelector('[data-test=me-bg-preview-img]')", '背景图预览出现', 20000)
+    const bgPreview = await s.evaluate(`(() => {
+      const img = document.querySelector('[data-test=me-bg-preview-img]')
+      return { w: img?.naturalWidth ?? 0, h: img?.naturalHeight ?? 0, src: img?.getAttribute('src') || '' }
+    })()`)
+    // ⚠️ P35 的教训：「元素在 DOM 里」≠「图能加载」——
+    //    必须断 naturalWidth > 0，否则裂图也算通过。
+    s.check('背景图预览真的解码出来了（不是裂图）',
+      bgPreview.w === 64 && bgPreview.h === 32, JSON.stringify(bgPreview))
+    s.check('背景图预览走的是本站上传路径',
+      bgPreview.src.startsWith('/static/uploads/'), bgPreview.src)
+
+    // 保存 → 回查后端
+    await s.evaluate("document.querySelector('[data-test=me-save]').click()")
+    await s.waitFor("location.hash === '#/profile'", '保存后回到主页', 20000)
+    const meBg = await fetchMe(token)
+    s.check('落库：background 真的写进去了',
+      typeof meBg?.background === 'string' && meBg.background.startsWith('/static/uploads/'),
+      `实际 ${meBg?.background}`)
+
+    // ---- 12.2 主页显示背景条
+    await s.waitFor("document.querySelector('[data-test=me-bg]')", '主页背景条出现', 20000)
+    const bgBox = await s.evaluate(`(() => {
+      const bg = document.querySelector('[data-test=me-bg]')
+      const img = document.querySelector('[data-test=me-bg-img]')
+      const av = document.querySelector('[data-test=me-avatar]')
+      const b = bg.getBoundingClientRect()
+      const a = av.getBoundingClientRect()
+      return {
+        bgH: Math.round(b.height),
+        bgW: Math.round(b.width),
+        imgW: img?.naturalWidth ?? 0,
+        avTop: Math.round(a.top),
+        avBottom: Math.round(a.bottom),
+        bgTop: Math.round(b.top),
+        bgBottom: Math.round(b.bottom),
+      }
+    })()`)
+    s.check('背景条有高度（不是 0）', bgBox.bgH > 60, JSON.stringify(bgBox))
+    s.check('背景图真的解码出来了（不是裂图）', bgBox.imgW === 64, JSON.stringify(bgBox))
+    // 几何断言：头像**压**在背景条下沿（小红书主页的样子）
+    s.check('头像压在背景条上沿（头像顶部高于背景条底部、底部低于背景条底部）',
+      bgBox.avTop < bgBox.bgBottom && bgBox.avBottom > bgBox.bgBottom, JSON.stringify(bgBox))
+
+    // ---- 12.3 移动端两列瀑布
+    //
+    // ⚠️ 必须先等**终态**（P38 记过的坑）：
+    //   模板里是 `v-if="listLoading"` → 提示 → `v-else-if="!list.length"` → 空态
+    //   → `v-else` → 列表。加载中时列表**根本不在 DOM 里**，
+    //   而「等加载态消失」会在组件刚挂载那一刻就通过（那时元素还不存在），
+    //   于是量的是空页面。
+    //   正确条件是「**没有**加载态 **且**（列表 **或** 空态）」。
+    await s.waitFor(
+      `!document.querySelector('[data-test=me-notes-loading]')
+       && (document.querySelector('[data-test=me-notes-list]') || document.querySelector('[data-test=me-notes-empty]'))`,
+      '主页笔记区到达终态', 20000)
+    //
+    // ⚠️ 断 **column-count**（声明本身）而不是「卡片排成了两排」：
+    //    后者在只有一篇笔记时也成立（两列但只占一列），恒真。
+    const mobileCols = await s.evaluate(`(() => {
+      const ul = document.querySelector('[data-test=me-notes-list]')
+      if (!ul) return { found: false, empty: !!document.querySelector('[data-test=me-notes-empty]') }
+      const cs = getComputedStyle(ul)
+      const items = [...ul.querySelectorAll('.item')]
+      const lefts = [...new Set(items.map((i) => Math.round(i.getBoundingClientRect().left)))]
+      return {
+        found: true,
+        colCount: cs.columnCount,
+        display: cs.display,
+        n: items.length,
+        lefts: lefts.sort((a, b) => a - b),
+      }
+    })()`)
+    s.check('移动端主页是 CSS columns 瀑布（声明就是两列）',
+      mobileCols.found && mobileCols.colCount === '2' && mobileCols.display === 'block',
+      JSON.stringify(mobileCols))
+    // 几何：两列的左边缘必须真的不同（列宽各占一半）
+    const mLefts = mobileCols.lefts ?? []
+    s.check('移动端两列真的分成了左右两栏（左边缘有两个不同的值）',
+      mLefts.length === 2, JSON.stringify(mLefts))
+    if (mLefts.length === 2) {
+      s.check('移动端两列的列间距 > 0（真的分开，不是叠在一起）',
+        mLefts[1] - mLefts[0] > 0, JSON.stringify(mLefts))
+    }
+
+    // ---- 12.4 桌面端仍是三列（回归：移动端改两列不该把桌面带坏）
+    await s.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
+    await sleep(700)
+    const deskCols = await s.evaluate(`(() => {
+      const ul = document.querySelector('[data-test=me-notes-list]')
+      if (!ul) return { found: false }
+      const cs = getComputedStyle(ul)
+      const items = [...ul.querySelectorAll('.item')]
+      const lefts = [...new Set(items.map((i) => Math.round(i.getBoundingClientRect().left)))]
+      return { found: true, colCount: cs.columnCount, n: items.length, lefts: lefts.sort((a, b) => a - b) }
+    })()`)
+    const dLefts = deskCols.lefts ?? []
+    s.check('桌面端主页仍是三列瀑布',
+      deskCols.found && deskCols.colCount === '3', JSON.stringify(deskCols))
+    s.check('桌面端三列的列间距 > 100px（真的分成三栏，不只是声明）',
+      dLefts.length >= 2 && dLefts[1] - dLefts[0] > 100, JSON.stringify(dLefts))
+    await s.send('Emulation.clearDeviceMetricsOverride')
+    await sleep(400)
+
+    // ---- 12.5 清除背景图
+    await s.goto(`${BASE}/#/profile/edit`)
+    await s.waitFor("document.querySelector('[data-test=me-bg-clear]')", '清除按钮出现', 20000)
+    await s.evaluate("document.querySelector('[data-test=me-bg-clear]').click()")
+    await sleep(300)
+    s.check('点了清除后预览消失（显示空态）',
+      (await s.evaluate("!!document.querySelector('[data-test=me-bg-empty]')")))
+    await s.evaluate("document.querySelector('[data-test=me-save]').click()")
+    await s.waitFor("location.hash === '#/profile'", '保存后回到主页', 20000)
+    const meCleared = await fetchMe(token)
+    s.check('落库：background 被清空了（字段消失或为 null）',
+      meCleared?.background == null, `实际 ${JSON.stringify(meCleared?.background)}`)
+    s.check('主页不再渲染背景条',
+      !(await s.evaluate("!!document.querySelector('[data-test=me-bg]')")))
+  }
+
   // ---- 11. 还原演示账号 —— **挪到 finally 里了**，见下方注释
 } catch (e) {
   s.check('用例执行到底', false, String(e.message))
@@ -410,7 +563,11 @@ try {
     const tk = token || await s.evaluate("localStorage.getItem('xk_token')")
     if (!tk || !orig) throw new Error(`还原缺前置：token=${!!tk} orig=${!!orig}`)
     const origNow = await fetchMe(tk)
-    if (origNow && origNow.nickname !== orig.nickname) {
+    // ⚠️ 背景图也要还原（P39）：本段会改演示账号的背景图，
+    //    留着的话主页多一条横幅 —— 而**别的组**会看到它，
+    //    症状是「layout 体检报出莫名其妙的重叠」，与真正的失败点隔了几组。
+    if (origNow && (origNow.nickname !== orig.nickname
+      || (origNow.background ?? '') !== (orig.background ?? ''))) {
       const r = await fetch(`${API}/api/user/profile`, {
         method: 'PUT',
         headers: {
@@ -422,6 +579,9 @@ try {
           gender: orig.gender,
           bio: orig.bio ?? '',
           avatar: orig.avatar ?? '',
+          // ⚠️ 空串 = 清空（后端 update-strategy: not_null 会把 null 剔除，
+          //    所以「清空」必须靠空串 + 后端显式 set null）
+          background: orig.background ?? '',
         }),
       })
       const j = await r.json()

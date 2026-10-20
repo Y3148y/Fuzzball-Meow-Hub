@@ -105,6 +105,13 @@ export interface UserVO {
   username: string
   nickname: string
   avatar: string | null
+  /**
+   * 主页背景图 URL（P39）。
+   *
+   * ⚠️ 可空时**整个字段会从 JSON 里消失**（后端配了 non_null 策略，AGENTS 6.1），
+   *    所以前端拿到的是 `undefined` 而不是 `null` —— 判断要用 `== null` / 真值。
+   */
+  background: string | null
   bio: string | null
   /** 0 未知 1 男 2 女 */
   gender: number
@@ -130,7 +137,7 @@ createTime: string
  * 上限要跟后端 @Size 对齐（昵称 32 / 简介 255），
  * 超了后端会回 100001，这里先拦一道省得白跑一趟。
  */
-export type ProfilePatch = Partial<Pick<UserVO, 'nickname' | 'avatar' | 'bio' | 'gender'>>
+export type ProfilePatch = Partial<Pick<UserVO, 'nickname' | 'avatar' | 'bio' | 'gender' | 'background'>>
 
 /** 登录结果，对应后端 LoginVO */
 export interface LoginVO {

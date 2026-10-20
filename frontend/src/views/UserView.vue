@@ -13,11 +13,15 @@ import { useUserStore } from '@/stores/user'
 import MoreSheet, { type MoreAction } from '@/components/MoreSheet.vue'
 import ReportSheet from '@/components/ReportSheet.vue'
 import { useReportSheet } from '@/composables/useReportSheet'
+import { useCoverRatio } from '@/composables/useCoverRatio'
 import UserAvatar from '@/components/UserAvatar.vue'
 
 const route = useRoute()
 const router = useRouter()
 const userStore = useUserStore()
+
+/** 瀑布流卡片的封面真实宽高比（P39：移动端也改两列瀑布了） */
+const { coverRatio, onCoverLoad } = useCoverRatio()
 
 /** route.params 已是 string，不要 Number()：雪花 ID 会丢精度 */
 const userId = String(route.params.id)
@@ -172,7 +176,15 @@ onMounted(load)
     <p v-else-if="errorMsg" class="hint err" role="alert" data-test="user-error">{{ errorMsg }}</p>
 
     <template v-else-if="author">
-      <section class="card xk-card">
+      <section class="card xk-card head" :class="{ 'has-bg': !!author?.background }" data-test="user-head">
+        <!--
+          背景头图（P39）。与 ProfileView 同一套做法：
+          负外边距出血到卡片边缘 + 卡片 overflow:hidden 裁成 blob 圆角。
+          `alt=""`：装饰性背景，页面真正的内容是下面的昵称/简介。
+        -->
+        <div v-if="author?.background" class="bg" data-test="user-bg">
+          <img class="bg-img" :src="author.background" alt="" data-test="user-bg-img">
+        </div>
         <div class="who">
           <UserAvatar :avatar="author?.avatar" :nickname="author?.nickname" :size="62" test="user-avatar" />
           <div class="names">
@@ -237,7 +249,14 @@ onMounted(load)
         <ul v-else class="items" data-test="user-notes">
           <li v-for="item in notes" :key="item.id" class="item" data-test="user-note">
             <RouterLink class="main" :to="`/note/${item.id}`">
-              <img class="cover" :src="item.cover ?? '/mascot/m02.webp'" alt="" loading="lazy" />
+              <img
+                class="cover"
+                :src="item.cover ?? '/mascot/m02.webp'"
+                alt=""
+                loading="lazy"
+                :style="coverRatio[item.id] ? { '--r': coverRatio[item.id] } : undefined"
+                @load="onCoverLoad(item, $event)"
+              />
               <div class="body">
                 <p class="title">{{ item.title }}</p>
                 <p class="meta">
@@ -300,12 +319,55 @@ onMounted(load)
   gap: 14px;
 }
 
-.avatar {
-  width: 62px;
-  height: 62px;
-  object-fit: contain;
-  flex-shrink: 0;
+/*
+ * 背景头图（P39）。与 ProfileView 同一套做法：
+ * 负外边距出血到卡片边缘 + 卡片 overflow:hidden 裁成 blob 圆角。
+ *
+ * ⚠️ `overflow: hidden` 是**必需**的：不裁切的话图的四角会盖住圆角描边，
+ *    视觉上就是「图片戳出卡片」。
+ */
+.head {
+  position: relative;
+  overflow: hidden;
 }
+
+.bg {
+  margin: calc(var(--xk-card-pad) * -1) calc(var(--xk-card-pad) * -1) 0;
+  height: 132px;
+  background: var(--xk-surface-2);
+  overflow: hidden;
+}
+
+.bg-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/*
+ * 有背景图时头像**压**在背景图左下角（小红书主页的样子）：
+ * 整行上移半个头像（62/2 = 31px），头像上半截在图上、下半截在图下。
+ * ⚠️ 只在 `.has-bg` 时上移 —— 没有背景图时也上移的话，
+ *    头像会浮在卡片上边缘外面，那是「缺了个东西」的观感，不是设计。
+ */
+.head.has-bg .who {
+  margin-top: -31px;
+  position: relative;
+}
+
+/* 头像外圈一道底色描边：压在背景图上时才分得清哪个是头像 */
+.head.has-bg .xk-avatar {
+  box-shadow: 0 0 0 4px var(--xk-surface);
+}
+
+/*
+ * ⚠️ 这里原本有 `.avatar { width:62px; height:62px; object-fit:contain }`，
+ *    P35 换成 <UserAvatar> 组件之后**已经是死 CSS** ——
+ *    组件渲染的是 `class="xk-avatar"`，没有 `avatar` 这个类名。
+ *    死 CSS 不报错不警告，只在碰巧同名时静默改变布局（AGENTS P35 的教训）。
+ *    已随 P39 一并删除。
+ */
 
 .names {
   min-width: 0;
@@ -407,22 +469,37 @@ onMounted(load)
   list-style: none;
   margin: 0;
   padding: 0;
-  display: flex;
-  flex-direction: column;
+  display: block;
+  /*
+   * P39：移动端也改两列瀑布（与「我的」主页 / 首页同一套卡片语言）。
+   * 刻意用 CSS `columns` 而不是 grid —— grid 每行等高，
+   * 横图会把竖图顶出空洞；columns 让每张卡按自己的内容高度落位。
+   */
+  columns: 2;
+  column-gap: 10px;
 }
 
-.item {
-  padding: 12px 0;
-  border-top: var(--xk-stroke-w) solid var(--xk-border);
-}
-
+.item,
 .item:first-child {
-  border-top: 0;
+  break-inside: avoid;
+  margin: 0 0 10px;
+  padding: 0;
+  border: var(--xk-stroke-w) solid var(--xk-stroke);
+  border-radius: var(--xk-radius-blob);
+  background: var(--xk-surface);
+  box-shadow: var(--xk-shadow-hard-sm);
+  overflow: hidden;
+  transition: transform 0.12s ease;
+}
+
+.item:hover {
+  transform: translate(-2px, -2px);
 }
 
 .main {
   display: flex;
-  gap: 12px;
+  flex-direction: column;
+  gap: 0;
   width: 100%;
   padding: 0;
   border: 0;
@@ -431,21 +508,26 @@ onMounted(load)
   cursor: pointer;
 }
 
+/*
+ * 封面：宽 100%、高按**真实**宽高比自适应。
+ * `aspect-ratio: var(--r, 3 / 4)` 里 3/4 只是**加载前**的占位（防 CLS）。
+ * ⚠️ 不要写死 height，也不要给 <img> 加 width/height 属性（那是错的值）。
+ */
 .cover {
-  width: 84px;
-  height: 84px;
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: var(--r, 3 / 4);
   object-fit: cover;
-  border-radius: var(--xk-radius-blob-sm);
-  flex-shrink: 0;
   background: var(--xk-surface-2);
 }
 
 .body {
   min-width: 0;
-  flex: 1;
+  padding: 8px 8px 0;
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
+  gap: 4px;
 }
 
 .title {
@@ -507,40 +589,16 @@ onMounted(load)
     grid-area: feed;
   }
 
-  /* 笔记墙走三列瀑布，与首页保持同一套卡片语言 */
+  /* 笔记墙走三列瀑布，与首页保持同一套卡片语言。
+     卡片样式已在基础规则里（移动端两列那套），这里只改列数与间距。 */
   .items {
-    display: block;
     columns: 3;
     column-gap: 16px;
   }
 
   .item,
   .item:first-child {
-    break-inside: avoid;
     margin: 0 0 16px;
-    padding: 0;
-    border: var(--xk-stroke-w) solid var(--xk-stroke);
-    border-radius: var(--xk-radius-blob);
-    background: var(--xk-surface);
-    box-shadow: var(--xk-shadow-hard-sm);
-    overflow: hidden;
-    transition: transform 0.12s ease;
-  }
-
-  .item:hover {
-    transform: translate(-2px, -2px);
-  }
-
-  .main {
-    flex-direction: column;
-    gap: 0;
-  }
-
-  .cover {
-    width: 100%;
-    height: auto;
-    aspect-ratio: 3 / 4;
-    border-radius: 0;
   }
 
   .body {

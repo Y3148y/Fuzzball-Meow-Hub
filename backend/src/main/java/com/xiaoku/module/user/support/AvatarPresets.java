@@ -34,12 +34,14 @@ import java.util.List;
  * <p>预设头像图片由 {@code frontend/scripts/gen-default-avatars.mjs} 生成到
  * {@code frontend/public/avatars/}，改动配色/图形要改那个脚本后重跑，
  * <b>不要手改 PNG</b>（手改出来的图不在本白名单里就永远选不到）。
+ *
+ * <p>⚠️ <b>「本站上传前缀」那部分不在这份文件里</b>，而在
+ * {@link UploadedUrlPolicy}（P39 抽出去的）—— 背景图走的是同一套规则，
+ * 两边各写一份的话可疑字符清单迟早漂移，而漂移的方向是
+ * 「一边放行了一边没放行」，那就是个安全洞。
  */
 @Component
 public class AvatarPresets {
-
-    /** 本站上传文件的静态前缀（与 ImageStorage 产出的 URL 前缀一致） */
-    public static final String UPLOAD_PREFIX = "/static/uploads/";
 
     /** 8 张预设头像，顺序即前端展示顺序 */
     public static final List<String> PRESETS = List.of(
@@ -52,6 +54,12 @@ public class AvatarPresets {
             "/avatars/07.png",
             "/avatars/08.png"
     );
+
+    private final UploadedUrlPolicy uploadedUrlPolicy;
+
+    public AvatarPresets(UploadedUrlPolicy uploadedUrlPolicy) {
+        this.uploadedUrlPolicy = uploadedUrlPolicy;
+    }
 
     /**
      * 校验并归一化头像取值。
@@ -73,25 +81,9 @@ public class AvatarPresets {
         if (PRESETS.contains(v)) {
             return v;
         }
-        // 上传地址：先按前缀筛掉绝大多数，再逐条挡掉路径形态上的花招。
-        // ⚠️ 三条都要单独判 —— 只判前缀的话 /static/uploads/../../x.png 会被放行
-        //    （这是实测踩到的，不是假想）。
-        if (v.startsWith(UPLOAD_PREFIX)) {
-            boolean suspicious = v.contains("..")
-                    || v.contains("\\")
-                    || v.contains("//")
-                    // 结尾的 / 会让浏览器去请求目录而不是文件
-                    || v.endsWith("/")
-                    // query / fragment：让 ?a=b 之类的尾巴混进来，
-                    // 校验的是「路径」而不是「任意带前缀的字符串」
-                    || v.indexOf('?') >= 0
-                    || v.indexOf('#') >= 0;
-            if (!suspicious) {
-                return v;
-            }
-        }
-        BizException.throwIf(true, ErrorCodeEnum.AVATAR_INVALID);
-        return null;
+        // 上传地址：规则与背景图共用（UploadedUrlPolicy），
+        // 异常路径上的可疑字符清单只有一份。
+        return uploadedUrlPolicy.validate(v, ErrorCodeEnum.AVATAR_INVALID);
     }
 
     /** 注册时按 id 取一个稳定的默认头像，避免所有新用户长得一模一样 */

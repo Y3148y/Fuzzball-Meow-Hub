@@ -17,6 +17,7 @@ import com.xiaoku.module.user.mapper.UserMapper;
 import com.xiaoku.module.user.service.UserQueryService;
 import com.xiaoku.module.user.service.UserService;
 import com.xiaoku.module.user.support.AvatarPresets;
+import com.xiaoku.module.user.support.UploadedUrlPolicy;
 import com.xiaoku.module.user.vo.LoginVO;
 import com.xiaoku.module.user.vo.UserVO;
 import lombok.RequiredArgsConstructor;
@@ -42,6 +43,7 @@ public class UserServiceImpl implements UserService {
     private final SnowflakeIdGenerator snowflakeIdGenerator;
     private final BCryptPasswordEncoder passwordEncoder;
     private final AvatarPresets avatarPresets;
+    private final UploadedUrlPolicy uploadedUrlPolicy;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -185,6 +187,16 @@ update.setNickname(dto.getNickname());
             userMapper.update(null, Wrappers.<UserEntity>lambdaUpdate()
                     .eq(UserEntity::getId, userId)
                     .set(UserEntity::getAvatar, avatar));
+        }
+        // ⚠️ 背景图（P39）走**完全相同的坑**：空串清空必须显式 set null，
+        // 因为 update-strategy: not_null 会把 null 剔除掉。
+        // 但它的白名单比头像窄一档（没有「预设」），所以单独一个策略对象。
+        if (dto.getBackground() != null) {
+            String background = uploadedUrlPolicy.validate(dto.getBackground(),
+                    ErrorCodeEnum.BACKGROUND_INVALID);
+            userMapper.update(null, Wrappers.<UserEntity>lambdaUpdate()
+                    .eq(UserEntity::getId, userId)
+                    .set(UserEntity::getBackground, background));
         }
         userMapper.updateById(update);
 

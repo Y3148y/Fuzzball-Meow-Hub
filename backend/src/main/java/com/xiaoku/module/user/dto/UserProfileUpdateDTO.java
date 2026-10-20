@@ -43,4 +43,19 @@ public class UserProfileUpdateDTO {
             + "不传=保持不变，空串=清空", example = "/avatars/03.png")
     @Size(max = 512, message = "头像地址过长")
     private String avatar;
+
+    /**
+     * 主页背景图地址（P39）。
+     *
+     * <p>与 {@link #avatar} 同样的「不传 / 空串 / 合法地址」三态语义，
+     * 也同样<b>只加 {@code @Size}</b>：合法性判定在
+     * {@code UploadedUrlPolicy#validate} 里（白名单是服务端配置，
+     * 写成注解等于把同一份规则复制成两处）。
+     *
+     * <p>⚠️ 背景图<b>没有「预设」那一档</b>：只有本站上传的地址合法。
+     */
+    @Schema(description = "主页背景图地址：上传返回的 /static/uploads/... 路径；不传=保持不变，空串=清空",
+            example = "/static/uploads/2026/10/19/abc.png")
+    @Size(max = 512, message = "背景图地址过长")
+    private String background;
 }

@@ -42,6 +42,14 @@ public class UserEntity implements Serializable {
 
     private String avatar;
 
+    /**
+     * 主页背景图（P39）。
+     *
+     * <p>与 {@link #avatar} 一样是**用户可写的 URL 字段**，
+     * 所以合法性由 {@code UploadedUrlPolicy} 把关，不是这里。
+     */
+    private String background;
+
     private String bio;
 
     /** 0 未知 1 男 2 女 */

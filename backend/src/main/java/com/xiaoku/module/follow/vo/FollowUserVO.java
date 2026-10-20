@@ -43,6 +43,10 @@ public class FollowUserVO implements Serializable {
     @Schema(description = "头像URL")
     private String avatar;
 
+    /** 主页背景图 URL（P39）。作者主页的横幅用它。 */
+    @Schema(description = "主页背景图URL")
+    private String background;
+
     @Schema(description = "个人简介")
     private String bio;
 

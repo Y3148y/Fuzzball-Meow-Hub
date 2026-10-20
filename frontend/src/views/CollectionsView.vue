@@ -14,14 +14,15 @@ import { showToast } from 'vant'
 import { getMyCollections } from '@/api/feed'
 import { uncollectNote } from '@/api/note'
 import type { NoteListItemVO } from '@/api/types'
+import { useCoverRatio } from '@/composables/useCoverRatio'
 
 const router = useRouter()
 
 const list = ref<NoteListItemVO[]>([])
 const loading = ref(true)
 const error = ref('')
-/** 封面真实宽高比，key 是笔记 id */
-const ratios = ref<Record<string, string>>({})
+/** 封面真实宽高比，key 是笔记 id（P39 起改用共用的 useCoverRatio） */
+const { coverRatio: ratios, onCoverLoad } = useCoverRatio()
 
 async function load() {
   loading.value = true
@@ -36,15 +37,8 @@ async function load() {
   }
 }
 
-function onCoverLoad(item: NoteListItemVO, ev: Event) {
-  const img = ev.target as HTMLImageElement
-  const w = img.naturalWidth
-  const h = img.naturalHeight
-  if (!w || !h || ratios.value[item.id]) return
-  ratios.value = { ...ratios.value, [item.id]: `${w} / ${h}` }
-}
-
-/** 正在取消中的笔记 id，防止连点两次发两次请求 */
+/**
+ * 正在取消中的笔记 id，防止连点两次发两次请求 */
 const removing = ref<Record<string, boolean>>({})
 
 /**

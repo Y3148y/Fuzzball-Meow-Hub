@@ -29,6 +29,7 @@ public final class UserConverter {
                 .username(user.getUsername())
                 .nickname(user.getNickname())
                 .avatar(user.getAvatar())
+                .background(user.getBackground())
                 .bio(user.getBio())
                 .gender(user.getGender())
                 .followCount(user.getFollowCount())

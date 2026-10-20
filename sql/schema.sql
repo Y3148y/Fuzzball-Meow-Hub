@@ -29,6 +29,7 @@ CREATE TABLE `user`
     `password`           VARCHAR(100)    NOT NULL COMMENT 'BCrypt 加密后的密码',
     `nickname`           VARCHAR(32)     NOT NULL COMMENT '昵称',
     `avatar`             VARCHAR(512)             DEFAULT NULL COMMENT '头像URL',
+    `background`         VARCHAR(512)             DEFAULT NULL COMMENT '主页背景图URL（P39）',
     `bio`                VARCHAR(255)             DEFAULT NULL COMMENT '个人简介',
     `gender`             TINYINT         NOT NULL DEFAULT '0' COMMENT '性别 0未知 1男 2女',
     `follow_count`       INT             NOT NULL DEFAULT 0 COMMENT '关注数',

@@ -37,8 +37,12 @@ const bio = ref('')
 const gender = ref(0)
 /** 本次编辑选中的头像（空串 = 清空） */
 const avatar = ref('')
+/** 本次编辑选中的主页背景图（空串 = 清空）。P39 */
+const background = ref('')
 const uploading = ref(false)
 const uploadErr = ref('')
+const bgUploading = ref(false)
+const bgUploadErr = ref('')
 
 /**
  * 预设头像列表，**从后端取**而不是写死在前端。
@@ -87,6 +91,9 @@ function syncFromStore() {
   bio.value = u?.bio ?? ''
   gender.value = u?.gender ?? 0
   avatar.value = u?.avatar ?? ''
+  // ⚠️ 后端 non_null 策略：没设背景图时这个字段在 JSON 里**整个不存在**，
+  //    拿到的是 undefined 而不是 null —— `?? ''` 两种都能兜住。
+  background.value = u?.background ?? ''
 }
 watch(() => userStore.userInfo, syncFromStore, { immediate: true })
 
@@ -121,6 +128,40 @@ function back() {
   router.back()
 }
 
+/**
+ * 上传主页背景图（P39）。
+ *
+ * ⚠️ 与头像上传**刻意分成两个函数**而不是抽一个通用的：
+ * 两者的状态变量、错误提示文案、data-test 全不一样，
+ * 抽成带参数的通用函数后调用处要传 4~5 个参数，
+ * 而那些参数里真正变化的只有「往哪个 ref 写」——
+ * 抽象成本高于收益，且改一处忘另一处的风险更高。
+ * 真正共用的只有「校验 content type」这一行。
+ */
+async function onPickBgFile(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  // ⚠️ 无论成败都要把 value 清掉：同一个文件再选一次时
+  //    不清空的话 change 事件**不会再次触发**（浏览器认为没变化）。
+  input.value = ''
+  if (!file) return
+  bgUploadErr.value = ''
+  if (!/^image\/(png|jpeg|webp)$/.test(file.type)) {
+    bgUploadErr.value = '只支持 PNG / JPEG / WebP 格式'
+    return
+  }
+  bgUploading.value = true
+  try {
+    const res = await uploadImage(file)
+    background.value = res.url
+    dirty.value = true
+  } catch {
+    bgUploadErr.value = '上传失败，请重试'
+  } finally {
+    bgUploading.value = false
+  }
+}
+
 async function save() {
   if (!canSave.value) return
   saving.value = true
@@ -138,6 +179,9 @@ async function save() {
     // ⚠️ 头像与昵称/简介不同：**空串是有意义的取值**（清空），
     // 所以不能写 `if (avatar.value) patch.avatar = ...` —— 那样用户永远清不掉头像。
     patch.avatar = avatar.value
+    // ⚠️ 背景图同理：空串 = 清空（后端 update-strategy: not_null 会把 null 剔除，
+    //    所以「清空」必须靠空串 + 后端显式 set null）。
+    patch.background = background.value
 
     const updated = await updateProfile(patch)
     userStore.userInfo = updated
@@ -180,6 +224,48 @@ async function save() {
     </div>
 
     <section class="card xk-card" data-test="me-form">
+      <!--
+        主页背景图（P39）。
+        放在头像**上方**：主页上的视觉顺序是「背景条 → 头像 → 昵称」，
+        编辑页按同一个顺序排，用户上下扫一眼就知道改的是哪一块。
+      -->
+      <div class="bg-field">
+        <span class="label">主页背景</span>
+        <div v-if="background" class="bg-preview" data-test="me-bg-preview">
+          <img :src="background" alt="" data-test="me-bg-preview-img">
+        </div>
+        <p v-else class="bg-none" data-test="me-bg-empty">还没有背景图</p>
+        <div class="bg-actions">
+          <label class="upload">
+            <input
+              class="file"
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              data-test="me-bg-file"
+              @change="onPickBgFile"
+            >
+            <span class="upload-btn" data-test="me-bg-upload">
+              {{ bgUploading ? '上传中…' : (background ? '换一张' : '上传背景图') }}
+            </span>
+          </label>
+          <!--
+            清除按钮**刻意是 button 而不是「再选一次空文件」**：
+            清空是有意义的动作（空串 = 清空），必须显式给出入口，
+            否则用户只能去后端改库。
+          -->
+          <button
+            v-if="background"
+            class="xk-btn xk-btn--ghost bg-clear"
+            type="button"
+            data-test="me-bg-clear"
+            @click="((background = ''), (dirty = true))"
+          >
+            清除
+          </button>
+        </div>
+        <p v-if="bgUploadErr" class="err" role="alert" data-test="me-bg-error">{{ bgUploadErr }}</p>
+      </div>
+
       <!--
         头像选择：8 个预设 + 上传自定义。
         ⚠️ **点预设只是本地选中，不立即提交** —— 与同表单里的昵称/简介一起
@@ -348,6 +434,52 @@ async function save() {
   gap: var(--xk-space-2);
   margin-bottom: 16px;
 }
+
+/* 主页背景图（P39）。同样是纵向 flex，不复用 .field 的两列栅格。 */
+.bg-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--xk-space-2);
+  margin-bottom: 16px;
+}
+
+/*
+ * 预览用 16/9 而不是主页上的横幅比例：
+ * 编辑区在卡片内，宽度有限，而**用户要确认的是"这张图"**而不是它的裁切效果 ——
+ * 主页上是 object-fit: cover，裁掉多少在这里看不出来，
+ * 所以这里给一个能看全的框（object-fit: contain），别让人以为图被切了。
+ */
+.bg-preview {
+  height: 150px;
+  border: var(--xk-stroke-w) solid var(--xk-border);
+  border-radius: var(--xk-radius-blob-sm);
+  background: var(--xk-surface-2);
+  overflow: hidden;
+}
+.bg-preview img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.bg-none {
+  margin: 0;
+  padding: var(--xk-space-4) 0;
+  border: var(--xk-stroke-w) dashed var(--xk-border);
+  border-radius: var(--xk-radius-blob-sm);
+  color: var(--xk-text-3);
+  font-size: var(--xk-fs-13);
+  text-align: center;
+}
+
+.bg-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--xk-space-2);
+}
+.bg-actions .upload { margin-top: 0; }
+.bg-clear { flex: none; }
 
 .field {
   display: grid;

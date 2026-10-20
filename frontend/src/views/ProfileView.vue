@@ -13,6 +13,7 @@ import ThemeToggle from '@/components/ThemeToggle.vue'
 import UserAvatar from '@/components/UserAvatar.vue'
 import { useUnreadCount } from '@/composables/useUnreadCount'
 import { useMessageUnread } from '@/composables/useMessageUnread'
+import { useCoverRatio } from '@/composables/useCoverRatio'
 
 const router = useRouter()
 const userStore = useUserStore()
@@ -43,6 +44,18 @@ const lists = ref<Record<TabKey, NoteListItemVO[]>>({ notes: [], collected: [], 
 const loading = ref<Record<TabKey, boolean>>({ notes: false, collected: false, liked: false })
 /** 已经拉过的 tab，用来避免重复请求 */
 const loaded = ref<Record<TabKey, boolean>>({ notes: false, collected: false, liked: false })
+
+/** 瀑布流卡片的封面真实宽高比（P39：移动端也改两列瀑布了，所以需要它） */
+const { coverRatio, onCoverLoad } = useCoverRatio()
+
+/**
+ * 主页背景头图（P39）。
+ *
+ * ⚠️ 后端配了 `default-property-inclusion: non_null`（AGENTS 6.1），
+ *    所以没设背景图时这个字段在 JSON 里**整个不存在** —— 拿到的是 `undefined`
+ *    而不是 `null`。用真值判断（`!!x`）两种都对，用 `=== null` 则永远进不去。
+ */
+const background = computed(() => userStore.userInfo?.background || '')
 
 const list = computed(() => lists.value[tab.value])
 const listLoading = computed(() => loading.value[tab.value])
@@ -107,7 +120,16 @@ async function logout() {
       —— 每个 sticky 元素只能在自己的 grid area 里动，而 area 只有一行高。
     -->
     <div class="side">
-      <section class="card xk-card">
+      <section class="card xk-card head" :class="{ 'has-bg': !!background }" data-test="me-head">
+      <!--
+        背景头图（P39）。
+        ⚠️ `alt=""` 而不是描述性 alt：这是**装饰性**背景，
+           页面真正的内容是下面的昵称/简介，给它写 alt 会被读屏软件念一遍，
+           变成「主页背景图，主页背景图」。
+      -->
+      <div v-if="background" class="bg" data-test="me-bg">
+        <img class="bg-img" :src="background" alt="" data-test="me-bg-img">
+      </div>
       <div class="who">
         <UserAvatar
           :avatar="userStore.userInfo?.avatar"
@@ -261,7 +283,14 @@ async function logout() {
       <ul v-else class="items" :data-test="'me-' + tab + '-list'">
         <li v-for="item in list" :key="item.id" class="item" data-test="profile-note">
           <RouterLink class="main" :to="`/note/${item.id}`">
-            <img class="cover" :src="item.cover ?? '/mascot/m02.webp'" alt="" loading="lazy">
+            <img
+              class="cover"
+              :src="item.cover ?? '/mascot/m02.webp'"
+              alt=""
+              loading="lazy"
+              :style="coverRatio[item.id] ? { '--r': coverRatio[item.id] } : undefined"
+              @load="onCoverLoad(item, $event)"
+            >
             <div class="body">
               <p class="title">{{ item.title }}</p>
               <p class="meta">♥ {{ item.likeCount }} · ★ {{ item.collectCount }}</p>
@@ -323,22 +352,37 @@ async function logout() {
   margin: 0;
   padding: 0;
   list-style: none;
-  display: flex;
-  flex-direction: column;
+  display: block;
+  /*
+   * P39：移动端也改两列瀑布（对齐小红书主页 / 首页瀑布）。
+   * 刻意用 CSS `columns` 而不是 grid —— grid 每行等高，
+   * 横图会把竖图顶出空洞；columns 让每张卡按自己的内容高度落位。
+   */
+  columns: 2;
+  column-gap: 10px;
 }
 
-.item {
-  padding: 12px 0;
-  border-top: var(--xk-stroke-w) solid var(--xk-border);
-}
-
+.item,
 .item:first-child {
-  border-top: 0;
+  break-inside: avoid;
+  margin: 0 0 10px;
+  padding: 0;
+  border: var(--xk-stroke-w) solid var(--xk-stroke);
+  border-radius: var(--xk-radius-blob);
+  background: var(--xk-surface);
+  box-shadow: var(--xk-shadow-hard-sm);
+  overflow: hidden;
+  transition: transform 0.12s ease;
+}
+
+.item:hover {
+  transform: translate(-2px, -2px);
 }
 
 .main {
   display: flex;
-  gap: 12px;
+  flex-direction: column;
+  gap: 0;
   width: 100%;
   padding: 0;
   border: 0;
@@ -347,21 +391,26 @@ async function logout() {
   cursor: pointer;
 }
 
+/*
+ * 封面：宽 100%、高按**真实**宽高比自适应。
+ * `aspect-ratio: var(--r, 3 / 4)` 里 3/4 只是**加载前**的占位（防 CLS），
+ * @load 拿到 naturalWidth/Height 后 --r 被改写成真实比例。
+ * 不要写死 height，也不要给 <img> 加 width/height 属性（那是错的值）。
+ */
 .cover {
-  width: 84px;
-  height: 84px;
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: var(--r, 3 / 4);
   object-fit: cover;
-  border-radius: var(--xk-radius-blob-sm);
-  flex-shrink: 0;
   background: var(--xk-surface-2);
 }
 
 .body {
   min-width: 0;
-  flex: 1;
+  padding: 8px 8px 0;
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
   gap: 4px;
 }
 
@@ -399,12 +448,62 @@ async function logout() {
   gap: 14px;
 }
 
-.avatar {
-  width: 62px;
-  height: 62px;
-  object-fit: contain;
-  flex-shrink: 0;
+/*
+ * 背景头图（P39）。
+ *
+ * ⚠️ `overflow: hidden` 是**必需**的：`.xk-card` 的圆角是 blob 形
+ *    （`--xk-radius-blob`），而背景图要用负外边距"出血"到卡片边缘 ——
+ *    不裁切的话图的四角会盖住圆角描边，视觉上就是"图片戳出卡片"。
+ *
+ * ⚠️ 负外边距 = -卡片内边距：出血到**边框内侧**，
+ *    卡片自己的 1~2px 描边仍然可见（不是被盖掉）。
+ */
+.head {
+  position: relative;
+  overflow: hidden;
 }
+
+.bg {
+  margin: calc(var(--xk-card-pad) * -1) calc(var(--xk-card-pad) * -1) 0;
+  height: 132px;
+  background: var(--xk-surface-2);
+  overflow: hidden;
+}
+
+.bg-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/*
+ * 有背景图时，头像**压**在背景图左下角（小红书主页的样子）：
+ * 整行上移半个头像（62/2 = 31px），头像上半截在图上、下半截在图下。
+ *
+ * ⚠️ 只在 `.has-bg` 时上移：没有背景图时也上移的话，
+ *    头像会浮在卡片上边缘外面 —— 那是"缺了个东西"的观感，不是设计。
+ */
+.head.has-bg .who {
+  margin-top: -31px;
+  position: relative;
+}
+
+/* 头像外圈一道底色描边：压在背景图上时才分得清哪个是头像 */
+.head.has-bg .xk-avatar {
+  box-shadow: 0 0 0 4px var(--xk-surface);
+}
+
+/*
+ * ⚠️ 这里原本有 `.avatar { width:62px; height:62px; object-fit:contain }`，
+ *    P38 换成 <UserAvatar> 组件之后**已经是死 CSS** ——
+ *    组件渲染的是 `class="xk-avatar"`，没有 `avatar` 这个类名。
+ *    死 CSS 不报错不警告，只在碰巧同名时静默改变布局（AGENTS P35 的教训）。
+ *    而且它的 `object-fit: contain` 与组件自己的 `cover` 相矛盾 ——
+ *    留着的话哪天有人把类名改回去，头像会变成"不裁切"，
+ *    圆形头像里会露出一张带白底的方图。
+ *    已随 P39 一并删除。
+ */
 
 .names {
   min-width: 0;
@@ -565,45 +664,27 @@ async function logout() {
     grid-area: notes;
   }
 
-  /* 右栏 3 列瀑布。多列格式只作用于 block 容器，所以必须先干掉 display:flex */
+  /* 右栏 3 列瀑布。卡片样式已在基础规则里（移动端两列那套），
+     这里只改列数与间距 —— 之前这里是**重复定义**了一遍卡片样式，
+     两份定义的差异要靠人眼比对才能发现。 */
   .items {
-    display: block;
     columns: 3;
     column-gap: 20px;
   }
 
   .item,
   .item:first-child {
-    break-inside: avoid;
     margin: 0 0 20px;
-    padding: 0;
-    border: var(--xk-stroke-w) solid var(--xk-stroke);
-    border-radius: var(--xk-radius-blob);
-    background: var(--xk-surface);
-    box-shadow: var(--xk-shadow-hard-sm);
-    overflow: hidden;
-    transition: transform 0.12s ease;
-  }
-
-  .item:hover {
-    transform: translate(-2px, -2px);
-  }
-
-  .main {
-    flex-direction: column;
-    gap: 0;
-  }
-
-  .cover {
-    width: 100%;
-    height: auto;
-    aspect-ratio: 3 / 4;
-    border-radius: 0;
   }
 
   .body {
     padding: 12px 12px 14px;
     gap: 8px;
+  }
+
+  /* 桌面侧栏 300px 宽，背景条按比例矮一点更像横幅 */
+  .bg {
+    height: 160px;
   }
 }
 

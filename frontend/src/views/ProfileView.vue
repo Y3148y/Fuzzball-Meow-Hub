@@ -11,13 +11,12 @@ import type { NoteListItemVO } from '@/api/types'
 import { useUserStore } from '@/stores/user'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 import UserAvatar from '@/components/UserAvatar.vue'
-import { useUnreadCount } from '@/composables/useUnreadCount'
+import NotificationBell from '@/components/NotificationBell.vue'
 import { useMessageUnread } from '@/composables/useMessageUnread'
 import { useCoverRatio } from '@/composables/useCoverRatio'
 
 const router = useRouter()
 const userStore = useUserStore()
-const { unread } = useUnreadCount()
 const { unread: messageUnread } = useMessageUnread()
 
 /*
@@ -111,7 +110,21 @@ async function logout() {
   <main class="page">
     <header class="top">
       <span class="brand">我的</span>
-      <ThemeToggle />
+      <div class="top-right">
+        <!--
+          通知铃铛（P40）。
+
+          ⚠️ 只在**移动端**看得见：桌面端这一整条顶栏被隐藏（见下面的媒体查询），
+          桌面由 SiteNav 里的那个铃铛承担 —— 两处共用 useUnreadCount，
+          数字不会不一致。
+
+          ⚠️ 刻意**不是 fixed 浮标**：固定浮标会压住顶栏的主题切换/返回，
+          布局体检在首页/搜索/我的三页各报过 2 处重叠（见 NotificationBell 的文件头）。
+          这里它在**正常流**里，和主题钮并排。
+        -->
+        <NotificationBell testid="me-notify-bell" badge-testid="me-notify-bell-unread" />
+        <ThemeToggle />
+      </div>
     </header>
 
     <!--
@@ -193,17 +206,14 @@ async function logout() {
       「v-else/v-else-if has no adjacent v-if」。
       而这一条 **vue-tsc 没抓到，是 `npm run build` 才报出来的**，所以别只跑 typecheck。
     -->
-    <section class="card xk-card xk-card--flat">
+    <section class="card xk-card xk-card--flat links-card" data-test="me-links">
       <!--
-        通知入口放在「我」页里（小红书移动端就是这个位置），因为移动端页面
-        顶栏右上角已经有主题切换/返回，再塞一个浮动铃铛会压上去（实测布局体检
-        在三页各报 2 处重叠）。桌面端那个铃铛在 SiteNav 里，两处共用
-        useUnreadCount 的未读数，不会出现两个数字不一致。
+        通知入口（P40）：从这一行**移到了顶栏的铃铛**。
+        理由：这张卡在移动端被挪到了笔记瀑布**下面**（见 .links-card 的 order），
+        而通知是高频入口 —— 挪到底部等于要滚过整屏才找得到。
+        桌面端则由 SiteNav 的铃铛承担。
+        ⚠️ 两处共用 useUnreadCount，未读数不会不一致。
       -->
-      <RouterLink class="link notify" to="/notification" data-test="me-notify-link">
-        <span>通知</span>
-        <span v-if="unread > 0" class="notify-badge" data-test="me-notify-unread">{{ unread }}</span>
-      </RouterLink>
       <!--
         私信入口（P22）。与通知并列一行，但用**独立的** useMessageUnread ——
         两个数字来自两个接口、两个表、两种「未读」，合并会让两边都要传一个
@@ -437,6 +447,39 @@ async function logout() {
   justify-content: space-between;
 }
 
+/* 顶栏右侧的一组控件（通知铃铛 + 主题切换） */
+.top-right {
+  display: flex;
+  align-items: center;
+  gap: var(--xk-space-1);
+}
+
+/*
+ * P40：**移动端**把「设置链接卡」挪到笔记瀑布**下面**。
+ *
+ * ⚠️ 为什么用 `display: contents` 而不是改 DOM 顺序：
+ *    桌面端这张卡在**左栏资料卡下面**（320px 宽的一列），
+ *    而移动端要它排在瀑布之后 —— 两边位置不同，
+ *    改 DOM 顺序就得给桌面重新安排 grid-area，牵一发动全身。
+ *    `display: contents` 让 `.side` 这个包裹 div 在移动端「消失」，
+ *    它的两张卡直接成为 `.page`（flex column）的 flex item，
+ *    于是可以用 `order` 排位，而**桌面端 `.side` 一行 CSS 都不用改**。
+ *
+ * ⚠️ 顺带修掉一个既有毛病：原来 `.side` 在移动端是普通 block div，
+ *    两张卡之间**没有间距**（实测 资料卡底 296 = 链接卡顶 296）。
+ *    提升成 flex item 后有了 `.page` 的 16px gap。
+ */
+@media (max-width: 1023px) {
+  .side {
+    display: contents;
+  }
+
+  /* .notes 默认 order 0；给它 1 就排到笔记之后 */
+  .links-card {
+    order: 1;
+  }
+}
+
 .brand {
   font-size: var(--xk-fs-15);
   font-weight: 700;
@@ -640,16 +683,31 @@ async function logout() {
     max-width: 1100px;
     display: grid;
     grid-template-columns: 320px minmax(0, 1fr);
+    /* P40：去掉了 'top top' 那一行 —— 桌面端这一条顶栏被隐藏了，
+       留着会白占 40px + 16px gap 的空行。 */
     grid-template-areas:
-      'top   top'
       'side  notes';
     column-gap: 24px;
     row-gap: 16px;
     align-items: start;
   }
 
+  /*
+   * P40：桌面端**隐藏这一条顶栏**。
+   *
+   * 为什么：SiteNav 已经在最上面了（品牌 + 搜索 + 首页/发布/我的/关注 +
+   * 铃铛 + 主题钮 + 退出），而这一条又是「我的」+ **又一个主题钮** ——
+   * 于是桌面端出现两条顶栏、两个主题钮，而「我的」还与 SiteNav 里的
+   * 「我的」（当前页高亮）重复。
+   *
+   * 只有 ProfileView 能这么干：它的顶栏里**没有任何独占信息**
+   * （标题在 SiteNav 的高亮里已经表达，内容区还有 h1 昵称），
+   * 而其余 14 个带 .top 的页面各有各的理由不能一刀切
+   * （话题名是全页唯一副本 / h1 在顶栏里 / 顶栏还挂着保存、发布、分享、
+   * 全部已读、更多操作这些功能件）—— 那些要逐页拆，属于下一轮。
+   */
   .top {
-    grid-area: top;
+    display: none;
   }
 
   /* 整列（资料卡 + 编辑表单/按钮）一起吸顶；`.side` 就是为此包的那一层 */

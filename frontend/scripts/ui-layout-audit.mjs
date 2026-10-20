@@ -108,6 +108,37 @@ export const AUDIT_EXPR = `(() => {
     return el ? getComputedStyle(el).touchAction : ''
   })()
 
+  /*
+   * P40：首屏可见性 —— 「第一张内容卡」的位置。
+   *
+   * <p>「我的」页原来把 7 行设置链接放在笔记**前面**，第一张笔记卡落在 y=704，
+   * 而移动端视口只有 900px —— 首屏里用户看到的是「一屏设置项 + 一点笔记角」。
+   *
+   * <p>量的是**内容起点**（与实现无关）：起点落在首屏之外 = 这一屏白给了。
+   * 断言用「整张卡塞进首屏」而不是「卡顶 < 视口高」——
+   * 后者在修复前（704 < 900）也成立，等于抓不到那个问题。
+   */
+  spec.firstCard = (() => {
+    const el = document.querySelector(
+      '[data-test=feed-item], [data-test=profile-note], [data-test=collection-item],' +
+      '[data-test=user-note], [data-test=search-item], [data-test=topic-item]')
+    if (!el) return null
+    const r = el.getBoundingClientRect()
+    return {
+      top: Math.round(r.top + window.scrollY),
+      h: Math.round(r.height),
+      vh: innerHeight,
+    }
+  })()
+
+  /* 「我的」页的设置链接卡位置（P40 的结构性判据要用） */
+  spec.linksCard = (() => {
+    const el = document.querySelector('[data-test=me-links]')
+    if (!el) return null
+    const r = el.getBoundingClientRect()
+    return { top: Math.round(r.top + window.scrollY), h: Math.round(r.height) }
+  })()
+
   /* 底部 tab 栏：只在移动端出现，桌面由 SiteNav 接管 */
   spec.tabBar = (() => {
     const bar = document.querySelector('[data-test=tab-bar]')
@@ -544,6 +575,28 @@ function specChecks(s, label, w, r) {
   // 全站通用：触摸目标禁掉双击缩放等待
   s.check(`${label}@${w}w 触摸目标 touch-action=manipulation（去掉 300ms 双击缩放延迟）`,
     sp.touchAction === 'manipulation', `touch-action=${sp.touchAction}`)
+
+  /*
+   * P40：移动端首屏要装得下第一张内容卡。
+   *
+   * ⚠️ **「整张卡塞进首屏」这条在 audit 里不判别**（实测）：
+   *   链接卡放回笔记之前时，audit 用的账号（xiaoku_demo，没背景图，
+   *   资料卡比有背景图时矮 132px）第一张卡落在 y=674、高 219 → 893 ≤ 900，
+   *   **照样塞得进**。所以那条判据只在 ui-profile 那组（用有背景图的账号）里有效。
+   *
+   * 这里改成**结构性**判据：设置链接卡必须在笔记**之后** ——
+   * 它与「有没有背景图」无关，且直接对应「设置项不再挡在内容前面」这个目标。
+   */
+  const fc = sp.firstCard
+  if (w < 1024 && fc) {
+    s.check(`${label}@${w}w 首屏内能看到第一张内容卡`,
+      fc.top < fc.vh, `top=${fc.top} vh=${fc.vh}`)
+  }
+  if (w < 1024 && label === '我的') {
+    const lc = sp.linksCard
+    s.check('「我的」@430w 设置链接卡排在笔记**之后**（设置项不再挡在内容前面）',
+      !!lc && !!fc && lc.top > fc.top, `linksTop=${lc?.top} firstTop=${fc?.top}`)
+  }
 
   /* 底部 tab 栏：移动端必现、桌面必隐；出现时贴视口底、5 项、热区 ≥44。
      这条以前完全没有断言 —— 移动端曾经**整层导航都没有**（SiteNav 只在

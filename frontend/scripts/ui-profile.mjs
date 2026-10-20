@@ -539,6 +539,88 @@ try {
       !(await s.evaluate("!!document.querySelector('[data-test=me-bg]')")))
   }
 
+  // ---- 13. P40 布局重排：首屏要能看见笔记 + 桌面只留一条顶栏
+  //
+  // ⚠️ 这一段钉的是**目标本身**，不是实现：
+  //    「移动端首屏（900px）里要能看到第一张笔记卡」。
+  //    原来的布局把 7 行设置链接放在笔记**前面**，第一张卡落在 y=704，
+  //    首屏只露 196px —— 用户看到的是「一屏设置项 + 一点笔记角」。
+  //    **这条断言如果早就有，那个问题根本不会发生。**
+  {
+    await s.send('Emulation.setDeviceMetricsOverride', { width: 430, height: 900, deviceScaleFactor: 1, mobile: true })
+    await s.goto(`${BASE}/#/profile`)
+    await s.waitFor(
+      `!document.querySelector('[data-test=me-notes-loading]')
+       && (document.querySelector('[data-test=me-notes-list]') || document.querySelector('[data-test=me-notes-empty]'))`,
+      '笔记区终态', 20000)
+    await sleep(600)
+
+    const mob = await s.evaluate(`(() => {
+      const first = document.querySelector('[data-test=profile-note]')
+      const links = document.querySelector('[data-test=me-links]')
+      const bell = document.querySelector('[data-test=me-notify-bell]')
+      const top = document.querySelector('.top')
+      const f = first ? first.getBoundingClientRect() : null
+      const l = links ? links.getBoundingClientRect() : null
+      const b = bell ? bell.getBoundingClientRect() : null
+      const t = top ? top.getBoundingClientRect() : null
+      return {
+        firstTop: f ? Math.round(f.top + window.scrollY) : null,
+        firstBottom: f ? Math.round(f.bottom + window.scrollY) : null,
+        linksTop: l ? Math.round(l.top + window.scrollY) : null,
+        bellHasBox: !!b && b.width > 0 && b.height > 0,
+        bellW: b ? Math.round(b.width) : 0,
+        topH: t ? Math.round(t.height) : 0,
+      }
+    })()`)
+    s.check('移动端首屏（900px）能看到第一张笔记卡',
+      mob.firstTop !== null && mob.firstTop < 600, JSON.stringify(mob))
+    s.check('移动端设置链接卡排在笔记**之后**（不是之前）',
+      mob.linksTop !== null && mob.firstBottom !== null && mob.linksTop > mob.firstBottom,
+      JSON.stringify(mob))
+    // ⚠️ 断「盒子有面积」而不是「元素在 DOM 里」——
+    //    挂在一个 display:none 的父级里的元素，querySelector 照样找得到（P35 的教训）。
+    s.check('移动端顶栏有通知铃铛（且用户看得见：盒子有面积、热区 ≥40）',
+      mob.bellHasBox && mob.bellW >= 40, JSON.stringify(mob))
+    s.check('移动端顶栏本身还在（只挪了设置卡，没把顶栏也藏了）',
+      mob.topH > 0, JSON.stringify(mob))
+
+    // ---- 桌面：只留一条顶栏
+    await s.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
+    await sleep(800)
+    const desk = await s.evaluate(`(() => {
+      const own = document.querySelector('.top')
+      const nav = document.querySelector('[data-test=site-nav]')
+      const mine = [...document.querySelectorAll('.site-nav .links .link')]
+        .find((a) => a.textContent.trim() === '我的')
+      const home = [...document.querySelectorAll('.site-nav .links .link')]
+        .find((a) => a.textContent.trim() === '首页')
+      return {
+        ownTop: own ? getComputedStyle(own).display : 'missing',
+        ownH: own ? Math.round(own.getBoundingClientRect().height) : -1,
+        navDisplay: nav ? getComputedStyle(nav).display : 'missing',
+        navH: nav ? Math.round(nav.getBoundingClientRect().height) : -1,
+        activeWeight: mine ? getComputedStyle(mine).fontWeight : 'missing',
+        homeWeight: home ? getComputedStyle(home).fontWeight : 'missing',
+      }
+    })()`)
+    s.check('桌面端「我的」页不再有自己的顶栏（只留 SiteNav 一条）',
+      desk.ownTop === 'none' || desk.ownH === 0, JSON.stringify(desk))
+    s.check('桌面端 SiteNav 可见', desk.navDisplay === 'block' && desk.navH > 0, JSON.stringify(desk))
+    // ⚠️ 断**字重**而不是颜色：颜色受主题影响，而字重是「加了高亮样式」的直接证据。
+    //    四个链接原本长得一模一样 —— 这正是「我在哪」表达不出来的原因。
+    s.check('桌面端 SiteNav 的「我的」有当前页高亮（不再四个链接长得一样）',
+      desk.activeWeight === '600' || desk.activeWeight === '700', JSON.stringify(desk))
+    // ⚠️ **反向断言**：在 /profile 上，首页链接**不该**高亮。
+    //    这条专治「用 router-link-active 而不是 exact」的 bug ——
+    //    后者是前缀匹配，而首页的 path 是 `/`，于是它在每个页面都命中。
+    //    只断「我的高亮了」抓不到那个 bug（首页同时也高亮，看起来还挺对）。
+    s.check('在「我的」页时首页链接没有高亮（证明用的是 exact 不是前缀匹配）',
+      desk.homeWeight === '400', JSON.stringify(desk))
+    await s.send('Emulation.clearDeviceMetricsOverride')
+    await sleep(400)
+  }
+
   // ---- 11. 还原演示账号 —— **挪到 finally 里了**，见下方注释
 } catch (e) {
   s.check('用例执行到底', false, String(e.message))

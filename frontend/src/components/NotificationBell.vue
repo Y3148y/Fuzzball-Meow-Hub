@@ -9,6 +9,13 @@
  * <p>移动端按小红书的做法：通知是「我」页里的一行（见 ProfileView 的
  * {@code me-notify-link}），不做浮动铃铛。两处共用
  * {@link useUnreadCount} 的未读数，显示逻辑不会不一致。
+ *
+ * <p><b>P40 追加</b>：「我」页（P40 改了它的移动端顶栏）也放了一个铃铛，
+ * 用 {@code testid} 区分 —— 否则同一份 DOM 里会有两个
+ * {@code data-test="notification-bell"}，{@code querySelector} 只认第一个，
+ * 断言就会打到「另一个」铃铛上。
+ * <p>那个铃铛在**正常流**里（不是 fixed 浮标），所以不会重演
+ * 「压住顶栏主题切换/返回」的老问题。
  */
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -20,6 +27,21 @@ const router = useRouter()
 const userStore = useUserStore()
 const { unread } = useUnreadCount()
 
+/**
+ * data-test 前缀。
+ *
+ * ⚠️ **同一份 DOM 里出现两个铃铛时必须区分**：SiteNav 里那个是
+ * {@code notification-bell}，「我」页顶栏那个是 {@code me-notify-bell}。
+ * 断言要用 {@code querySelector} 定位，重名就只会取到第一个 ——
+ * 而「第一个」是 DOM 顺序决定的，跟断言想测的是哪个无关。
+ */
+const props = withDefaults(defineProps<{
+  /** 铃铛按钮的 data-test */
+  testid?: string
+  /** 未读角标的 data-test */
+  badgeTestid?: string
+}>(), { testid: 'notification-bell', badgeTestid: 'notification-unread' })
+
 /** 登录页与通知页本身不显示（点铃铛却还停在这页没有意义） */
 const show = computed(() => route.name !== 'login' && route.name !== 'notification' && userStore.isLogin)
 </script>
@@ -30,11 +52,11 @@ const show = computed(() => route.name !== 'login' && route.name !== 'notificati
     class="bell"
     type="button"
     :aria-label="unread > 0 ? `通知，${unread} 条未读` : '通知'"
-    data-test="notification-bell"
+    :data-test="props.testid"
     @click="router.push({ name: 'notification' })"
   >
     <van-icon name="bell" />
-    <span v-if="unread > 0" class="dot" data-test="notification-unread">{{ unread }}</span>
+    <span v-if="unread > 0" class="dot" :data-test="props.badgeTestid">{{ unread }}</span>
   </button>
 </template>
 

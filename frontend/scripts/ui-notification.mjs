@@ -117,15 +117,21 @@ const demoToken = `Bearer ${demoLogin?.data?.accessToken}`
       s.check('移动端首页看不到铃铛（它在 display:none 的 SiteNav 里，盒子面积为 0）',
         !bv.hasBox, bellVisible)
       await s.goto(`${BASE}/#/profile`)
-      await s.waitFor("!!document.querySelector('[data-test=me-notify-link]')", '我的页通知入口', 20000)
+      // ⚠️ P40：通知入口的**形态**变了 —— 从「设置列表里的一行」改成
+      //    「顶栏的铃铛」。理由：那张设置卡在移动端被挪到了笔记瀑布**下面**
+      //    （首屏要能看见笔记），而通知是高频入口，挪到底部等于要滚过整屏。
+      //    桌面端则由 SiteNav 里的铃铛承担（两处共用 useUnreadCount）。
+      //    **断言的意图没变**（我的页有通知入口、入口带未读角标），
+      //    变的只是定位用的 data-test。
+      await s.waitFor("!!document.querySelector('[data-test=me-notify-bell]')", '我的页通知铃铛', 20000)
       await sleep(1000)
-      s.check('「我」页有通知入口（移动端的通知入口）', await exists('me-notify-link'))
-      s.check('「我」页通知入口带未读角标', Number(await text('me-notify-unread')) >= 1,
-        `badge=${await text('me-notify-unread')}`)
+      s.check('「我」页有通知入口（移动端的通知入口）', await exists('me-notify-bell'))
+      s.check('「我」页通知入口带未读角标', Number(await text('me-notify-bell-unread')) >= 1,
+        `badge=${await text('me-notify-bell-unread')}`)
       s.check('「我」页有收藏夹入口', await exists('me-collections-link'))
 
-      // 3) 通知页：内容 + 跳转
-      await click('me-notify-link')
+      // 3. 通知页：内容 + 跳转
+      await click('me-notify-bell')
       await s.waitFor("location.hash === '#/notification'", '进入通知页', 10000)
       await s.waitFor("!document.querySelector('[data-test=notification-loading]')", '通知列表终态', 20000)
       await sleep(800)
@@ -176,7 +182,13 @@ const demoToken = `Bearer ${demoLogin?.data?.accessToken}`
         JSON.parse(afterAll).unreadItems === 0, afterAll)
       await s.goto(`${BASE}/#/profile`)
       await sleep(1200)
-      s.check('全部已读后「我」页角标消失', (await exists('me-notify-unread')) === false)
+      // ⚠️ data-test 跟着入口形态一起改（P40：通知入口从「设置列表里的一行」
+      //    变成「顶栏铃铛」）。
+      //    ⚠️ 顺带避开一个**恒真断言**的坑：如果这里还写旧 data-test，
+      //    那个元素根本不存在 → exists() 恒为 false → 这条永远通过，
+      //    变成「测了等于没测」。所以必须跟着改成新铃铛的 data-test。
+      s.check('全部已读后「我」页角标消失', (await exists('me-notify-bell-unread')) === false,
+        `角标仍在：${await text('me-notify-bell-unread')}`)
 
       // 复原：取消点赞，把通知源还原
       await api(`/note/${demoNoteId}/like`, { method: 'DELETE', token: peerToken })

@@ -106,6 +106,23 @@ try {
     (await s.evaluate("getComputedStyle(document.querySelector('.top')).display")) === 'none')
   s.check('桌面视口下内容区从 480px 加宽到 1200px',
     (await s.evaluate("getComputedStyle(document.querySelector('.page')).maxWidth")) === '1200px')
+  // P40：SiteNav 的当前页高亮。
+  //
+  // ⚠️ 之前**全仓 0 处** router-link-active —— 四个链接长得一模一样，
+  //    用户点完就不知道自己在哪。而「首页」的 path 是 `/`，
+  //    所以只能用 `router-link-**exact**-active`：
+  //    非 exact 的 active 是**前缀**匹配，`/` 会在每个页面都命中。
+  // ⚠️ 断**字重**而不是颜色：颜色受主题影响，字重是「加了高亮样式」的直接证据。
+  s.check('桌面视口下 SiteNav 的当前页有高亮（字重变粗）',
+    (await s.evaluate(`(() => {
+      const link = [...document.querySelectorAll('.site-nav .links .link')]
+        .find((a) => a.textContent.trim() === '首页')
+      if (!link) return 'no-link'
+      return getComputedStyle(link).fontWeight
+    })()`)) !== '400')
+  // ⚠️ **反向断言**（不在首页时首页链接不该高亮）放在 ui-profile 里 ——
+  //    那一段跑在 #/profile 上，才具备「非首页」这个前提。
+  //    放在这里会恒假：此刻就在首页，首页链接本来就该高亮。
   // 关注流在演示账号下可能为空，DOM 上没有 .items 可量，
   // 所以这里直接查样式表里确实存在 ≥1024px 的多列瀑布规则。
   //

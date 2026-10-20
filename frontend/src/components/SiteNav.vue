@@ -188,6 +188,25 @@ async function logout() {
   background: color-mix(in srgb, var(--xk-surface) 70%, transparent);
 }
 
+/*
+ * 当前页高亮（P40）。
+ *
+ * ⚠️ **必须用 `router-link-exact-active`，不能用 `router-link-active`**：
+ *    后者是「**前缀**匹配」，而首页链接的 path 是 `/` ——
+ *    于是 `/` 会在**每一个**页面都被判为 active，
+ *    结果是「首页」永远高亮，而当前页永远不高亮。
+ *    exact 版本才是「就是这个路由」。
+ *
+ * ⚠️ 也不能只靠颜色（a11y 的「不只靠单一感官通道」）：
+ *    下面同时加了字重与底部下划线。
+ */
+.link.router-link-exact-active {
+  color: var(--xk-amber-text);
+  background: color-mix(in srgb, var(--xk-amber) 16%, transparent);
+  font-weight: 600;
+  box-shadow: inset 0 -2px 0 0 var(--xk-amber);
+}
+
 .logout {
   color: var(--xk-danger);
 }

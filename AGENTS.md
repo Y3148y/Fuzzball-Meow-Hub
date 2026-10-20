@@ -11,7 +11,7 @@
 | 测试 | 契约 **747** 条 · CDP **727** 条，全部绿 |
 | prod | `18080`，跑的是 **P39 前后端**（背景头图 + 主页/作者页移动端两列瀑布） |
 | 重建 prod 的坑 | 见第 8 节：8.2 镜像构建三道墙 / 8.5 nginx 缓存旧 IP / 8.6 `--no-deps` |
-| 上一次部署 | P38（前后端一起）· prod 真调用 **接口 10/10 + 界面 19/19** |
+| 上一次部署 | P39（前后端一起）· prod 真调用 **接口 13/13 + 界面 17/17** |
 | 待做 | **隐私设置**（私密账号要改发现流/关注流/搜索/沉浸流四条查询）· 视频多码率与进度条（都不急） |
 | 重启后 | **跑 `tools\dev-up.cmd`**（见 2.0 节，引擎没起它会自己拉起，33s）· 手工清单留在 2.0 的折叠块里兜底 |
 
@@ -2130,6 +2130,38 @@ Caused by: java.sql.SQLException: sql injection violation, dbType mysql,
 - **作者主页（UserView）也改了两列**，与「我的」主页一致。
   搜索页 / 话题页 / 收藏夹本来就是两列或三列，没动。
 - **隐私设置不在本轮**（要动发现流/关注流/搜索/沉浸流四条查询，单独一轮）。
+
+### P39 prod 部署与真调用
+
+部署顺序（8.2 / 8.5 / 8.6 三条都适用）：
+`mvnw -DskipTests package`（**不带 `-o`**）→ 临时 Dockerfile 只复刻运行时阶段
+（**不装 curl**、静态 Linux 版 ffmpeg/ffprobe 直接 `docker cp` 从旧容器取出再
+COPY 进去，因为本机 `tar -xJf` 解不了 xz）→ `.dockerignore` 临时放行 jar
+（**还原用 `git checkout --`**，别用 `Set-Content -Encoding UTF8`，会写 BOM）→
+build backend → `--no-deps --force-recreate backend` → `docker build frontend` →
+`--no-deps --force-recreate frontend` → **重启 nginx**（8.5）。
+
+⚠️ **prod 库要手动加列**（`user.background`）：
+
+```sql
+ALTER TABLE xiaoku_db.user ADD COLUMN background VARCHAR(512) DEFAULT NULL
+  COMMENT 'home background url' AFTER avatar;
+```
+
+prod 真调用：**接口 13/13**（上传 → 写入 → 回读 → 4 类攻击样本全拒 10009 →
+被拒后原值没被改坏 → 空串清空 → 还原）+ **界面 17/17**（移动端两列 lefts 49/254、
+桌面三列 464/691/918、背景条 132px、头像 175~237 跨在背景条下沿 206 上、
+背景图 `naturalWidth>0`）。
+
+⚠️ **prod 界面验收必须先造数据**：prod 库里**一篇笔记都没有**
+（刻意保持干净给人看界面），所以「我的」页的笔记列表**根本不会渲染**
+（`v-else` 分支）—— 直接断言两列会得到 `found:false`，
+而那**不是回归，是没有数据可排**。要发 **3 篇**探针笔记：
+两列的断言需要 ≥2 篇占满两列，三列的断言需要 ≥3 篇占满三列。
+⚠️ 探针的清理**必须放进 `finally`**：第一版把 `noteIds` 声明在 `try` 内，
+`finally` 里引用抛 ReferenceError → 3 篇探针永久留在 prod 库里
+（症状是「prod 突然冒出几篇 P39 探针笔记」，与真因隔了一段）。
+现在 prod 笔记数回到 **0**。
 
 ## 8. prod 栈运维（2026-10-04 踩出来的，都是环境问题不是代码问题）
 

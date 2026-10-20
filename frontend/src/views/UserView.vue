@@ -556,11 +556,13 @@ onMounted(load)
   .page {
     display: grid;
     /* 300px 而不是 240px：与 ProfileView 对齐（P13 那次就是因为 240 太窄，
-   * @xiaoku_demo 溢出压掉了「编辑」按钮）。UserView 是同一套头部结构，
-   * 元素还更多 —— 头像62 + 昵称 + 用户名 + 关注钮75 + 两个 gap28 = 165px，
-   * 240 减去左右 padding 各 18 + 边框 2 只剩 202px，昵称与用户名会被挤没。
+   * @xiaoku_demo 溢出压掉了「编辑」按钮）。
+   * ⚠️ P39 起改成 **320**：P13 定的 300 是按 13px 的**用户名**算的，
+   *    而 P30 起用户名退出界面、昵称成了那一行唯一的文字，字号 20px ——
+   *    4 个汉字就要 80px，300 时 `.names` 只剩 78px，昵称被截成「运营…」。
+   *    320 让 `.names` 有 98px。与 ProfileView 保持一致。
    */
-  grid-template-columns: 300px minmax(0, 1fr);
+  grid-template-columns: 320px minmax(0, 1fr);
     grid-template-areas:
       'top   top'
       'who   feed';

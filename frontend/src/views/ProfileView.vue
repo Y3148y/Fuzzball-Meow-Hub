@@ -630,14 +630,16 @@ async function logout() {
 }
 
 /* 骨架默认在 main.css；这里是有意覆盖：桌面改「左 300 资料栏 + 右 笔记瀑布」。
-   300 不是拍的：卡片 padding 24×2 + 头像 62 + 双 gap 28 + 编辑按钮 56
-   之后，`.names` 至少要留 ~106px 才装得下 13px 的 `@xiaoku_demo`（88px），
-   260 时只剩 64px，用户名会溢出压到编辑按钮上（layout-audit 抓过）。 */
+   320 不是拍的：卡片 padding 24×2 + 头像 62 + 双 gap 28 + 编辑按钮 82
+   之后，`.names` 只剩 78px，而**昵称是 20px 字号**（P30 起用户名已退出界面，
+   昵称成了那一行唯一的文字）—— 4 个汉字就要 80px，于是被截成「运营…」。
+   300 是 P13 按 13px 的**用户名**定的，P30 把那一行换成 20px 昵称后尺寸就过时了。
+   320 让 `.names` 有 98px，四五个汉字装得下。 */
 @media (min-width: 1024px) {
   .page {
     max-width: 1100px;
     display: grid;
-    grid-template-columns: 300px minmax(0, 1fr);
+    grid-template-columns: 320px minmax(0, 1fr);
     grid-template-areas:
       'top   top'
       'side  notes';

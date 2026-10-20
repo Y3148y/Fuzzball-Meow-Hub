@@ -223,7 +223,16 @@ onMounted(async () => {
       <h1>运营后台</h1>
     </header>
 
-    <div class="tabs" role="tablist">
+    <!--
+      页签。
+      ⚠️ P41：原来三个页签做成了**灰色药丸**，和下面那三个筛选按钮
+      （待处理/已受理/已驳回）**长得一模一样** ——
+      运营根本分不清哪个是「切页面」哪个是「筛内容」。
+      现在页签改成**带下划线的真 tab**（active 是琥珀下划线），
+      筛选改成**分段控件**（装在一个带边框的容器里，active 是实心）。
+      两组控件从此在视觉上彻底分开。
+    -->
+    <div class="tabs" role="tablist" aria-label="运营后台">
       <button
         type="button"
         role="tab"
@@ -264,6 +273,8 @@ onMounted(async () => {
     -->
     <p class="help" data-test="admin-help">{{ TAB_HELP[tab] }}</p>
 
+    <!-- 工具条：举报 tab 是状态筛选，用户/笔记 tab 是搜索框 -->
+    <div class="toolbar">
     <label v-if="tab !== 'report'" class="search">
       <input
         v-model="keyword"
@@ -276,7 +287,7 @@ onMounted(async () => {
       <button type="button" data-test="admin-search-go" @click="load">搜索</button>
     </label>
 
-    <div v-if="tab === 'report'" class="filters">
+    <div v-if="tab === 'report'" class="seg" role="group" aria-label="按处理状态筛选">
       <button
         v-for="s in [0, 1, 2]"
         :key="s"
@@ -288,6 +299,7 @@ onMounted(async () => {
         {{ s === 0 ? '待处理' : s === 1 ? '已受理' : '已驳回' }}
       </button>
     </div>
+    </div><!-- /.toolbar -->
 
     <p v-if="errorMsg" class="err" role="alert" data-test="admin-error">{{ errorMsg }}</p>
     <p v-else-if="loading" class="tip">加载中…</p>
@@ -309,46 +321,46 @@ onMounted(async () => {
     <!-- ============ 举报 ============ -->
     <ul v-else-if="tab === 'report'" class="list">
       <li v-for="r in reports" :key="r.id" class="row" data-test="admin-report-row">
-        <div class="head">
+        <!-- ① 头行：是什么类型的举报 + 什么原因 + 什么时候 -->
+        <div class="row-head">
           <span class="badge" :class="'t' + r.targetType">{{ r.targetType === 1 ? '笔记' : '评论' }}</span>
-          <strong>{{ r.reasonText ?? '其他' }}</strong>
+          <strong class="reason">{{ r.reasonText ?? '其他' }}</strong>
           <time>{{ formatDateTime(r.createTime) }}</time>
         </div>
 
-        <!--
-          举报人自己写的话（detail）。刻意**不叫「补充」** ——
-          「补充」不知道是谁补的，而它其实是举报人填的原文。
-        -->
-        <p v-if="r.detail" class="detail" data-test="admin-report-detail">
-          举报人补充：{{ r.detail }}
-        </p>
+        <!-- ② 主体：被举报了什么 -->
+        <div class="row-main">
+          <p class="what" data-test="admin-report-content">
+            <span class="k">被举报的{{ r.targetType === 1 ? '笔记' : '评论' }}</span>
+            <template v-if="r.targetExists">
+              <b class="target">{{ r.targetTitle || '（无标题）' }}</b>
+              <span v-if="r.targetContent" class="quote">「{{ r.targetContent }}」</span>
+            </template>
+            <template v-else>
+              <b class="gone">已不存在</b>
+              <span class="muted">（作者自删或已被处置）</span>
+            </template>
+          </p>
+          <!--
+            举报人自己写的话。刻意**不叫「补充」** ——
+            「补充」不知道是谁补的，而它其实是举报人填的原文。
+          -->
+          <p v-if="r.detail" class="detail" data-test="admin-report-detail">
+            <span class="k">举报人补充</span>{{ r.detail }}
+          </p>
+        </div>
 
-        <!--
-          被举报的内容。⚠️ **内容不存在时不要显示「被举报内容」这个空标签** ——
-          原来是无条件渲染标签、再在下面补一句「内容已不存在」，
-          读起来像漏了内容。现在合成一行说清楚。
-        -->
-        <p class="what" data-test="admin-report-content">
-          <template v-if="r.targetExists">
-            被举报的{{ r.targetType === 1 ? '笔记' : '评论' }}：{{ r.targetTitle || '（无标题）' }}
-            <span v-if="r.targetContent" class="quote">「{{ r.targetContent }}」</span>
-          </template>
-          <template v-else>
-            被举报的内容<b>已不存在</b>（作者自删或已被处置）
-          </template>
-        </p>
-
-        <!--
-          两个人分开写，各带标签。
-          原来挤成「作者（已注销）· 举报人」一行，
-          中间隔一个「·」—— 读起来像一个人的两个属性。
-        -->
-        <p class="who">
-          <span class="k">被举报人</span>
-          {{ r.targetAuthorNickname ?? '（已注销）' }}
-          <span class="k">举报人</span>
-          {{ r.reporterNickname ?? r.reporterUsername ?? '（已注销）' }}
-        </p>
+        <!-- ③ 双方：谁被举报了、谁举报的 -->
+        <div class="who">
+          <span class="person">
+            <span class="k">被举报人</span>
+            {{ r.targetAuthorNickname ?? '（已注销）' }}
+          </span>
+          <span class="person">
+            <span class="k">举报人</span>
+            {{ r.reporterNickname ?? r.reporterUsername ?? '（已注销）' }}
+          </span>
+        </div>
 
         <p v-if="!r.targetExists" class="warn" data-test="admin-target-gone">
           目标已不存在，处置只会改这条举报的状态 —— 建议直接驳回。
@@ -357,6 +369,7 @@ onMounted(async () => {
           处置备注：{{ r.handleNote }}
         </p>
 
+        <!-- ④ 操作 -->
         <div v-if="r.status === 0" class="ops">
           <!--
             ⚠️ 处置按钮**按被举报对象的类型过滤**。
@@ -388,15 +401,15 @@ onMounted(async () => {
     <!-- ============ 用户 ============ -->
     <ul v-else-if="tab === 'user'" class="list">
       <li v-for="u in users" :key="u.id" class="row" data-test="admin-user-row">
-        <div class="head">
-          <strong>{{ u.nickname }}</strong>
+        <div class="row-head">
+          <strong class="reason">{{ u.nickname }}</strong>
           <span v-if="u.role === 1" class="badge admin">管理员</span>
           <span v-if="u.status === 0" class="badge off">已禁用</span>
         </div>
         <p class="who">
-          @{{ u.username }}
-          <span class="sep">·</span> 笔记 {{ u.noteCount }}
-          <span class="sep">·</span> 被举报 {{ u.reportCount }} 次
+          <span class="person"><span class="k">用户名</span>@{{ u.username }}</span>
+          <span class="person"><span class="k">笔记</span>{{ u.noteCount }} 篇</span>
+          <span class="person"><span class="k">被举报</span>{{ u.reportCount }} 次</span>
         </p>
         <div class="ops">
           <button
@@ -414,8 +427,8 @@ onMounted(async () => {
     <!-- ============ 笔记 ============ -->
     <ul v-else class="list">
       <li v-for="n in notes" :key="n.id" class="row" data-test="admin-note-row">
-        <div class="head">
-          <strong>{{ n.title ?? '（无标题）' }}</strong>
+        <div class="row-head">
+          <strong class="reason">{{ n.title ?? '（无标题）' }}</strong>
           <span class="badge" :class="'s' + n.status">
             {{ n.status === 0 ? '草稿' : n.status === 1 ? '发布中' : '已下架' }}
           </span>
@@ -423,12 +436,13 @@ onMounted(async () => {
         </div>
         <p v-if="n.content" class="detail">{{ n.content }}</p>
         <p class="who">
-          {{ n.authorNickname ?? n.authorUsername }}
-          <span class="sep">·</span> 赞 {{ n.likeCount }}
-          <span class="sep">·</span> 藏 {{ n.collectCount }}
-          <span class="sep">·</span> 评 {{ n.commentCount }}
-          <span v-if="n.reportCount > 0" class="sep">·</span>
-          <b v-if="n.reportCount > 0">被举报 {{ n.reportCount }} 次</b>
+          <span class="person"><span class="k">作者</span>{{ n.authorNickname ?? n.authorUsername }}</span>
+          <span class="person"><span class="k">赞</span>{{ n.likeCount }}</span>
+          <span class="person"><span class="k">藏</span>{{ n.collectCount }}</span>
+          <span class="person"><span class="k">评</span>{{ n.commentCount }}</span>
+          <span v-if="n.reportCount > 0" class="person hot">
+            <span class="k">被举报</span>{{ n.reportCount }} 次
+          </span>
         </p>
         <div class="ops">
           <button
@@ -447,18 +461,120 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-/* 字号/间距一律走 main.css 的字阶与间距阶 token（P13 起全站规矩） */
+/*
+ * 运营后台的版式 —— **整块重写**（P41）。
+ *
+ * ⚠️ 为什么整块重写：原来这个 <style scoped> 里**只有 13 个选择器**
+ *    （.help .list .head .badge .detail .what .quote .who .sep
+ *      .warn .handled .done .ops）——
+ *    **.top / .tabs / .filters / .search / .err / .tip 全都没有样式**，
+ *    走的是浏览器默认：
+ *      · 顶栏里的 h1 → 默认 h1（2em = 32px）→ 那个「运营后台」巨大无比
+ *      · 页签与筛选的 <button> → 默认灰按钮 → **两组长得一模一样**
+ *        （运营根本分不清哪个是「切页面」哪个是「筛内容」）
+ *    也就是说这一页**从来没被设计过**，用户说「一塌糊涂」是准确的。
+ *
+ * 改法是**建立层级**，不是加装饰：
+ *   ① 页签 → 带下划线的真 tab（与筛选在视觉上彻底分开）
+ *   ② 筛选 → 分段控件（装在带边框的容器里，active 是实心）
+ *   ③ 列表项 → 卡片（边框 + 圆角 + 底色 + 内边距），卡间有间距
+ *   ④ 卡片内部 → 分四块：头行 / 主体 / 双方 / 操作
+ *   ⑤ 整页限宽（960px），不再让长文本铺满 1140px
+ */
+
+/* ================= 顶栏 ================= */
+
+.top {
+  display: flex;
+  align-items: center;
+  gap: var(--xk-space-2);
+  margin-bottom: var(--xk-space-3);
+}
+
+.top h1 {
+  margin: 0;
+  font-size: var(--xk-fs-20);
+  font-weight: 700;
+}
+
+.back {
+  width: 40px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--xk-radius-blob-sm);
+  background: var(--xk-surface-2);
+  color: var(--xk-text-2);
+  font-size: var(--xk-fs-20);
+  line-height: 1;
+  cursor: pointer;
+  flex: none;
+}
+.back:hover { background: var(--xk-bg-soft); }
+
+/* ================= 页签 ================= */
 
 /*
- * 说明块：说这一页是干什么的。
- *
+ * 刻意做成**带下划线的 tab**（与首页「发现/关注」、主页「笔记/收藏/赞过」同款），
+ * 而不是药丸 —— 药丸是下面筛选控件的形状，两组混用就分不清了。
+ */
+.tabs {
+  display: flex;
+  gap: var(--xk-space-5);
+  border-bottom: var(--xk-stroke-w) solid var(--xk-border);
+  margin-bottom: var(--xk-space-4);
+}
+
+.tabs button {
+  min-height: 44px;          /* P13 热区下限 */
+  padding: var(--xk-space-2) 0;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--xk-text-3);
+  font-size: var(--xk-fs-15);
+  cursor: pointer;
+  /* 让下划线压在分隔线上，而不是把分隔线顶开 */
+  margin-bottom: calc(-1 * var(--xk-stroke-w));
+  transition: color 0.15s, border-color 0.15s;
+}
+.tabs button:hover { color: var(--xk-text-2); }
+.tabs button.on {
+  color: var(--xk-amber-text);
+  border-bottom-color: var(--xk-amber);
+  font-weight: 600;
+}
+.tabs button:focus-visible { outline: 2px solid var(--xk-amber-text); outline-offset: -2px; }
+
+/* 待处理数：跟在「举报」后面的小红点 */
+.dot {
+  display: inline-block;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  margin-left: 4px;
+  border-radius: 999px;
+  background: #e5484d;
+  color: #fff;
+  font-size: var(--xk-fs-12);
+  font-style: normal;
+  line-height: 18px;
+  text-align: center;
+  vertical-align: 1px;
+}
+
+/* ================= 说明块 ================= */
+
+/*
+ * 说这一页是干什么的。
  * ⚠️ 刻意**不用** `.tip` 的样式（那是给空态/错误用的）——
  * 它是常驻内容，不该长得像一条错误提示。
  */
 .help {
-  margin: 0 0 var(--xk-space-3);
-  padding: var(--xk-space-3);
-  border: var(--xk-stroke-w) solid var(--xk-border);
+  margin: 0 0 var(--xk-space-4);
+  padding: var(--xk-space-3) var(--xk-space-4);
   border-left: 3px solid var(--xk-amber);
   border-radius: var(--xk-radius-blob-sm);
   background: var(--xk-surface-2);
@@ -467,35 +583,149 @@ onMounted(async () => {
   line-height: 1.6;
 }
 
-/*
- * 列表宽度上限。
- *
- * ⚠️ 原来没有上限，于是桌面 1920px 下整行拉满 ——
- *    左边是内容、右边孤零零一个时间戳在 1700px 处，
- *    中间一千多像素的空白。**那不是「留白」，是排版失控。**
- * 880px 是一行字能读舒服的宽度，超出的部分不要。
- */
-.list {
-  max-width: 880px;
+/* ================= 工具条 ================= */
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--xk-space-3);
+  margin-bottom: var(--xk-space-4);
+  flex-wrap: wrap;
 }
 
-.head {
+.search {
+  display: flex;
+  gap: var(--xk-space-2);
+  flex: 1 1 280px;
+  min-width: 0;
+}
+.search input {
+  flex: 1 1 auto;
+  min-width: 0;              /* flex 里的输入框必须给 min-width:0，否则不收缩 */
+  min-height: 40px;
+  padding: 0 var(--xk-space-3);
+  border: var(--xk-stroke-w) solid var(--xk-border);
+  border-radius: var(--xk-radius-blob-sm);
+  background: var(--xk-surface);
+  color: var(--xk-text);
+  font-size: var(--xk-fs-14);
+}
+.search input:focus-visible { outline: 2px solid var(--xk-amber-text); outline-offset: -1px; }
+.search button {
+  min-height: 40px;
+  padding: 0 var(--xk-space-4);
+  border: var(--xk-stroke-w) solid var(--xk-stroke);
+  border-radius: var(--xk-radius-blob-sm);
+  background: var(--xk-surface-2);
+  color: var(--xk-text-2);
+  font-size: var(--xk-fs-14);
+  cursor: pointer;
+  flex: none;
+}
+.search button:hover { border-color: var(--xk-amber); color: var(--xk-amber-text); }
+
+/* ================= 分段控件（状态筛选）================= */
+
+/*
+ * 刻意与页签**形状不同**：页签是下划线，筛选是「装在一个容器里的实心块」。
+ * 两组控件于是不会互相冒充。
+ */
+.seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border: var(--xk-stroke-w) solid var(--xk-border);
+  border-radius: 999px;
+  background: var(--xk-surface-2);
+}
+
+.seg button {
+  min-height: 32px;
+  padding: 0 var(--xk-space-4);
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--xk-text-3);
+  font-size: var(--xk-fs-13);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 0.12s, color 0.12s;
+}
+.seg button:hover { color: var(--xk-text-2); }
+.seg button.on {
+  background: var(--xk-amber);
+  color: var(--xk-amber-ink);
+  font-weight: 600;
+}
+.seg button:focus-visible { outline: 2px solid var(--xk-amber-text); outline-offset: 1px; }
+
+/* ================= 空态 / 错误 ================= */
+
+.err {
+  margin: 0 0 var(--xk-space-3);
+  padding: var(--xk-space-3) var(--xk-space-4);
+  border: var(--xk-stroke-w) solid var(--xk-danger, #d54941);
+  border-radius: var(--xk-radius-blob-sm);
+  background: var(--xk-surface-2);
+  color: var(--xk-danger, #d54941);
+  font-size: var(--xk-fs-14);
+}
+
+.tip {
+  margin: 0;
+  padding: var(--xk-space-6) var(--xk-space-4);
+  border: var(--xk-stroke-w) dashed var(--xk-border);
+  border-radius: var(--xk-radius-blob);
+  color: var(--xk-text-3);
+  font-size: var(--xk-fs-14);
+  line-height: 1.7;
+  text-align: center;
+}
+
+/* ================= 列表卡片 ================= */
+
+/*
+ * 整页限宽。
+ * ⚠️ 原来没有上限，桌面 1920px 下整行拉满 —— 左边是内容、
+ *    右边孤零零一个时间戳在 1700px 处，中间一千多像素的空白。
+ *    **那不是「留白」，是排版失控。**
+ */
+.list {
+  max-width: 960px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.row {
+  padding: var(--xk-space-4);
+  border: var(--xk-stroke-w) solid var(--xk-stroke);
+  border-radius: var(--xk-radius-blob);
+  background: var(--xk-surface);
+  box-shadow: var(--xk-shadow-hard-sm);
+  margin-bottom: var(--xk-space-3);
+}
+
+/* ---------- ① 头行 ---------- */
+
+.row-head {
   display: flex;
   gap: var(--xk-space-2);
   align-items: center;
   flex-wrap: wrap;
 }
-.head strong {
+.row-head .reason {
   font-size: var(--xk-fs-16);
+  font-weight: 700;
   flex: 1 1 auto;
   min-width: 0;
 }
-.head time {
+.row-head time {
   font-size: var(--xk-fs-12);
   color: var(--xk-text-3);
-  /* 时间戳跟着标题走，不要被 flex 甩到行尾 */
-  flex: none;
+  flex: none;   /* 时间戳跟着标题走，不要被甩到行尾 */
 }
+
 .badge {
   font-size: var(--xk-fs-12);
   padding: 2px var(--xk-space-2);
@@ -505,6 +735,7 @@ onMounted(async () => {
      现有页面（NotificationView）也是直接写 999px，就跟着它 */
   border-radius: 999px;
   white-space: nowrap;
+  flex: none;
 }
 .badge.t1 {
   background: var(--xk-surface-2);
@@ -521,24 +752,64 @@ onMounted(async () => {
   color: var(--xk-amber-text);
   border-color: var(--xk-amber-text);
 }
-.detail,
-.what {
+
+/* ---------- ② 主体：被举报了什么 ---------- */
+
+.row-main {
+  margin-top: var(--xk-space-3);
+  padding-top: var(--xk-space-3);
+  border-top: var(--xk-stroke-w) solid var(--xk-border);
+}
+
+.what,
+.detail {
+  margin: 0;
   font-size: var(--xk-fs-14);
   color: var(--xk-text-2);
-  margin-top: var(--xk-space-1);
+  line-height: 1.6;
   overflow-wrap: anywhere;
 }
+.detail { margin-top: var(--xk-space-2); }
 
-/* 被举报内容的原文：引号 + 更弱一点，别跟标题抢注意力 */
+/* 字段名前缀（"被举报的笔记" / "举报人补充"）：小一号、弱一点 */
+.k {
+  display: inline-block;
+  margin-right: var(--xk-space-2);
+  padding: 1px var(--xk-space-2);
+  border: var(--xk-stroke-w) solid var(--xk-border);
+  border-radius: 999px;
+  background: var(--xk-surface-2);
+  color: var(--xk-text-3);
+  font-size: var(--xk-fs-12);
+  vertical-align: 1px;
+}
+
+/* 被举报内容的标题：卡片里唯一需要显眼的东西 */
+.target {
+  color: var(--xk-text);
+  font-weight: 600;
+}
+
+/* 原文：引号 + 更弱一层，别跟标题抢注意力 */
 .quote {
+  display: block;
+  margin-top: 2px;
   color: var(--xk-text-3);
+  font-size: var(--xk-fs-13);
+  /* 最多两行 —— 原文可能很长，铺满整卡会把下面的信息压到屏外 */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
-.who {
-  font-size: var(--xk-fs-13);
-  color: var(--xk-text-3);
-  margin-top: var(--xk-space-1);
+.gone {
+  color: var(--xk-amber-text);
+  font-weight: 600;
 }
+.muted { color: var(--xk-text-3); font-size: var(--xk-fs-13); }
+
+/* ---------- ③ 双方 ---------- */
 
 /*
  * 「被举报人」「举报人」两个标签。
@@ -546,54 +817,62 @@ onMounted(async () => {
  * ⚠️ 原来是把两个人挤成「作者（已注销）· 举报人」一行，
  *    中间只隔一个「·」—— 读起来像**一个人的两个属性**，
  *    而这恰恰是这页最需要说清的一件事（谁举报了谁）。
- * 现在各自带一个标签，一眼能看出这是两个人。
+ * 现在各自一个块，并排放，一眼能看出这是两个人。
  */
-.who .k {
-  display: inline-block;
-  margin: 0 var(--xk-space-2) 0 0;
-  padding: 1px var(--xk-space-2);
-  border: var(--xk-stroke-w) solid var(--xk-border);
-  border-radius: 999px;
-  color: var(--xk-text-3);
-  font-size: var(--xk-fs-12);
-}
-.who .k + .k {
-  margin-left: var(--xk-space-3);
-}
-
-.sep {
-  margin: 0 var(--xk-space-1);
-}
-.warn,
-.handled {
+.who {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--xk-space-2) var(--xk-space-4);
+  margin: var(--xk-space-3) 0 0;
   font-size: var(--xk-fs-13);
-  margin-top: var(--xk-space-1);
+  color: var(--xk-text-2);
 }
-.warn {
+.person { display: inline-flex; align-items: center; }
+.person.hot { color: var(--xk-amber-text); font-weight: 600; }
+.person.hot .k {
+  background: none;
+  border-color: var(--xk-amber-text);
   color: var(--xk-amber-text);
 }
+
+/* ---------- ④ 提示与处置 ---------- */
+
+.warn,
 .handled,
 .done {
-  color: var(--xk-text-3);
+  margin: var(--xk-space-3) 0 0;
+  font-size: var(--xk-fs-13);
+  line-height: 1.6;
 }
+.warn { color: var(--xk-amber-text); }
+.handled,
+.done { color: var(--xk-text-3); }
+
 .ops {
   display: flex;
   gap: var(--xk-space-2);
-  margin-top: var(--xk-space-3);
+  margin-top: var(--xk-space-4);
+  padding-top: var(--xk-space-3);
+  border-top: var(--xk-stroke-w) solid var(--xk-border);
   flex-wrap: wrap;
 }
 .ops button {
   min-height: 40px;
+  /* ⚠️ 内边距用 space-3 而不是 space-4：四个按钮（驳回/下架/删除/禁用作者）
+     在 430px 宽的卡片里要**排成一行**才不显得乱。
+     space-4 时每个按钮 88px，四个 + 间距 = 376px > 可用 354px → 最后一个换行。 */
   padding: 0 var(--xk-space-3);
   font-size: var(--xk-fs-14);
   background: var(--xk-surface-2);
   border: var(--xk-stroke-w) solid var(--xk-stroke);
   border-radius: 999px;
   color: var(--xk-text);
+  cursor: pointer;
+  white-space: nowrap;
 }
-.ops button:disabled {
-  opacity: 0.45;
-}
+.ops button:hover:not(:disabled) { border-color: var(--xk-amber); color: var(--xk-amber-text); }
+.ops button:disabled { opacity: 0.45; cursor: not-allowed; }
+
 /*
  * 「删除笔记」单独加重，避免和「驳回」被一起点。
  *
@@ -606,5 +885,18 @@ onMounted(async () => {
 .ops button.danger {
   color: var(--xk-amber-text);
   border-color: var(--xk-amber-text);
+}
+
+/* ================= 桌面 ================= */
+
+/*
+ * 桌面端整页收窄。
+ * 运营后台是**单列**的工作台（不是阅读流），1200px 宽的容器会让
+ * 每张卡片摊得太开、左右两半互不相干。960px 是一行字能读舒服的宽度。
+ */
+@media (min-width: 1024px) {
+  .page {
+    max-width: 960px;
+  }
 }
 </style>

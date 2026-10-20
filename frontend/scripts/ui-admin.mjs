@@ -279,6 +279,74 @@ try {
   s.check('「禁用作者」不再被加重（它不是最不可逆的）',
     !!banBtn && banBtn.danger === false, danger)
 
+  /*
+   * P41b：**版式**断言。
+   *
+   * 原来这一页的 <style scoped> 里只有 13 个选择器，
+   * .top / .tabs / .filters / .search / .err / .tip 全都没有样式，
+   * 走浏览器默认 —— 于是：
+   *   · 顶栏里的 h1 是默认 h1（2em = 32px），「运营后台」巨大无比
+   *   · 页签与筛选**都是浏览器默认灰按钮**，两组长得一模一样，
+   *     运营分不清哪个是「切页面」哪个是「筛内容」
+   * 用户原话：「看上去一塌糊涂的」。
+   */
+  const layout = await s.evaluate(`
+    (() => {
+      const tabBtn = document.querySelector('[data-test=admin-tab-report]')
+      const segBtn = document.querySelector('[data-test=admin-report-status]')
+      const row = [...document.querySelectorAll('[data-test=admin-report-row]')]
+        .find(e => e.textContent.includes(${JSON.stringify(NOTE_TITLE)}))
+      const tabCs = tabBtn ? getComputedStyle(tabBtn) : null
+      const segCs = segBtn ? getComputedStyle(segBtn) : null
+      const rowCs = row ? getComputedStyle(row) : null
+      const acts = [...(row?.querySelectorAll('[data-test=admin-act]') ?? [])]
+      const tops = acts.map(b => Math.round(b.getBoundingClientRect().top))
+      return JSON.stringify({
+        // 页签：active 靠下划线（border-bottom-color 不是透明）
+        tabBorder: tabCs ? tabCs.borderBottomColor : 'missing',
+        tabBorderW: tabCs ? tabCs.borderBottomWidth : 'missing',
+        // 筛选：active 是实心（background-color 不透明）
+        segBg: segCs ? segCs.backgroundColor : 'missing',
+        segBorderW: segCs ? segCs.borderBottomWidth : 'missing',
+        // 列表项是卡片（有边框 + 圆角 + 底色），不是裸段落
+        rowBorder: rowCs ? rowCs.borderTopWidth : 'missing',
+        rowRadius: rowCs ? rowCs.borderTopLeftRadius : 'missing',
+        // 四个处置按钮是否排成一行
+        actTops: tops,
+      })
+    })()
+  `)
+  const ly = JSON.parse(layout)
+  // ⚠️ 「形状不同」要断的是**机制**而不是颜色值：
+  //    页签用下划线（border-bottom 有宽度且非透明），筛选用实心底（背景不透明）。
+  s.check('页签是「下划线」形态（不是药丸），与筛选的形状分开',
+    ly.tabBorderW !== 'missing' && parseFloat(ly.tabBorderW) >= 2, layout)
+  s.check('状态筛选是「分段控件」形态（实心底），与页签的形状分开',
+    ly.segBg !== 'missing' && !/rgba\(0, 0, 0, 0\)|transparent/.test(ly.segBg), layout)
+  s.check('举报列表项是卡片（有边框 + 圆角），不是裸段落',
+    ly.rowBorder !== 'missing' && parseFloat(ly.rowBorder) > 0
+      && ly.rowRadius !== 'missing' && parseFloat(ly.rowRadius) > 0, layout)
+
+  // ⚠️ 「四个按钮排成一行」必须**显式切到 430px** 量：
+  //    默认视口是浏览器窗口大小（不确定），而这条只在窄屏下有意义。
+  await s.send('Emulation.setDeviceMetricsOverride', { width: 430, height: 900, deviceScaleFactor: 1, mobile: true })
+  await sleep(700)
+  const tops430 = JSON.parse(await s.evaluate(`
+    (() => {
+      const row = [...document.querySelectorAll('[data-test=admin-report-row]')]
+        .find(e => e.textContent.includes(${JSON.stringify(NOTE_TITLE)}))
+      const acts = [...(row?.querySelectorAll('[data-test=admin-act]') ?? [])]
+      return JSON.stringify({
+        tops: acts.map(b => Math.round(b.getBoundingClientRect().top)),
+        w: acts.map(b => Math.round(b.getBoundingClientRect().width)),
+      })
+    })()
+  `))
+  s.check('430px 下四个处置按钮排成一行（不换行）',
+    tops430.tops.length === 4 && new Set(tops430.tops).size === 1, JSON.stringify(tops430))
+  await s.send('Emulation.clearDeviceMetricsOverride')
+  await sleep(400)
+
   /* ---------- ④ 处置：下架 → 目标对他人消失 ---------- */
 
   // 点「下架笔记」。第 2 个按钮（顺序与后端 REPORT_ACTIONS 一致：驳回/下架/删除/禁言）

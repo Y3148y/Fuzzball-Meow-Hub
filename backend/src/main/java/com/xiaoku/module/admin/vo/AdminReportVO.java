@@ -55,6 +55,18 @@ public class AdminReportVO {
     /** 被举报笔记的标题；评论无标题。内容已删除时为 null */
     private String targetTitle;
 
+    /**
+     * 被举报内容**所在的笔记 id**（P42）。
+     *
+     * <p>为什么单独给一个字段：{@link #targetId} 对笔记举报是笔记 id，
+     * 但对**评论**举报是**评论 id** —— 而运营要跳转看的是「被举报的那一篇帖子」，
+     * 也就是评论**所在的那篇笔记**。
+     *
+     * <p>不摊平它的话，评论举报就没有可跳的地方（前端拿评论 id 去拼笔记详情会 404）。
+     * 笔记举报时本字段 = {@code targetId}，前端可以只用一个字段。
+     */
+    private Long targetNoteId;
+
     /** 被举报内容的作者昵称（不是举报人） */
     private String targetAuthorNickname;
 

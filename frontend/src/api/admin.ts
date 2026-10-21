@@ -19,6 +19,13 @@ export interface AdminReportVO {
   reporterUsername: string | null
   /** 被举报笔记的标题；评论无标题。内容已删除时为 null */
   targetTitle: string | null
+  /**
+   * 被举报内容**所在的笔记 id**（P42）。
+   *
+   * ⚠️ 评论举报时 `targetId` 是**评论 id**，跳笔记详情要用这个字段。
+   * 笔记举报时它 === targetId。
+   */
+  targetNoteId: SnowflakeId | null
   /** ⚠️ 这是**作者**，不是举报人。名字相近，拼错就是处置错的人 */
   targetAuthorNickname: string | null
   targetAuthorId: SnowflakeId | null

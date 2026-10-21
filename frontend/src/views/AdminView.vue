@@ -333,7 +333,24 @@ onMounted(async () => {
           <p class="what" data-test="admin-report-content">
             <span class="k">被举报的{{ r.targetType === 1 ? '笔记' : '评论' }}</span>
             <template v-if="r.targetExists">
-              <b class="target">{{ r.targetTitle || '（无标题）' }}</b>
+              <!--
+                P42：点进去看**原文**。
+                ⚠️ 摘要里只有标题 + 前 100 字，**一张图都没有** ——
+                   所以「图片违规」的举报，运营在后台根本判断不了。
+                   跳原文不是锦上添花，是核实的前提。
+                ⚠️ 评论举报的 targetId 是**评论 id**，要跳笔记详情得用
+                   targetNoteId（评论所在的那篇笔记）—— 后端 P42 补的字段。
+                ⚠️ 已不存在（作者自删/已处置）时不给链接。
+              -->
+              <RouterLink
+                v-if="r.targetNoteId"
+                class="target link"
+                :to="{ name: 'note-detail', params: { id: String(r.targetNoteId) } }"
+                data-test="admin-report-target-link"
+              >
+                {{ r.targetTitle || '（无标题）' }}
+              </RouterLink>
+              <b v-else class="target">{{ r.targetTitle || '（无标题）' }}</b>
               <span v-if="r.targetContent" class="quote">「{{ r.targetContent }}」</span>
             </template>
             <template v-else>
@@ -789,6 +806,25 @@ onMounted(async () => {
   color: var(--xk-text);
   font-weight: 600;
 }
+
+/*
+ * 可点的那一份：点进去看**原文**（P42）。
+ * ⚠️ 必须**明显可点** —— 摘要里只有标题 + 前 100 字，一张图都没有，
+ *    「图片违规」的举报只能靠看原文判断。所以这个链接不能做得像普通文字。
+ */
+.target.link {
+  color: var(--xk-amber-text);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--xk-amber-text) 45%, transparent);
+  text-underline-offset: 3px;
+  cursor: pointer;
+  transition: text-decoration-color 0.12s, color 0.12s;
+}
+.target.link:hover {
+  color: var(--xk-text);
+  text-decoration-color: var(--xk-amber-text);
+}
+.target.link:focus-visible { outline: 2px solid var(--xk-amber-text); outline-offset: 2px; }
 
 /* 原文：引号 + 更弱一层，别跟标题抢注意力 */
 .quote {

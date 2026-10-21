@@ -27,6 +27,7 @@ import com.xiaoku.module.topic.vo.MentionVO;
 import com.xiaoku.module.topic.vo.TopicVO;
 import com.xiaoku.module.note.vo.NoteVO;
 import com.xiaoku.module.user.service.UserQueryService;
+import com.xiaoku.module.user.entity.UserEntity;
 import com.xiaoku.module.user.vo.UserVO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -57,6 +58,14 @@ public class NoteQueryServiceImpl implements NoteQueryService {
     private final NoteCounterStore counterStore;
     private final com.xiaoku.module.user.service.UserBlockService userBlockService;
     private final TopicRelationService topicRelationService;
+    /**
+     * P42：判「当前用户是不是管理员」用。
+     *
+     * <p>刻意用 {@code UserMapper} 而不是 {@code UserQueryService.findUserVO}：
+     * 后者带 {@code @Cacheable}，而角色变更不清缓存 → 降级后仍能看已下架笔记。
+     * 理由见 {@link #isAdmin(Long)}。
+     */
+    private final com.xiaoku.module.user.mapper.UserMapper userMapper;
 
     /**
      * <b>笔记详情需要登录。</b>
@@ -263,12 +272,41 @@ public class NoteQueryServiceImpl implements NoteQueryService {
             throw new BizException(ErrorCodeEnum.NOTE_NOT_FOUND);
         }
         if (status == STATUS_TAKEN_DOWN && !isAuthor) {
-            // 下架过说明这篇曾经公开过，明确告知「已下架」比装作不存在更准确。
-            // 作者本人可见自己的下架笔记（P10「明明是自己的，却突然 404」的编辑入口
-            // 需要它），这是与 P3 门禁的唯一差异。
-            throw new BizException(ErrorCodeEnum.NOTE_STATUS_ILLEGAL, "该笔记已被下架");
+            // P42：**管理员放行**。
+            // 运营要核实一条被举报的笔记「到底违规没有」，必须看得到**原文和图片** ——
+            // 而被举报的笔记很可能**已经被下架**（作者自己下的，或另一个运营刚处置过）。
+            // 看不到原文 = 无法判断 = 这批举报只能无脑驳回，整个审核闭环断掉。
+            //
+            // ⚠️ **只放开「已下架」，不放开「草稿」**：
+            //    草稿是作者的**私有**内容，公开流里根本看不到，
+            //    所以不会有草稿的举报；放开它等于让管理员能看任何人的私有草稿 ——
+            //    那是审核不需要的权限。
+            //
+            // ⚠️ 草稿分支仍然对管理员关着（上面那条），这里的口径是「曾经公开过的内容」。
+            if (!isAdmin(currentUserId)) {
+                // 下架过说明这篇曾经公开过，明确告知「已下架」比装作不存在更准确。
+                // 作者本人可见自己的下架笔记（P10「明明是自己的，却突然 404」的编辑入口
+                // 需要它），这是与 P3 门禁的唯一差异。
+                throw new BizException(ErrorCodeEnum.NOTE_STATUS_ILLEGAL, "该笔记已被下架");
+            }
         }
         return note;
+    }
+
+    /**
+     * 当前用户是不是管理员。
+     *
+     * <p>⚠️ <b>刻意查库，不走 {@code UserQueryService.findUserVO}</b>：
+     * 那个方法带 {@code @Cacheable}，而管理端的角色变更（把某个运营降级）
+     * <b>不会</b>清这个缓存 —— 走缓存的话，降级后他仍能看已下架笔记，直到缓存过期。
+     * 这与 {@code AdminInterceptor}「不把 role 写进 JWT」是<b>同一条理由</b>：
+     * <b>撤权必须立刻生效</b>。
+     *
+     * <p>调用点只在「本来要抛异常」的那条路径上 → 正常看已发布笔记的热路径<b>零成本</b>。
+     */
+    private boolean isAdmin(Long userId) {
+        UserEntity u = userMapper.selectById(userId);
+        return u != null && Integer.valueOf(1).equals(u.getRole());
     }
 
     @Override

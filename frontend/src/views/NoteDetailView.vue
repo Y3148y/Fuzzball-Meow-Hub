@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { showConfirmDialog, showSuccessToast, showToast } from 'vant'
 import { changeNoteStatus, collectNote, deleteNote, getNoteDetail, likeNote, uncollectNote, unlikeNote } from '@/api/note'
@@ -269,6 +269,39 @@ async function removeNote() {
 }
 
 const note = ref<NoteVO | null>(null)
+
+/**
+ * 管理员**只读**视角（P42）。
+ *
+ * <p>触发条件：当前用户是管理员 **且** 这篇笔记是「已下架」。
+ * 已下架的笔记普通用户看不到（后端 20002），管理员能看是**专门开的口子** ——
+ * 运营要核实被举报的内容，必须看得到原文和图片。
+ *
+ * <p>⚠️ <b>为什么必须只读</b>：管理员的点赞/收藏会**混进普通用户的计数**，
+ * 而这个计数被用来排序发现流（P23 热度分）——
+ * 运营看一眼违规内容，结果把别人的内容顶上去，
+ * 那是<b>审核行为污染推荐</b>，而且这种污染没人会发现（计数看起来很正常）。
+ *
+ * <p>评论列表**保留**（只读是指不能互动）—— 运营核实「评论违规」的举报
+ * 时要看得到评论区。
+ */
+const isAdminReadonly = computed(
+  () => userStore.userInfo?.role === 1 && note.value?.status === 2,
+)
+
+/**
+ * 管理员只读视角下没有吸底操作栏 → 把给它的尾部留白收掉。
+ *
+ * <p>`.page` 的 padding-bottom 是 `calc(var(--bar-h, 112px) + ...)`，
+ * 而 `--bar-h` 由 ResizeObserver 实测写入（操作栏不在就没有这个值），
+ * 于是会退回默认的 112px —— 一个没有底栏的页面白占 112px。
+ */
+watch(isAdminReadonly, (ro) => {
+  const p = pageEl.value
+  if (!p) return
+  if (ro) p.style.setProperty('--bar-h', '0px')
+  else p.style.removeProperty('--bar-h')
+})
 const loading = ref(true)
 const errorMsg = ref('')
 /** 404 与「已下架」分开提示：前者是地址错了，后者是内容不可看 */
@@ -716,8 +749,17 @@ onBeforeUnmount(() => {
       v-else-if="note"
       class="card xk-card"
       data-test="note-detail"
-      :style="{ '--img-ratio': String(activeRatio) }"
-    >
+    :style="{ '--img-ratio': String(activeRatio) }"
+  >
+    <!--
+      P42：管理员只读视角的提示条。
+      ⚠️ 必须**明说**「你是以管理员身份看到的、这是已下架的内容」——
+      否则运营会以为这是普通用户能看到的东西，
+      而普通用户其实看不到（后端对非作者返 20002）。
+    -->
+    <p v-if="isAdminReadonly" class="admin-note" role="status" data-test="note-admin-banner">
+      这篇笔记已被下架 —— 你以<strong>管理员</strong>身份查看（只读，不能点赞/评论）。
+    </p>
 <!--
         两个栏容器：.col-media（图片 + 评论 + 操作栏）与 .col-text（标题/作者/正文）。
 
@@ -939,7 +981,7 @@ onBeforeUnmount(() => {
         三键刻意只留「图标+数字」：无边框、无底色、无文字标签（aria-label
         保留给读屏），激活才变琥珀 —— 用户反馈三个大按钮抢了正文的注意力
       -->
-      <div ref="barEl" class="actionbar" data-test="action-bar">
+      <div v-if="!isAdminReadonly" ref="barEl" class="actionbar" data-test="action-bar">
         <!--
           行1 = 输入 + 发表（flex 兄弟，不是绝对定位覆盖）。
           输入框 flex:1 吃掉剩余宽度，按钮 flex:0 保住热区，
@@ -1186,6 +1228,23 @@ ref="contentEl"
 </template>
 
 <style scoped>
+/*
+ * 管理员只读视角的提示条（P42）。
+ * ⚠️ 必须**显眼**：普通用户看不到已下架的笔记，
+ * 而管理员看得到 —— 不说清楚，运营会以为这是所有人都能看到的内容。
+ */
+.admin-note {
+  margin: 0 0 var(--xk-space-3);
+  padding: var(--xk-space-3) var(--xk-space-4);
+  border: var(--xk-stroke-w) solid var(--xk-amber-text);
+  border-radius: var(--xk-radius-blob-sm);
+  background: color-mix(in srgb, var(--xk-amber) 12%, transparent);
+  color: var(--xk-text);
+  font-size: var(--xk-fs-13);
+  line-height: 1.6;
+}
+.admin-note strong { color: var(--xk-amber-text); }
+
 /* 视频播放器：宽度跟随左栏，比例用 9/16 兜底（竖屏视频最常见），
    实际比例由浏览器按视频元数据调整，max-height 防止横屏视频把左栏撑得过高 */
 .videobox {

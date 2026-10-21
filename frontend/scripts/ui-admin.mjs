@@ -347,6 +347,51 @@ try {
   await s.send('Emulation.clearDeviceMetricsOverride')
   await sleep(400)
 
+  /*
+   * P42：**能点进去看被举报的原文**。
+   *
+   * ⚠️ 摘要里只有标题 + 前 100 字，**一张图都没有** ——
+   *    所以「图片违规」的举报，运营在后台根本判断不了。
+   *    点原文不是锦上添花，是核实的前提。
+   */
+  const link = await s.evaluate(`
+    (() => {
+      const el = [...document.querySelectorAll('[data-test=admin-report-row]')]
+        .find(e => e.textContent.includes(${JSON.stringify(NOTE_TITLE)}))
+        ?.querySelector('[data-test=admin-report-target-link]')
+      if (!el) return JSON.stringify({ found: false })
+      const cs = getComputedStyle(el)
+      return JSON.stringify({
+        found: true,
+        tag: el.tagName,
+        href: el.getAttribute('href') || '',
+        color: cs.color,
+        decoration: cs.textDecorationLine,
+      })
+    })()
+  `)
+  const lk = JSON.parse(link)
+  s.check('被举报内容的标题是**可点的链接**（点进去看原文）',
+    lk.found && lk.tag === 'A' && lk.href.includes('/note/'), link)
+  // ⚠️ 断「有下划线」而不只是「颜色是琥珀」—— 颜色受主题影响，
+  //    而「能不能看出这是个链接」靠的是下划线。
+  s.check('那个链接明显可点（带下划线，不是普通文字）',
+    lk.decoration !== 'none' && lk.decoration !== undefined, link)
+
+  // 点进去 → 应该落在那篇笔记的详情页
+  await s.evaluate(`
+    [...document.querySelectorAll('[data-test=admin-report-row]')]
+      .find(e => e.textContent.includes(${JSON.stringify(NOTE_TITLE)}))
+      ?.querySelector('[data-test=admin-report-target-link]').click()
+  `)
+  await s.waitFor("location.hash.startsWith('#/note/')", '跳到被举报的笔记详情', 20000)
+  s.check('点被举报内容能跳到那篇笔记', true, await s.evaluate('location.hash'))
+  // ⚠️ 点完就跳走了，**必须回后台** —— 后面的用例（用户 tab / 笔记 tab）
+  //    都在后台页面上跑，不回去会报「超时：用户 tab 渲染」，
+  //    而症状与真因（我插了一段会导航的用例）隔了好几屏。
+  await s.goto(`${BASE}/#/admin`)
+  await s.waitFor("!!document.querySelector('[data-test=admin-tab-user]')", '回到运营后台', 20000)
+
   /* ---------- ④ 处置：下架 → 目标对他人消失 ---------- */
 
   // 点「下架笔记」。第 2 个按钮（顺序与后端 REPORT_ACTIONS 一致：驳回/下架/删除/禁言）
@@ -370,6 +415,31 @@ try {
     await fetch(`${API}/api/note/${noteId}`, { headers: { Authorization: `Bearer ${normalToken}` } })
   ).json()
   s.check('下架后他人看这篇笔记拿不到正文（20002）', afterTake.code === 20002, `code=${afterTake.code}`)
+
+  /*
+   * P42：管理员打开**已下架**的笔记 → 只读视角。
+   *
+   * ⚠️ 这一条钉的是「**管理员的点赞不会混进普通用户的计数**」——
+   *    那个计数被用来排序发现流（P23 热度分），
+   *    运营看一眼违规内容，结果把别人的内容顶上去 =
+   *    审核行为污染推荐，而且这种污染没人会发现（计数看起来很正常）。
+   */
+  await s.goto(`${BASE}/#/note/${noteId}`)
+  await s.waitFor("document.querySelector('[data-test=note-detail]')", '管理员打开已下架的笔记', 20000)
+  const ro = await s.evaluate(`(() => JSON.stringify({
+    banner: !!document.querySelector('[data-test=note-admin-banner]'),
+    bar: !!document.querySelector('[data-test=action-bar]'),
+    like: !!document.querySelector('[data-test=note-like-btn]'),
+  }))()`)
+  const roo = JSON.parse(ro)
+  s.check('管理员看已下架的笔记：有「以管理员身份查看」的提示条',
+    roo.banner === true, JSON.stringify(roo))
+  s.check('管理员看已下架的笔记：没有吸底操作栏（只读）',
+    roo.bar === false, JSON.stringify(roo))
+  s.check('管理员看已下架的笔记：没有点赞按钮（不污染计数）',
+    roo.like === false, JSON.stringify(roo))
+  await s.goto(`${BASE}/#/admin`)
+  await s.waitFor("!!document.querySelector('[data-test=admin-tab-user]')", '回到运营后台', 20000)
 
   /* ---------- ⑤ 处置不可重放：再点一次拿「已处理」 ---------- */
 

@@ -2694,6 +2694,53 @@ async function main() {
     eq('size 被夹到 100（不会因为前端传 999 就一次拉全表）',
       (await get('/api/admin/report/list?size=999', { token: adm })).json?.data?.size, 100)
 
+    /* ---------- P42 运营能点进去看被举报的原文 ---------- */
+
+    // ⚠️ 背景：举报行里只有标题 + 前 100 字，**一张图都没有**。
+    //    所以「图片违规」的举报，运营在后台**无法判断** —— 必须能点进原文。
+    //    而已下架的笔记普通用户看不到（20002），管理员能看是专门开的口子。
+
+    // ① 举报行带 targetNoteId
+    // ⚠️ **自己造一条新的评论举报**：本段前面那条评论举报已经被处置过
+    //    （禁用作者），不在「待处理」列表里了 —— 拿它去查会得到 undefined，
+    //    而症状是「targetNoteId 是 undefined」，与真因隔了半屏。
+    const cm42 = (await post('/api/comment', {
+      token: auth, body: { noteId: noteC, content: `P42 待核实评论 ${stamp}` } })).json?.data?.id
+    check('造出待核实的评论', typeof cm42 === 'string', `commentId=${cm42}`)
+    const rep42 = await post('/api/report', {
+      token: tA, body: { targetType: 2, targetId: cm42, reasonCode: 1 },
+    })
+    const rep42Id = rep42.json?.data
+    check('对它的举报入库', typeof rep42Id === 'string', `reportId=${rep42Id}`)
+
+    const rl42 = await get('/api/admin/report/list?status=0&page=1&size=50', { token: adm })
+    const rows42 = rl42.json?.data?.list ?? []
+    const noteRow42 = rows42.find((r) => r.targetType === 1 && r.targetExists)
+    const commentRow42 = rows42.find((r) => r.id === rep42Id)
+    check('笔记举报的行带 targetNoteId（= 被举报笔记 id）',
+      !!noteRow42 && noteRow42.targetNoteId === noteRow42.targetId,
+      `targetNoteId=${noteRow42?.targetNoteId} targetId=${noteRow42?.targetId}`)
+    check('评论举报的行带 targetNoteId（= 评论所在笔记 id，不是评论 id）',
+      !!commentRow42 && commentRow42.targetNoteId === noteC && commentRow42.targetId === cm42,
+      `targetNoteId=${commentRow42?.targetNoteId} 期望=${noteC} targetId=${commentRow42?.targetId}`)
+
+    // ② 管理员能看已下架笔记的原文；普通用户仍被拦
+    await put(`/api/admin/note/${p20Id}/status`, { token: adm, body: { status: 2 } })
+    eq('已下架的笔记：管理员能拿到详情（核实举报必须看得到原文）',
+      (await get(`/api/note/${p20Id}`, { token: adm })).json?.code, 0)
+    // ⚠️ **必须用非作者的 token**：p20Id 是 tA 发的笔记，
+    //    而作者本人**本来就能**看自己的下架笔记（P10 的既有语义：
+    //    「明明是自己的却突然 404」，编辑入口需要它）。
+    //    用 tA 断言「普通用户被拦」会得到 code=0 —— 那是**断言写错了**，不是实现漏了。
+    codeIs('已下架的笔记：非作者仍被拦（20002）',
+      (await get(`/api/note/${p20Id}`, { token: auth })).json, 20002)
+    // ⚠️ 草稿**不**对管理员开放（草稿是作者的私有内容，公开流里看不到，
+    //    不会有草稿的举报；放开它等于让管理员能看任何人的私有草稿）。
+    //    这一条**测不了**：项目里根本没有「存为草稿」的入口（P3 已知缺口），
+    //    运营也不能把别人的笔记按回草稿（100001），
+    //    所以造不出一个 status=0 的笔记给管理员试。
+    await put(`/api/admin/note/${p20Id}/status`, { token: adm, body: { status: 1 } })
+
     /* ---------- 清理 ---------- */
 
     await del(`/api/note/${p20Id}`, { token: tA })

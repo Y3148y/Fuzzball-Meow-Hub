@@ -241,6 +241,9 @@ public class AdminServiceImpl implements AdminService {
             vo.setTargetTitle(note.getTitle());
             vo.setTargetContent(truncate(note.getContent()));
             vo.setTargetAuthorId(note.getUserId());
+            // P42：被举报内容**所在的笔记 id**。笔记举报就是它自己；
+            // 评论举报是评论所在的那篇笔记 —— 运营要跳过去看的是「那一篇帖子」。
+            vo.setTargetNoteId(note.getId());
             fillAuthorNickname(vo, note.getUserId());
         } else {
             CommentEntity comment = commentMapper.selectById(vo.getTargetId());
@@ -251,6 +254,8 @@ public class AdminServiceImpl implements AdminService {
             vo.setTargetExists(true);
             vo.setTargetContent(truncate(comment.getContent()));
             vo.setTargetAuthorId(comment.getUserId());
+            // ⚠️ 评论的 targetId 是**评论 id**，跳笔记详情要用它所在的笔记 id
+            vo.setTargetNoteId(comment.getNoteId());
             fillAuthorNickname(vo, comment.getUserId());
         }
     }

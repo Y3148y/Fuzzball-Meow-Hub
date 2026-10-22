@@ -143,6 +143,13 @@ public class NoteQueryServiceImpl implements NoteQueryService {
     }
 
     @Override
+    public void requireNoteVisible(Long noteId, Long viewerId) {
+        // ⚠️ 刻意**不返回实体**：Entity 不出 Service（团队的 VO 规约），
+        //    而这个方法的用途只是「校验一下可见」，不需要把笔记本体交出去。
+        requireVisible(noteId, viewerId);
+    }
+
+    @Override
     public PageVO<NoteListItemVO> pageUserNotes(Long userId, int page, int size) {
         // P18 block 过滤：拉黑后对方的主页不该出现在我的视野里（笔记与统计都算）
         Long myId = UserContextHolder.requireUserId();

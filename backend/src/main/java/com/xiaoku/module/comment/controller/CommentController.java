@@ -43,6 +43,16 @@ public class CommentController {
         return Result.success(commentQueryService.listByNote(noteId, safePage, safeSize));
     }
 
+    @Operation(summary = "按 id 查单条评论",
+            description = "并校验它所在的笔记对当前用户可见（草稿/下架/被拉黑/私密账号）")
+    // P45：运营从举报后台点「被举报的那条评论」时按评论 id 取它。
+    // ⚠️ 可见性校验在 service 里（复用 NoteQueryService.requireNoteVisible）——
+    //    注释里那四个字（草稿/下架/拉黑/私密）就是它会拦的四种情况。
+    @GetMapping("/{id}")
+    public Result<CommentVO> getOne(@Parameter(description = "评论ID", required = true) @PathVariable Long id) {
+        return Result.success(commentQueryService.getVisibleOne(id));
+    }
+
     @Operation(summary = "发表评论",
             description = "带 parentId 即为回复。不允许评论自己的笔记（30007）")
     // 评论是无成本高收益的刷量入口（注册即可发），阈值给到 10/分钟

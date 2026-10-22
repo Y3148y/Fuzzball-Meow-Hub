@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { showConfirmDialog, showSuccessToast, showToast } from 'vant'
 import { changeNoteStatus, collectNote, deleteNote, getNoteDetail, likeNote, uncollectNote, unlikeNote } from '@/api/note'
 import { followUser, unfollowUser } from '@/api/follow'
-import { createComment, deleteComment, likeComment, listComments, replyComment, unlikeComment } from '@/api/comment'
+import { createComment, deleteComment, getComment, likeComment, listComments, replyComment, unlikeComment } from '@/api/comment'
 import type { MentionVO } from '@/api/types'
 
 /**
@@ -375,6 +375,14 @@ async function toggleCollect() {
 /* ---------------- 评论 ---------------- */
 
 const comments = ref<CommentVO[]>([])
+
+/**
+ * P45：要定位的那条评论 id（来自 URL 的 `?comment=xxx`）。
+ *
+ * <p>运营从举报后台点「被举报的那条评论」时带的参数。
+ * 空串 = 不定位（普通浏览）。
+ */
+const highlightCommentId = computed(() => String(route.query.comment ?? ''))
 const commentTotal = ref(0)
 const commentPage = ref(1)
 /** true 表示还有下一页 */
@@ -425,6 +433,45 @@ async function loadComments() {
   } finally {
     loadingComments.value = false
   }
+}
+
+/**
+ * P45：URL 带 `?comment=xxx` 时**定位到那条评论**。
+ *
+ * <p>场景：运营从举报后台点「被举报的那条评论」→ 跳到
+ * `#/note/{noteId}?comment={commentId}`。
+ *
+ * <p>⚠️ **那条评论可能在第一页之外** —— 评论多的笔记一页只有 10 条，
+ * 光靠 listComments 找不到它。所以要在第一页里**找不到时单独拉一次**
+ * （后端新加的 `GET /api/comment/{id}`），插进列表再高亮、滚过去。
+ *
+ * <p>⚠️ 拿不到就**静默放弃**：定位是锦上添花，不该让整页加载失败
+ * （比如那条评论已被删了、或它所在的笔记对我不可见）。
+ */
+async function locateComment() {
+  const cid = highlightCommentId.value
+  if (!cid) return
+  // 先看第一页里有没有
+  const flat = comments.value.flatMap((c) => [c, ...(c.replies ?? [])])
+  if (flat.some((c) => c.id === cid)) {
+    await nextTick()
+    scrollToComment(cid)
+    return
+  }
+  try {
+    const c = await getComment(cid)
+    // 插到列表末尾：它在第一页之外，位置本来就无所谓 —— 高亮 + 滚动才是重点
+    comments.value = [...comments.value, c]
+    await nextTick()
+    scrollToComment(cid)
+  } catch {
+    // 静默：那条评论可能已被删，或它所在的笔记对我不可见
+  }
+}
+
+function scrollToComment(cid: string) {
+  const el = document.querySelector(`[data-test="comment-item"][data-comment-id="${cid}"]`)
+  el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
 }
 
 async function loadMoreComments() {
@@ -601,6 +648,8 @@ async function load() {
     imgIdx.value = 0
     imgRatios.value = []
     await loadComments()
+    // P45：URL 带 ?comment=xxx 时定位到那条评论（运营从举报后台点进来）
+    await locateComment()
   } catch (e) {
     if (e instanceof BizError) {
       if (e.code === ErrorCode.NOTE_NOT_FOUND) {
@@ -848,7 +897,14 @@ onBeforeUnmount(() => {
           <p v-else-if="!comments.length" class="c-hint" data-test="comment-empty">还没有评论，来说两句吧</p>
 
           <ul v-else class="c-list" data-test="comment-list">
-            <li v-for="c in comments" :key="c.id" class="c-item" data-test="comment-item">
+            <li
+              v-for="c in comments"
+              :key="c.id"
+              class="c-item"
+              :class="{ hit: c.id === highlightCommentId }"
+              :data-comment-id="c.id"
+              data-test="comment-item"
+            >
               <UserAvatar class="c-avatar" :avatar="c.avatar" :nickname="c.nickname" :size="28" />
               <div class="c-main">
               <p class="c-nick">{{ c.nickname }}</p>
@@ -920,7 +976,14 @@ onBeforeUnmount(() => {
                 直接靠 v-for 层级表达层级更直白
               -->
               <ul v-if="c.replies && c.replies.length" class="c-replies" data-test="comment-replies">
-                <li v-for="r in c.replies" :key="r.id" class="c-reply" data-test="comment-reply">
+                <li
+                  v-for="r in c.replies"
+                  :key="r.id"
+                  class="c-reply"
+                  :class="{ hit: r.id === highlightCommentId }"
+                  :data-comment-id="r.id"
+                  data-test="comment-reply"
+                >
                   <p class="c-nick">
                     <template v-if="r.replyNickname">
                       回复 <span class="c-at">@{{ r.replyNickname }}</span>
@@ -2045,6 +2108,21 @@ ref="contentEl"
 .c-item {
   display: flex;
   gap: 9px;
+}
+
+/*
+ * P45：被定位到的那条评论（?comment=xxx）高亮。
+ *
+ * ⚠️ 高亮的是**评论本身**，不是整个卡片 —— 一条评论在一大列里，
+ * 整块高亮会让人以为整段评论区都被选中了。
+ * 用左边框 + 浅底，不只靠颜色（a11y 的「不只靠单一感官通道」）。
+ */
+.c-item.hit,
+.c-reply.hit {
+  border-left: 3px solid var(--xk-amber);
+  background: color-mix(in srgb, var(--xk-amber) 10%, transparent);
+  border-radius: 0 var(--xk-radius-blob-sm) var(--xk-radius-blob-sm) 0;
+  padding-left: 8px;
 }
 
 .c-avatar {

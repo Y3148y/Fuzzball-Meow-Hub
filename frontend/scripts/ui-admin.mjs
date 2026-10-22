@@ -145,6 +145,31 @@ try {
   const reportId = rp?.data
   s.check('素材举报已提交', typeof reportId === 'string', `reportId=${reportId} code=${rp?.code}`)
 
+  /*
+   * P45：再造一条**评论**举报 —— 运营要点进「被举报的那条评论」时，
+   * URL 要带 ?comment=<评论id>，详情页把它拉出来高亮。
+   */
+  const COMMENT_CONTENT = `CDP 运营后台评论 ${stamp}`
+  const cm = await (
+    await fetch(`${API}/api/comment`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${normalToken}` },
+      body: JSON.stringify({ noteId, content: COMMENT_CONTENT }),
+    })
+  ).json()
+  const commentId = cm?.data?.id
+  s.check('素材评论就绪', typeof commentId === 'string', `id=${commentId} code=${cm?.code}`)
+  const rc = await (
+    await fetch(`${API}/api/report`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${admToken}` },
+      body: JSON.stringify({ targetType: 2, targetId: commentId, reasonCode: 1 }),
+    })
+  ).json()
+  // ⚠️ 举报人用 **admin**：评论是普通账号发的，而**不能举报自己的内容**（80004）——
+  //    举报人也用普通账号就会被拒（它既是评论作者又是举报人）。
+  s.check('素材评论举报已提交', typeof rc?.data === 'string', `reportId=${rc?.data} code=${rc?.code}`)
+
   /* ---------- ① 普通账号看不到运营入口 ---------- */
 
   await switchIdentity(normalToken)
@@ -386,6 +411,53 @@ try {
   `)
   await s.waitFor("location.hash.startsWith('#/note/')", '跳到被举报的笔记详情', 20000)
   s.check('点被举报内容能跳到那篇笔记', true, await s.evaluate('location.hash'))
+
+  /*
+   * P45：**评论**举报要能定位到**那条评论**。
+   *
+   * ⚠️ 评论多的笔记一页只有 10 条 —— 运营自己找那条评论是很痛的，
+   *    所以 URL 要带 ?comment=<评论id>，详情页把它拉出来高亮。
+   */
+  await s.goto(`${BASE}/#/admin`)
+  await s.waitFor("document.querySelector('[data-test=admin-report-row]')", '举报列表', 20000)
+  const cmtLink = await s.evaluate(`(() => {
+    const row = [...document.querySelectorAll('[data-test=admin-report-row]')]
+      .find(e => e.textContent.includes(${JSON.stringify(COMMENT_CONTENT)}))
+    const a = row?.querySelector('[data-test=admin-report-target-link]')
+    if (!a) return JSON.stringify({ found: false })
+    const href = a.getAttribute('href') || ''
+    return JSON.stringify({ found: true, href, hasComment: href.includes('comment=') })
+  })()`)
+  const cl = JSON.parse(cmtLink)
+  s.check('评论举报的行也带链接', cl.found === true, cmtLink)
+  s.check('评论举报的链接带 ?comment=<评论id>（运营要直接看到那条评论）',
+    cl.hasComment === true, cmtLink)
+
+  // 点进去 → 那条评论应该被高亮
+  await s.evaluate(`(() => {
+    const row = [...document.querySelectorAll('[data-test=admin-report-row]')]
+      .find(e => e.textContent.includes(${JSON.stringify(COMMENT_CONTENT)}))
+    row?.querySelector('[data-test=admin-report-target-link]')?.click()
+  })()`)
+  await s.waitFor("location.hash.includes('comment=')", '跳到带 comment 的详情页', 20000)
+  await s.waitFor(`document.querySelector('[data-comment-id="${commentId}"]')`, '定位到那条评论', 20000)
+  const hit = await s.evaluate(`(() => {
+    const el = document.querySelector('[data-comment-id="${commentId}"]')
+    if (!el) return JSON.stringify({ found: false })
+    const cs = getComputedStyle(el)
+    const b = el.getBoundingClientRect()
+    return JSON.stringify({
+      found: true,
+      hit: el.classList.contains('hit'),
+      borderLeft: cs.borderLeftWidth,
+      inView: b.top < window.innerHeight && b.bottom > 0,
+    })
+  })()`)
+  const h = JSON.parse(hit)
+  s.check('定位到的那条评论被高亮（运营一眼看到是哪条）',
+    h.found === true && h.hit === true, hit)
+  s.check('高亮不只靠颜色（左边框 + 浅底）',
+    h.borderLeft !== 'missing' && parseFloat(h.borderLeft) >= 2, hit)
   // ⚠️ 点完就跳走了，**必须回后台** —— 后面的用例（用户 tab / 笔记 tab）
   //    都在后台页面上跑，不回去会报「超时：用户 tab 渲染」，
   //    而症状与真因（我插了一段会导航的用例）隔了好几屏。

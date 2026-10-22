@@ -20,6 +20,24 @@ public interface NoteQueryService {
     NoteVO getDetail(Long noteId);
 
     /**
+     * 校验「这篇笔记对当前用户可见」，不可见时抛异常。
+     *
+     * <p><b>为什么要有这个方法</b>（P45）：评论能被单独按 id 读取
+     * （{@code GET /api/comment/{id}}），而评论**总是挂在某篇笔记下面** ——
+     * 所以取评论时必须连带校验「它所在的笔记对当前用户可见」，
+     * 否则私密/下架笔记的评论能被任何人凭 id 读出来。
+     *
+     * <p><b>可见性规则只有这一份</b>：草稿 / 已下架 / 被拉黑 / 私密账号
+     * 四种情况的判断都在 {@code NoteQueryServiceImpl.requireVisible} 里，
+     * 这里只是把它暴露出去，避免在评论侧再写一份（漂移 = 私密内容泄露）。
+     *
+     * @param noteId   笔记 id
+     * @param viewerId 当前浏览者
+     * @throws com.xiaoku.common.exception.BizException 不可见时
+     */
+    void requireNoteVisible(Long noteId, Long viewerId);
+
+    /**
      * 某用户发布过的笔记，分页（作者主页用）。
      *
      * <p>只返回已发布（status=1）的笔记，按发布时间倒序；

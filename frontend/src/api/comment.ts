@@ -27,6 +27,20 @@ export function listComments(noteId: string, page = 1, size = 10) {
   return get<PageVO<CommentVO>>('/comment/list', { noteId, page, size })
 }
 
+/**
+ * 按 id 取单条评论（P45）。
+ *
+ * <p>用途：运营从举报后台点「被举报的那条评论」时按评论 id 定位它 ——
+ * 那条评论**可能在第一页之外**（评论多的笔记一页只有 10 条），
+ * 光靠 `listComments` 找不到。
+ *
+ * <p>⚠️ 后端会连带校验「它所在的笔记对当前用户可见」
+ * （草稿/下架/被拉黑/私密账号）—— 不通过时返 20001。
+ */
+export function getComment(id: string) {
+  return get<CommentVO>('/comment/' + id)
+}
+
 /** 发表一级评论。不传 parentId 即可。开了幂等：同一次发送重发只落一条 */
 export function createComment(data: CommentCreateDTO) {
   return post<CommentVO>('/comment', data, { idempotent: true })

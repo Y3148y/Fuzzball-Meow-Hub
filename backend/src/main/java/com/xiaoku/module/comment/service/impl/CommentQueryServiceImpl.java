@@ -16,6 +16,7 @@ import com.xiaoku.module.comment.service.CommentQueryService;
 import com.xiaoku.module.comment.vo.CommentVO;
 import com.xiaoku.module.note.entity.NoteEntity;
 import com.xiaoku.module.note.mapper.NoteMapper;
+import com.xiaoku.module.note.service.NoteQueryService;
 import com.xiaoku.module.note.support.PrivacyGate;
 import com.xiaoku.module.user.service.UserQueryService;
 import com.xiaoku.module.user.vo.UserVO;
@@ -52,6 +53,8 @@ public class CommentQueryServiceImpl implements CommentQueryService {
     private final CommentMapper commentMapper;
     private final CommentLikeMapper commentLikeMapper;
     private final NoteMapper noteMapper;
+    /** P45：取单条评论时校验它所在的笔记是否可见（可见性规则只有这一份） */
+    private final NoteQueryService noteQueryService;
     private final UserQueryService userQueryService;
     private final com.xiaoku.module.topic.service.TopicRelationService topicRelationService;
     /** P44 私密账号可见性闸门（与笔记详情共用同一份） */
@@ -161,6 +164,27 @@ return CommentConverter.toVO(comment,
                 userQueryService.findUserVO(comment.getUserId()),
                 replyTo, liked, mine, null, null,
                 topicRelationService.commentMentionMap(List.of(commentId)).get(commentId));
+    }
+
+    /**
+     * 按 id 查一条评论，并校验它所在的笔记对当前用户可见（P45）。
+     *
+     * <p>⚠️ **刻意与 {@link #getOne(Long)} 分开**：
+     * getOne 被 like/unlike 的响应回填调用，而 unlike **刻意**允许笔记已下架时撤销
+     * （否则会把已执行的删除一起回滚 —— 见 CommentServiceImpl#unlike 的注释）。
+     * 给 getOne 加门禁就会破坏那条语义。
+     */
+    @Override
+    public CommentVO getVisibleOne(Long commentId) {
+        CommentEntity comment = commentMapper.selectById(commentId);
+        if (comment == null) {
+            throw new BizException(ErrorCodeEnum.COMMENT_NOT_FOUND);
+        }
+        // 评论可见 ⟺ 它所在的笔记可见（草稿/下架/被拉黑/私密账号）
+        // ⚠️ 不可见时报 20001「笔记不存在」而不是「评论不存在」：
+        //    后者会让人知道「有个评论在不可见的笔记下面」。
+        noteQueryService.requireNoteVisible(comment.getNoteId(), currentUserId());
+        return getOne(commentId);
     }
 
     /** 评论读接口也要求登录，但这里是软读：拿不到登录态就当"没人点过赞"，不该 500 */

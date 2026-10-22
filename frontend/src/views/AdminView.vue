@@ -340,12 +340,19 @@ onMounted(async () => {
                    跳原文不是锦上添花，是核实的前提。
                 ⚠️ 评论举报的 targetId 是**评论 id**，要跳笔记详情得用
                    targetNoteId（评论所在的那篇笔记）—— 后端 P42 补的字段。
+                ⚠️ P45：评论举报还带 `?comment=<评论id>` ——
+                   运营要能**直接看到那条被举报的评论**，
+                   而不是自己在几十条评论里找（评论多的笔记一页只有 10 条）。
                 ⚠️ 已不存在（作者自删/已处置）时不给链接。
               -->
               <RouterLink
                 v-if="r.targetNoteId"
                 class="target link"
-                :to="{ name: 'note-detail', params: { id: String(r.targetNoteId) } }"
+                :to="{
+                  name: 'note-detail',
+                  params: { id: String(r.targetNoteId) },
+                  query: r.targetType === 2 ? { comment: String(r.targetId) } : {},
+                }"
                 data-test="admin-report-target-link"
               >
                 {{ r.targetTitle || '（无标题）' }}

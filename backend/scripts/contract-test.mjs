@@ -3630,6 +3630,80 @@ const lastTwo = (hist?.list ?? []).slice(-2)
     }
   }
 
+  /* ================================================================
+   * 27. P45 按 id 取单条评论（运营定位被举报的那条评论）
+   *
+   * 背景：评论**总是挂在某篇笔记下面**，所以按评论 id 取它时
+   * 必须连带校验「它所在的笔记对当前用户可见」——
+   * 否则私密/下架笔记的评论能被任何人凭 id 读出来。
+   *
+   * ⚠️ 本段**不注册新账号**：register 10/min/IP，文件末尾的桶早见底
+   *    （P44 那段实测直接返 100005）。复用 P20 段的专用账号
+   *    `ct_p20r<stamp>`（P44 段已经用过一次）。
+   * ================================================================ */
+  {
+    const p45Name = `ct_p20r${stamp}`
+    const p45Login = await post('/api/user/login', { body: { username: p45Name, password: P } })
+    check('P45 专用账号能登录', p45Login.json?.code === 0, `code=${p45Login.json?.code}`)
+    if (p45Login.json?.code === 0) {
+      const p45Auth = `Bearer ${p45Login.json.data.accessToken}`
+      const p45Id = (await get('/api/user/me', { token: p45Auth })).json?.data?.id
+
+      // 陌生人：主账号 auth；关注者：xk_ui_smoke
+      const lF = await post('/api/user/login', { body: { username: 'xk_ui_smoke', password: 'Xk@123456' } })
+      const folAuth = `Bearer ${lF.json?.data?.accessToken}`
+
+      // 作者发一篇笔记，主账号在它下面留一条评论
+      const p45Img = (await uploadImage(p45Auth)).json?.data?.url
+      const p45Note = (await post('/api/note/publish', {
+        token: p45Auth,
+        body: { title: `P45 评论定位 ${stamp}`, content: '正文', imageUrls: [p45Img] },
+      })).json?.data?.id
+      check('P45 造出笔记', typeof p45Note === 'string', `id=${p45Note}`)
+
+      const p45Cmt = (await post('/api/comment', {
+        token: auth, body: { noteId: p45Note, content: `P45 被举报的那条评论 ${stamp}` },
+      })).json?.data?.id
+      check('P45 造出评论', typeof p45Cmt === 'string', `id=${p45Cmt}`)
+
+      /* ---------- ① 公开笔记：谁都能按 id 取到 ---------- */
+      eq('P45 公开笔记的评论：按 id 取得到',
+        (await get(`/api/comment/${p45Cmt}`, { token: auth })).json?.code, 0)
+      const one = (await get(`/api/comment/${p45Cmt}`, { token: auth })).json?.data
+      eq('P45 取到的就是那条评论', one?.id, p45Cmt)
+      eq('P45 取到的评论带 noteId', one?.noteId, p45Note)
+      check('P45 取到的评论带正文', typeof one?.content === 'string' && one.content.includes('P45'),
+        `content=${one?.content}`)
+
+      /* ---------- ② 评论不存在 ---------- */
+      // ⚠️ 30005（**评论域**）不是 20005（笔记域）——
+      //    评论的错误码在 30xxx 段（30001 已点赞 / 30002 未点赞 / 30005 评论不存在）。
+      codeIs('P45 不存在的评论 → 30005',
+        (await get('/api/comment/1', { token: auth })).json, 30005)
+
+      /* ---------- ③ 未登录 ---------- */
+      codeIs('P45 未登录按 id 取评论 → 10005',
+        (await get(`/api/comment/${p45Cmt}`)).json, 10005)
+
+      /* ---------- ④ 私密笔记的评论：只有关注者能取 ---------- */
+      // 作者设为私密 → 主账号（陌生人）取不到，关注的 xk_ui_smoke 取得到
+      await put('/api/user/profile', { token: p45Auth, body: { isPrivate: 1 } })
+      codeIs('P45 私密笔记的评论：陌生人按 id 取不到（20001）',
+        (await get(`/api/comment/${p45Cmt}`, { token: auth })).json, 20001)
+      await put(`/api/follow/${p45Id}`, { token: folAuth })
+      eq('P45 私密笔记的评论：关注者按 id 取得到',
+        (await get(`/api/comment/${p45Cmt}`, { token: folAuth })).json?.code, 0)
+      // 作者本人也取得到
+      eq('P45 私密笔记的评论：作者本人取得到',
+        (await get(`/api/comment/${p45Cmt}`, { token: p45Auth })).json?.code, 0)
+
+      /* ---------- 清理 ---------- */
+      await put('/api/user/profile', { token: p45Auth, body: { isPrivate: 0 } })
+      await del(`/api/follow/${p45Id}`, { token: folAuth })
+      await del(`/api/note/${p45Note}`, { token: p45Auth })
+    }
+  }
+
   const total = passed + failed
   console.log(`\n===== ${passed}/${total} 通过 =====`)
   if (failed > 0) {

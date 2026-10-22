@@ -11,7 +11,7 @@
 | 测试 | 契约 **779** 条 · CDP **780** 条，全部绿 |
 | prod | `18080`，跑的是 **P39 前后端**（背景头图 + 主页/作者页移动端两列瀑布） |
 | 重建 prod 的坑 | 见第 8 节：8.2 镜像构建三道墙 / 8.5 nginx 缓存旧 IP / 8.6 `--no-deps` |
-| 上一次部署 | P42（前后端一起）· prod 真调用 **12/12** |
+| 上一次部署 | P44（前后端一起）· prod 真调用 **24/24** |
 | 待做 | 评论举报定位到具体那条评论（要补 GET /api/comment/{id}）· 其余 14 页的顶栏统一（B-b）· 视频多码率与进度条（都不急） |
 | 重启后 | **跑 `tools\dev-up.cmd`**（见 2.0 节，引擎没起它会自己拉起，33s）· 手工清单留在 2.0 的折叠块里兜底 |
 
@@ -2662,6 +2662,34 @@ ES 索引里没有隐私信息。加 `isPrivate` 字段就意味着
 - **P42 那条断言本来就依赖「列表里恰好有一条笔记举报」** ——
   那是「自造的用例假设了库是干净的」，实测上一轮跑过之后那条恰好被清掉就查不到了。
   现在改成**自己造一条**并按 id 精确查找。
+
+### P44 prod 部署与真调用
+
+部署顺序（8.2 / 8.5 / 8.6 三条都适用，且**后端也改了**）：
+`mvnw -DskipTests package`（**不带 `-o`**）→ 临时 Dockerfile 只复刻运行时阶段
+（**不装 curl**、静态 Linux 版 ffmpeg/ffprobe 直接 `docker cp` 从旧容器取出再
+COPY 进去，因为本机 `tar -xJf` 解不了 xz）→ build backend →
+`--no-deps --force-recreate backend` → `docker build frontend` →
+`--no-deps --force-recreate frontend` → **重启 nginx**（8.5）。
+
+⚠️ **prod 库要手动加列**（`user.is_private`）：
+
+```sql
+ALTER TABLE xiaoku_db.user ADD COLUMN is_private TINYINT NOT NULL DEFAULT 0
+  COMMENT 'private account' AFTER role;
+```
+
+prod 真调用 **24/24**：作者本人 / 关注者 / 陌生人 × 详情页、评论列表、作者主页列表、
+发现流、沉浸流、搜索，六个方向全对；关掉私密后陌生人立刻恢复可见。
+
+⚠️ **prod 验收踩到的两个坑（都不是产品问题）**：
+
+1. **prod 现有的两个账号都是管理员**（`xk_ui_admin` / `xk_ui_admin2`，role 都是 1），
+   所以「陌生人被拦」用它们**验不出来** —— 管理员本来就该看到私密内容。
+   要验就得**临时注册一个普通账号**，验完按前缀删掉（AGENTS 8.8 的派生表物化写法）。
+2. **图片上传要 multipart**：用只发 JSON 的助手去调 `/api/note/image`，
+   拿到的是错误响应 → `imageUrls` 里是 undefined → 发布直接 100001，
+   而症状是「发不出笔记」，与真因（上传方式错）隔了半屏。
 
 ## 8. prod 栈运维（2026-10-04 踩出来的，都是环境问题不是代码问题）
 

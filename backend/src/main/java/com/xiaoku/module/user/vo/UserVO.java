@@ -86,6 +86,17 @@ public class UserVO implements Serializable {
     @Schema(description = "角色 0 普通用户 1 管理员")
     private Integer role;
 
+    /**
+     * 是否私密账号（P44 隐私设置）。
+     *
+     * <p>1 = 私密：笔记只有关注了 TA 的用户能看。0 = 公开。
+     *
+     * <p>前端据此在「我的」页显示私密标识、在作者主页显示
+     * 「该账号已设为私密，关注后可见」。
+     */
+    @Schema(description = "是否私密账号 0 公开 1 私密")
+    private Integer isPrivate;
+
     @Schema(description = "注册时间")
     private LocalDateTime createTime;
 }

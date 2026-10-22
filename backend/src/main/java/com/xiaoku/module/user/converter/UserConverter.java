@@ -36,6 +36,7 @@ public final class UserConverter {
                 .fansCount(user.getFansCount())
                 .likeReceivedCount(user.getLikeReceivedCount())
                 .role(user.getRole())
+                .isPrivate(user.getIsPrivate())
                 .createTime(user.getCreateTime())
                 .build();
     }

@@ -76,6 +76,18 @@ public class UserEntity implements Serializable {
      */
     private Integer role;
 
+    /**
+     * 私密账号（P44 隐私设置）。
+     *
+     * <p>1 = 私密：这个账号的笔记**只有关注了 TA 的用户**能看（单向关注也算，
+     * 作者本人当然能看）。0 = 公开（默认）。
+     *
+     * <p>⚠️ 这个字段是「整站可见性」的开关，**漏一处过滤就是私密内容泄露** ——
+     * 所以要改的地方不止详情页：发现流 / 沉浸流 / 搜索 / 作者主页 / 评论列表
+     * 每一处都得过滤（见 AGENTS P44）。
+     */
+    private Integer isPrivate;
+
     private LocalDateTime lastLoginTime;
 
     @TableField(fill = FieldFill.INSERT)

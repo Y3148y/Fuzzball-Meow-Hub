@@ -63,6 +63,12 @@ onMounted(async () => {
 const NICKNAME_MAX = 32
 const BIO_MAX = 255
 
+/**
+ * 私密账号（P44）。
+ * 1 = 私密（笔记只有关注了你的人能看到），0 = 公开。
+ */
+const isPrivate = ref(0)
+
 const nicknameLen = computed(() => nickname.value.length)
 const bioLen = computed(() => bio.value.length)
 const nicknameOver = computed(() => nicknameLen.value > NICKNAME_MAX)
@@ -94,6 +100,8 @@ function syncFromStore() {
   // ⚠️ 后端 non_null 策略：没设背景图时这个字段在 JSON 里**整个不存在**，
   //    拿到的是 undefined 而不是 null —— `?? ''` 两种都能兜住。
   background.value = u?.background ?? ''
+  // ⚠️ 私密状态**每次都要显式带**（关掉私密靠传 0，不靠不传）。
+  isPrivate.value = u?.isPrivate ?? 0
 }
 watch(() => userStore.userInfo, syncFromStore, { immediate: true })
 
@@ -182,6 +190,8 @@ async function save() {
     // ⚠️ 背景图同理：空串 = 清空（后端 update-strategy: not_null 会把 null 剔除，
     //    所以「清空」必须靠空串 + 后端显式 set null）。
     patch.background = background.value
+    // ⚠️ 私密状态**必须每次都带**：关掉私密靠传 0（后端 not_null 只剔 null，0 照写）。
+    patch.isPrivate = isPrivate.value
 
     const updated = await updateProfile(patch)
     userStore.userInfo = updated
@@ -356,6 +366,43 @@ async function save() {
             {{ g.t }}
           </button>
         </div>
+      </div>
+
+      <!--
+        私密账号（P44 隐私设置）。
+        ⚠️ 语义是**「关掉私密」靠传 0**，不是靠不传 ——
+        后端 update-strategy: not_null 只剔除 null，0 会被照写。
+        所以这里每次保存都带上这个值。
+      -->
+      <div class="field">
+        <span class="label">账号可见范围</span>
+        <div class="genders">
+          <button
+            class="chip"
+            :class="{ on: isPrivate === 0 }"
+            type="button"
+            data-test="me-private-0"
+            @click="((isPrivate = 0), (dirty = true))"
+          >
+            公开
+          </button>
+          <button
+            class="chip"
+            :class="{ on: isPrivate === 1 }"
+            type="button"
+            data-test="me-private-1"
+            @click="((isPrivate = 1), (dirty = true))"
+          >
+            私密
+          </button>
+        </div>
+        <p class="field-hint" data-test="me-private-hint">
+          {{
+            isPrivate === 1
+              ? '设为私密后，你的笔记只有关注了你的人能看到（别人搜不到、也刷不到）。'
+              : '公开状态下，任何人都能看到你的笔记。'
+          }}
+        </p>
       </div>
 
       <p v-if="errorMsg" class="err" role="alert" data-test="me-error">{{ errorMsg }}</p>
@@ -539,8 +586,13 @@ async function save() {
   color: var(--xk-text-3);
 }
 /* 表单控件一律第 2 行跨两列。不写这条的话「性别」那组（没有 .count 占位）
-   会自动落进第 1 行第 2 列，变成按钮跟标签并排。 */
-.field > :not(.label):not(.count) {
+   会自动落进第 1 行第 2 列，变成按钮跟标签并排。
+   ⚠️ **必须排除 .field-hint**：这个字段有**三个**子元素
+   （label / 控件 / 说明文字），兜底规则会把说明文字也塞进第 2 行，
+   跟控件**落在同一格 → 互相重叠**（布局体检当场抓到 2 处重叠）。
+   而本规则的选择器特异性是 0,3,0，`.field-hint` 只有 0,1,0 ——
+   **光在 .field-hint 上写 grid-row 争不过它**，只能在这里排除。 */
+.field > :not(.label):not(.count):not(.field-hint) {
   grid-column: 1 / -1;
   grid-row: 2;
 }
@@ -606,7 +658,25 @@ async function save() {
 .upload-btn:hover { border-color: var(--xk-amber); color: var(--xk-amber-text); }
 .upload:focus-within .upload-btn { outline: 2px solid var(--xk-amber-text); outline-offset: 2px }
 
-.genders { display: flex; gap: 8px; }
+.genders {
+  display: flex;
+  gap: 8px;
+}
+
+/* 字段下面那行说明（私密账号的可见范围） */
+.field-hint {
+  grid-column: 1 / -1;
+  /* ⚠️ 必须是**第 3 行**：`.field > :not(.label):not(.count)` 的兜底规则
+   *    把所有非标签/非计数的子元素都放到**第 2 行** ——
+   *    而这个字段有三个子元素（label / genders / hint），
+   *    兜底规则让 hint 和 genders **落在同一格 → 互相重叠**
+   *    （布局体检当场抓到 2 处重叠）。 */
+  grid-row: 3;
+  margin: var(--xk-space-2) 0 0;
+  color: var(--xk-text-3);
+  font-size: var(--xk-fs-12);
+  line-height: 1.6;
+}
 .chip {
   padding: 7px 16px;
   border: var(--xk-stroke-w) solid var(--xk-border);

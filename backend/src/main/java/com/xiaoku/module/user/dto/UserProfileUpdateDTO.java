@@ -45,6 +45,20 @@ public class UserProfileUpdateDTO {
     private String avatar;
 
     /**
+     * 是否把账号设为私密（P44）。
+     *
+     * <p>0 = 公开，1 = 私密。**null = 不修改**（保持原值）。
+     *
+     * <p>⚠️ 语义与「不传」必须分清：前端每次保存资料都会带上这个字段，
+     * 所以「关掉私密」要靠**传 0**，不能靠不传 ——
+     * 而 {@code update-strategy: not_null} 只剔除 null，**0 会被照写** ✓
+     */
+    @Schema(description = "是否私密账号 0 公开 1 私密", example = "0")
+    @Min(value = 0, message = "私密取值非法")
+    @Max(value = 1, message = "私密取值非法")
+    private Integer isPrivate;
+
+    /**
      * 主页背景图地址（P39）。
      *
      * <p>与 {@link #avatar} 同样的「不传 / 空串 / 合法地址」三态语义，

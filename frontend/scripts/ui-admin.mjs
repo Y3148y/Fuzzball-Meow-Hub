@@ -225,7 +225,7 @@ try {
   const acts = await s.evaluate(`
     [...document.querySelectorAll('[data-test=admin-report-row]')]
       .find(e => e.textContent.includes(${JSON.stringify(NOTE_TITLE)}))
-      ?.querySelectorAll('[data-test=admin-act]').length ?? 0
+      ?.querySelectorAll('[data-test=admin-act]')?.length ?? 0
   `)
   s.check('笔记举报给齐四个处置动作（驳回/下架/删除/禁用作者）', acts === 4, `n=${acts}`)
 
@@ -382,7 +382,7 @@ try {
   await s.evaluate(`
     [...document.querySelectorAll('[data-test=admin-report-row]')]
       .find(e => e.textContent.includes(${JSON.stringify(NOTE_TITLE)}))
-      ?.querySelector('[data-test=admin-report-target-link]').click()
+      ?.querySelector('[data-test=admin-report-target-link]')?.click()
   `)
   await s.waitFor("location.hash.startsWith('#/note/')", '跳到被举报的笔记详情', 20000)
   s.check('点被举报内容能跳到那篇笔记', true, await s.evaluate('location.hash'))

@@ -16,6 +16,7 @@ import com.xiaoku.module.comment.service.CommentQueryService;
 import com.xiaoku.module.comment.vo.CommentVO;
 import com.xiaoku.module.note.entity.NoteEntity;
 import com.xiaoku.module.note.mapper.NoteMapper;
+import com.xiaoku.module.note.support.PrivacyGate;
 import com.xiaoku.module.user.service.UserQueryService;
 import com.xiaoku.module.user.vo.UserVO;
 import lombok.RequiredArgsConstructor;
@@ -53,13 +54,26 @@ public class CommentQueryServiceImpl implements CommentQueryService {
     private final NoteMapper noteMapper;
     private final UserQueryService userQueryService;
     private final com.xiaoku.module.topic.service.TopicRelationService topicRelationService;
+    /** P44 私密账号可见性闸门（与笔记详情共用同一份） */
+    private final PrivacyGate privacyGate;
 
     @Override
     public PageVO<CommentVO> listByNote(Long noteId, int page, int size) {
-        // 查评论前先确认笔记存在，否则会给一篇不存在的笔记返回"0 条评论"，
-        // 和"这篇笔记确实没评论"无法区分
+        // 查评论前先确认笔记存在，否则会给一篇不存在的笔记返回 0 条评论——
+        // 「这篇笔记确实没评」和「这篇笔记不存在」无法区分
         NoteEntity note = noteMapper.selectById(noteId);
         if (note == null) {
+            throw new BizException(ErrorCodeEnum.NOTE_NOT_FOUND);
+        }
+        // P44：**私密账号**的笔记，其评论列表也不该给无权限的人看。
+        //
+        // ⚠️ 用的是**与笔记详情同一份**可见性闸门（PrivacyGate）——
+        //    两处各判一次的话，规则迟早漂移，而漂移的方向是私密内容泄露。
+        //
+        // ⚠️ 这里**只拦私密**，不拦「已下架」：已下架笔记的评论列表任何人都能列，
+        //    那是既有的产品口径（评论没有下架这个状态），别顺手改掉。
+        Long viewerId = UserContextHolder.requireUserId();
+        if (privacyGate.isHidden(note.getUserId(), viewerId)) {
             throw new BizException(ErrorCodeEnum.NOTE_NOT_FOUND);
         }
 

@@ -638,6 +638,66 @@ try {
     s.check('移动端顶栏本身还在（只挪了设置卡，没把顶栏也藏了）',
       mob.topH > 0, JSON.stringify(mob))
 
+    /*
+     * P44：私密账号。
+     *  - 编辑资料页有「公开 / 私密」开关
+     *  - 「我的」页显示私密标识
+     *  - 关掉私密要靠**传 0**（不靠不传）—— 前端必须每次都带这个值
+     */
+    await s.goto(`${BASE}/#/profile/edit`)
+    await s.waitFor("document.querySelector('[data-test=me-private-0]')", '私密开关', 20000)
+    const privBtns = await s.evaluate(`(() => {
+      const p0 = document.querySelector('[data-test=me-private-0]')
+      const p1 = document.querySelector('[data-test=me-private-1]')
+      return JSON.stringify({
+        n: [p0, p1].filter(Boolean).length,
+        on0: p0?.classList.contains('on') ?? null,
+        on1: p1?.classList.contains('on') ?? null,
+        hint: document.querySelector('[data-test=me-private-hint]')?.textContent?.trim() ?? '',
+      })
+    })()`)
+    const pb = JSON.parse(privBtns)
+    s.check('编辑资料页有「公开 / 私密」两个选项', pb.n === 2, privBtns)
+    // ⚠️ 断「**只有一个**是选中态」而不是「某个是选中态」——
+    //    两个都选中或都没选中都不对，而前者很容易漏。
+    s.check('公开/私密里**有且只有一个**是选中态',
+      (pb.on0 === true) !== (pb.on1 === true), privBtns)
+    s.check('私密选项有说明文字（用户要知道自己选了什么）',
+      pb.hint.length > 8, privBtns)
+
+    // 切到「私密」→ 保存 → 回查后端 → 「我的」页应出现私密标识
+    await s.evaluate("document.querySelector('[data-test=me-private-1]').click()")
+    await sleep(200)
+    await s.evaluate("document.querySelector('[data-test=me-save]').click()")
+    await s.waitFor("location.hash === '#/profile'", '保存后回到主页', 20000)
+    const mePriv = await fetchMe(token)
+    s.check('落库：isPrivate=1（私密开关真的写进去了）', mePriv?.isPrivate === 1, `isPrivate=${mePriv?.isPrivate}`)
+    // ⚠️ **hash 变了 ≠ 组件换了**：App.vue 的 router-view 套了
+    //    `<transition name="fade" mode="out-in">`，旧组件要先播完 0.18s 的
+    //    离场动画，新组件才挂载。而 `waitFor("location.hash === '#/profile'")`
+    //    在**导航开始**时就满足了 —— 那一刻 DOM 里还是旧组件。
+    //    所以这里要等**元素出现**，而不是查 DOM。
+    await s.waitFor("document.querySelector('[data-test=me-nickname]')", '主页组件已切换', 10000)
+    s.check('「我的」页出现私密标识',
+      (await s.evaluate("!!document.querySelector('[data-test=me-private-mark]')")) === true)
+
+    // ⚠️ **关掉私密靠传 0**（不靠不传）—— 前端必须每次都带这个值，
+    //    否则「取消私密」会静默失效（后端 not_null 只剔 null，0 照写）。
+    await s.goto(`${BASE}/#/profile/edit`)
+    await s.waitFor("document.querySelector('[data-test=me-private-0]')", '私密开关', 20000)
+    const onPriv = await s.evaluate("document.querySelector('[data-test=me-private-1]').classList.contains('on')")
+    s.check('重新进编辑页时回填的是「私密」选中', onPriv === true, `on=${onPriv}`)
+    await s.evaluate("document.querySelector('[data-test=me-private-0]').click()")
+    await sleep(200)
+    await s.evaluate("document.querySelector('[data-test=me-save]').click()")
+    await s.waitFor("location.hash === '#/profile'", '保存后回到主页', 20000)
+    // ⚠️ 同上：hash 变了不等于组件换了（离场动画 0.18s）
+    await s.waitFor("document.querySelector('[data-test=me-nickname]')", '主页组件已切换', 10000)
+    const mePub = await fetchMe(token)
+    s.check('落库：isPrivate=0（关掉私密真的生效了）', mePub?.isPrivate === 0, `isPrivate=${mePub?.isPrivate}`)
+    s.check('「我的」页的私密标识消失了',
+      (await s.evaluate("!!document.querySelector('[data-test=me-private-mark]')")) === false)
+
     // ---- 桌面：只留一条顶栏
     await s.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
     await sleep(800)

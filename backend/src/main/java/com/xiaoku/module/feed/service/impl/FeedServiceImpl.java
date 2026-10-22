@@ -58,9 +58,13 @@ public class FeedServiceImpl implements FeedService {
         Long userId = UserContextHolder.requireUserId();
 
         Set<Long> hidden = userBlockService.hiddenUserIds(userId);
-        long total = feedMapper.countDiscover(userId, hidden);
+        // P44：**私密账号**的笔记只有关注了 TA 的用户能看。
+        // 关注流天然满足（它列的就是我关注的人），发现流不满足 —— 所以要传
+        // 「我关注了谁」进 SQL 过滤，而不是查回来再筛（那样 total 会和 list 对不上）。
+        Set<Long> followed = userFollowQueryService.listFollowedIds(userId);
+        long total = feedMapper.countDiscover(userId, hidden, followed);
         long offset = (long) (page - 1) * size;
-        return assemble(feedMapper.pageDiscover(userId, offset, size, hidden), total, page, size, userId);
+        return assemble(feedMapper.pageDiscover(userId, offset, size, hidden, followed), total, page, size, userId);
     }
 
     /**
@@ -75,9 +79,11 @@ public class FeedServiceImpl implements FeedService {
         Long userId = UserContextHolder.requireUserId();
 
         Set<Long> hidden = userBlockService.hiddenUserIds(userId);
-        long total = feedMapper.countDiscover(userId, hidden);
+        // P44：私密过滤（与 discoverFeed 同一套口径）
+        Set<Long> followed = userFollowQueryService.listFollowedIds(userId);
+        long total = feedMapper.countDiscover(userId, hidden, followed);
         long offset = (long) (page - 1) * size;
-        List<NoteEntity> notes = feedMapper.pageDiscover(userId, offset, size, hidden);
+        List<NoteEntity> notes = feedMapper.pageDiscover(userId, offset, size, hidden, followed);
         if (notes.isEmpty()) {
             return PageVO.of(List.of(), total, page, size);
         }

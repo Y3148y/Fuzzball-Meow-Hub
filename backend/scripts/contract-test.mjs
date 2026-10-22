@@ -2713,13 +2713,33 @@ async function main() {
     const rep42Id = rep42.json?.data
     check('对它的举报入库', typeof rep42Id === 'string', `reportId=${rep42Id}`)
 
+    // ⚠️ **笔记举报也要自己造一条**：原来这里去列表里「找一条 targetType=1 的」，
+    //    而列表里有没有这种东西**取决于库里还剩什么** ——
+    //    实测「上一轮跑过之后那条恰好被清掉了」就查不到了，
+    //    症状是「targetNoteId=undefined targetId=undefined」，
+    //    而两条断言自相矛盾（下面那条用 rep42Id 精确找却是好的）。
+    //    **自造的用例不能假设库是干净的。**
+    //
+    // ⚠️ 被举报的笔记必须是**别人**的：举报自己的内容会被拒
+    //    （80004「不能举报自己的内容」）—— 上一版用 noteC（tA 发的）就踩了这个。
+    const note42 = (await post('/api/note/publish', {
+      token: auth, body: { title: `P42 素材笔记 ${stamp}`, content: '正文', imageUrls: [p20Img] },
+    })).json?.data?.id
+    check('造出被举报的笔记（作者是主账号）', typeof note42 === 'string', `id=${note42}`)
+    const rep42Note = await post('/api/report', {
+      token: tA, body: { targetType: 1, targetId: note42, reasonCode: 1 },
+    })
+    const rep42NoteId = rep42Note.json?.data
+    check('对笔记的举报入库', typeof rep42NoteId === 'string',
+      `reportId=${rep42NoteId} code=${rep42Note.json?.code} ${rep42Note.json?.message ?? ''}`)
+
     const rl42 = await get('/api/admin/report/list?status=0&page=1&size=50', { token: adm })
     const rows42 = rl42.json?.data?.list ?? []
-    const noteRow42 = rows42.find((r) => r.targetType === 1 && r.targetExists)
+    const noteRow42 = rows42.find((r) => r.id === rep42NoteId)
     const commentRow42 = rows42.find((r) => r.id === rep42Id)
     check('笔记举报的行带 targetNoteId（= 被举报笔记 id）',
-      !!noteRow42 && noteRow42.targetNoteId === noteRow42.targetId,
-      `targetNoteId=${noteRow42?.targetNoteId} targetId=${noteRow42?.targetId}`)
+      !!noteRow42 && noteRow42.targetNoteId === noteRow42.targetId && noteRow42.targetId === note42,
+      `targetNoteId=${noteRow42?.targetNoteId} targetId=${noteRow42?.targetId} 期望=${note42}`)
     check('评论举报的行带 targetNoteId（= 评论所在笔记 id，不是评论 id）',
       !!commentRow42 && commentRow42.targetNoteId === noteC && commentRow42.targetId === cm42,
       `targetNoteId=${commentRow42?.targetNoteId} 期望=${noteC} targetId=${commentRow42?.targetId}`)
@@ -2743,6 +2763,17 @@ async function main() {
 
     /* ---------- 清理 ---------- */
 
+    // ⚠️ **把本段造的举报处置掉**（驳回 → status=2）。
+    //    举报**没有删除接口**（P18：「举报去重是永久的，没有撤回接口」），
+    //    所以不处置的话，每跑一轮就往「待处理」列表里堆 2 条 ——
+    //    实测几轮之后堆到 139 条，admin 列表（size=50）就被测试垃圾占满了，
+    //    后面 CDP 的 ui-admin 组**找不到自己的那行**直接崩。
+    //    这不是「测试数据脏」的小事：它会**掩盖真实缺陷**
+    //    （运营看到的列表被前面的旧举报占满）。
+    await post(`/api/admin/report/${rep42Id}/handle`, { token: adm, body: { action: 1, handleNote: 'P42 验收完成' } })
+    await post(`/api/admin/report/${rep42NoteId}/handle`, { token: adm, body: { action: 1, handleNote: 'P42 验收完成' } })
+
+    await del(`/api/note/${note42}`, { token: auth })
     await del(`/api/note/${p20Id}`, { token: tA })
     await del(`/api/note/${noteC}`, { token: tA })
     // 账号名用「ct_ + 前缀 + stamp」的连续形式：stamp 是 base36 小写字母数字，
@@ -3440,6 +3471,162 @@ const lastTwo = (hist?.list ?? []).slice(-2)
       /* ---------- 未登录 ---------- */
       codeIs('P39 未登录改背景图被拒（10005）',
         (await put('/api/user/profile', { body: { background: bgUrl } })).json, 10005)
+    }
+  }
+
+  /* ================================================================
+   * 26. P44 隐私设置：私密账号
+   *
+   * 规则（与用户拍板的一致）：
+   *  - 私密账号的笔记**只有关注了 TA 的用户**能看（单向关注也算）
+   *  - 发现流 / 搜索 / 沉浸流里，**只对有权限的人显示**
+   *
+   * ⚠️ 三个角色：
+   *  - 私密作者：注册 `ct_priv_<stamp>`（**本段专用**，
+   *    不动常驻 fixture —— 万一这段崩了，fixture 保持公开，
+   *    不会把后面几十段全部带崩）
+   *  - 关注者：xk_ui_smoke（fixture）
+   *  - 陌生人：主账号 `auth`
+   * ================================================================ */
+  {
+    // ⚠️ **不注册新账号**：register 是 10/min/IP，而本文件从头到尾已注册了 4~5 个
+    //    （主号 / ct2_ / ct3_ / ct4_ / ct_mod / p20a / p20r），
+    //    到文件末尾桶早见底 —— 实测「P44 私密作者注册成功」直接返 100005。
+    //
+    // 改用 **P20 段注册过的专用账号 `ct_p20r<stamp>`**：它在 P20 段用完就没再用过了，
+    // 而且是**本文件专用**的 —— 万一这段崩了，账号是私密的也不会影响别的段
+    //    （常驻 fixture 就不同了：改坏 xk_ui_follow 会让后面几十段全部假红）。
+    // ⚠️ 用户名要**重新拼**：`p20r` 是 P20 段**块内**声明的 const，
+    //    出了那个 `{}` 就不在作用域了（实测 ReferenceError: p20r is not defined）。
+    const privName = `ct_p20r${stamp}`
+    const privLogin = await post('/api/user/login', { body: { username: privName, password: P } })
+    check('P44 私密作者能登录（复用 P20 段的专用账号）', privLogin.json?.code === 0, `code=${privLogin.json?.code}`)
+    if (privLogin.json?.code === 0) {
+      const privAuth = `Bearer ${privLogin.json.data.accessToken}`
+      const privId = (await get('/api/user/me', { token: privAuth })).json?.data?.id
+
+      // 关注者：xk_ui_smoke。陌生人：主账号 auth。
+      const lS = await post('/api/user/login', { body: { username: 'xk_ui_smoke', password: 'Xk@123456' } })
+      const smokeAuth = `Bearer ${lS.json?.data?.accessToken}`
+      check('P44 关注者能登录', !!smokeAuth && smokeAuth !== 'Bearer undefined')
+
+      // ⚠️ **先恢复成公开**（幂等）：万一上一轮跑崩了，这个账号还留着私密状态，
+      //    这次进来第一件事就是把它摆平 —— 否则每次跑都会在同一个地方崩。
+      await put('/api/user/profile', { token: privAuth, body: { isPrivate: 0 } })
+
+      // 作者本人发一篇笔记
+      const privImg = (await uploadImage(privAuth)).json?.data?.url
+      const privNote = (await post('/api/note/publish', {
+        token: privAuth,
+        body: { title: `P44 私密笔记 ${stamp}`, content: '这是私密账号的笔记', imageUrls: [privImg] },
+      })).json?.data?.id
+      check('P44 私密作者发出了一篇笔记', typeof privNote === 'string', `id=${privNote}`)
+
+      // ⚠️ **先设为私密再断言** —— 公开状态下的可见性是既有语义，
+      //    这里要验的是「私密之后谁还看得见」。
+      const setPriv = await put('/api/user/profile', { token: privAuth, body: { isPrivate: 1 } })
+      eq('P44 设为私密 code=0', setPriv.json?.code, 0)
+      eq('P44 /api/user/me 带得出 isPrivate=1', (await get('/api/user/me', { token: privAuth })).json?.data?.isPrivate, 1)
+
+      /* ---------- ① 详情页：三个角色 ---------- */
+      eq('P44 作者本人能看到自己的私密笔记',
+        (await get(`/api/note/${privNote}`, { token: privAuth })).json?.code, 0)
+
+      // 关注者关注 TA
+      const fol = await put(`/api/follow/${privId}`, { token: smokeAuth })
+      check('P44 关注者关注了私密作者', fol.json?.code === 0, `code=${fol.json?.code}`)
+      eq('P44 关注者能看到私密作者的笔记',
+        (await get(`/api/note/${privNote}`, { token: smokeAuth })).json?.code, 0)
+
+      codeIs('P44 陌生人看不到私密笔记（20001 不存在，而不是「你看不到」）',
+        (await get(`/api/note/${privNote}`, { token: auth })).json, 20001)
+
+      /* ---------- ② 作者主页的笔记列表 ---------- */
+      const pUnf = await get(`/api/note/user/${privId}?page=1&size=20`, { token: auth })
+      eq('P44 陌生人看私密作者的笔记列表：空（看不到）',
+        pUnf.json?.data?.list?.length ?? -1, 0)
+      const pFol = await get(`/api/note/user/${privId}?page=1&size=20`, { token: smokeAuth })
+      check('P44 关注者看私密作者的笔记列表：有',
+        (pFol.json?.data?.list?.length ?? 0) > 0, `n=${pFol.json?.data?.list?.length}`)
+
+      /* ---------- ③ 评论列表也拦 ---------- */
+      codeIs('P44 陌生人连私密笔记的评论列表都拿不到（20001）',
+        (await get(`/api/comment/list?noteId=${privNote}&page=1&size=10`, { token: auth })).json, 20001)
+      eq('P44 关注者能看私密笔记的评论列表',
+        (await get(`/api/comment/list?noteId=${privNote}&page=1&size=10`, { token: smokeAuth })).json?.code, 0)
+
+      /* ---------- ④ 发现流 / 沉浸流：只对有权限的人显示 ---------- */
+      // ⚠️ 必须**先给这篇笔记攒点互动**（点赞），否则零互动的新笔记
+      //    排在热度分榜的**末尾**（库里 574 篇），第一页里根本看不到它 ——
+      //    那时「看不到」和「看得到」都测不出来。
+      // ⚠️ 必须用 **PUT**：点赞端点是 `PUT /api/note/{id}/like`
+      //    （控制器里明写「用 PUT / DELETE，不要 POST /like + POST /unlike」），
+      //    写成 POST 会返 100002「请求方法不支持」—— 而症状是「点赞没生效」，
+      //    与真因（方法不对）隔了半屏。
+      const like = await put(`/api/note/${privNote}/like`, { token: smokeAuth })
+      check('P44 关注者给私密笔记点了赞（提高热度分）', like.json?.code === 0, `code=${like.json?.code}`)
+
+      const dUnf = await get('/api/feed/discover?page=1&size=50', { token: auth })
+      const dFol = await get('/api/feed/discover?page=1&size=50', { token: smokeAuth })
+      const idsUnf = (dUnf.json?.data?.list ?? []).map((n) => n.id)
+      const idsFol = (dFol.json?.data?.list ?? []).map((n) => n.id)
+      check('P44 陌生人的发现流里**看不到**私密笔记',
+        !idsUnf.includes(privNote), `第一页 ${idsUnf.length} 条`)
+      check('P44 关注者的发现流里**能看到**私密笔记',
+        idsFol.includes(privNote), `第一页 ${idsFol.length} 条`)
+
+      // 沉浸流复用同一个 mapper 方法，排序与发现流一致（AGENTS P34）
+      const iUnf = await get('/api/feed/immerse?page=1&size=20', { token: auth })
+      const iFol = await get('/api/feed/immerse?page=1&size=20', { token: smokeAuth })
+      const iIdsUnf = (iUnf.json?.data?.list ?? []).map((n) => n.id)
+      const iIdsFol = (iFol.json?.data?.list ?? []).map((n) => n.id)
+      check('P44 陌生人的沉浸流里看不到私密笔记',
+        !iIdsUnf.includes(privNote), `第一页 ${iIdsUnf.length} 条`)
+      check('P44 关注者的沉浸流里能看到私密笔记',
+        iIdsFol.includes(privNote), `第一页 ${iIdsFol.length} 条`)
+
+      /* ---------- ⑤ 搜索：只对有权限的人显示 ---------- */
+      // ⚠️ 搜索是**异步索引**（Kafka → ES），要轮询等它进索引。
+      //    关键词必须用**独立随机锚点**（AGENTS P7 的坑：共享词会撞上别的笔记）。
+      const kw44 = `p44${stamp}`
+      const kwTitle = `P44 私密锚点 ${kw44}`
+      await put(`/api/note/${privNote}`, {
+        token: privAuth, body: { title: kwTitle, content: `私密正文 ${kw44}`, imageUrls: [privImg] },
+      })
+      let indexed = false
+      for (let i = 0; i < 20 && !indexed; i++) {
+        await new Promise((r) => setTimeout(r, 700))
+        // ⚠️ 轮询要用**关注者**（能看到的人）去查！
+        //    用陌生人查的话，陌生人本来就看不到这篇私密笔记 →
+        //    轮询永远等不到 → 断言恒红，而下一条「关注者搜得到」却是绿的，
+        //    两条自相矛盾。
+        const sr = await get(`/api/search/note?keyword=${encodeURIComponent(kw44)}&page=1&size=20`, { token: smokeAuth })
+        indexed = (sr.json?.data?.list ?? []).some((n) => n.id === privNote)
+      }
+      check('P44 私密笔记已进搜索索引（等到了异步索引）', indexed)
+
+      const sUnf = await get(`/api/search/note?keyword=${encodeURIComponent(kw44)}&page=1&size=20`, { token: auth })
+      const sFol = await get(`/api/search/note?keyword=${encodeURIComponent(kw44)}&page=1&size=20`, { token: smokeAuth })
+      check('P44 陌生人搜不到私密笔记',
+        !(sUnf.json?.data?.list ?? []).some((n) => n.id === privNote),
+        `命中 ${(sUnf.json?.data?.list ?? []).length} 条`)
+      check('P44 关注者搜得到私密笔记',
+        (sFol.json?.data?.list ?? []).some((n) => n.id === privNote),
+        `命中 ${(sFol.json?.data?.list ?? []).length} 条`)
+
+      /* ---------- ⑥ 关掉私密就恢复公开 ---------- */
+      const setPub = await put('/api/user/profile', { token: privAuth, body: { isPrivate: 0 } })
+      eq('P44 关掉私密 code=0', setPub.json?.code, 0)
+      eq('P44 关掉私密后陌生人就能看了',
+        (await get(`/api/note/${privNote}`, { token: auth })).json?.code, 0)
+      eq('P44 /api/user/me 带得出 isPrivate=0', (await get('/api/user/me', { token: privAuth })).json?.data?.isPrivate, 0)
+
+      /* ---------- 清理 ---------- */
+      // 取关 + 删笔记 + 把账号恢复成公开（万一上面崩了，账号是本段专用的，
+      // 留着私密状态也不会影响别的段 —— 但还是清干净）
+      await del(`/api/follow/${privId}`, { token: smokeAuth })
+      await del(`/api/note/${privNote}`, { token: privAuth })
+      await put('/api/user/profile', { token: privAuth, body: { isPrivate: 0 } })
     }
   }
 

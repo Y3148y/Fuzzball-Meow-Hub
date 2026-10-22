@@ -245,7 +245,14 @@ onMounted(load)
 
       <section class="card xk-card xk-card--flat feed">
         <h2 class="feed-title">TA 的笔记</h2>
-        <p v-if="!notes.length" class="hint" data-test="user-notes-empty">还没有发过笔记</p>
+        <p v-if="!notes.length" class="hint" data-test="user-notes-empty">
+          <!--
+            P44：私密账号且我没关注 TA → 笔记列表是空的（后端过滤掉了）。
+            这时候要**说清楚为什么空**，否则用户以为 TA 没发过笔记。
+          -->
+          <template v-if="author.isPrivate === 1">该账号已设为私密，关注后可见</template>
+          <template v-else>还没有发过笔记</template>
+        </p>
         <ul v-else class="items" data-test="user-notes">
           <li v-for="item in notes" :key="item.id" class="item" data-test="user-note">
             <RouterLink class="main" :to="`/note/${item.id}`">

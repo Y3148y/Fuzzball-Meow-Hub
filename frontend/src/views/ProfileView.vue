@@ -153,6 +153,17 @@ async function logout() {
         <div class="names">
           <h1 class="nickname" data-test="me-nickname">
             {{ userStore.userInfo?.nickname || '加载中…' }}
+            <!--
+              P44：私密账号标识。
+              ⚠️ 放在昵称**旁边**而不是单独一行 —— 单独一行会把这个区块撑高，
+              移动端首屏又少一屏笔记（那正是 P40 刚修好的问题）。
+            -->
+            <span
+              v-if="userStore.userInfo?.isPrivate === 1"
+              class="private-mark"
+              title="你的账号已设为私密"
+              data-test="me-private-mark"
+            >私密</span>
           </h1>
           <!-- P30：用户名不再展示给人看 —— 界面上只有昵称，用户不必记两个名字。 -->
         </div>
@@ -558,6 +569,20 @@ async function logout() {
   font-size: var(--xk-fs-20);
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* P44：私密账号标识（小圆角标签，贴在昵称后面） */
+.private-mark {
+  display: inline-block;
+  margin-left: var(--xk-space-2);
+  padding: 1px var(--xk-space-2);
+  border: var(--xk-stroke-w) solid var(--xk-amber-text);
+  border-radius: 999px;
+  color: var(--xk-amber-text);
+  font-size: var(--xk-fs-12);
+  font-weight: 400;
+  vertical-align: 2px;
   white-space: nowrap;
 }
 

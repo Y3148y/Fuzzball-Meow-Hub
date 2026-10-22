@@ -126,6 +126,14 @@ likeReceivedCount: number
  * 是加在 likeReceivedCount 之后的；老账号后端返回 null 时按 0（非管理员）处理。
  */
 role: number
+/**
+ * 是否私密账号（P44 隐私设置）。
+ *
+ * 1 = 私密：TA 的笔记只有关注了 TA 的用户能看。0 = 公开。
+ *
+ * ⚠️ 老账号后端可能返 null —— 按 0（公开）处理。
+ */
+isPrivate: number
 /** 后端是 LocalDateTime，默认形如 "2026-09-23T10:58:35" */
 createTime: string
 }
@@ -137,7 +145,7 @@ createTime: string
  * 上限要跟后端 @Size 对齐（昵称 32 / 简介 255），
  * 超了后端会回 100001，这里先拦一道省得白跑一趟。
  */
-export type ProfilePatch = Partial<Pick<UserVO, 'nickname' | 'avatar' | 'bio' | 'gender' | 'background'>>
+export type ProfilePatch = Partial<Pick<UserVO, 'nickname' | 'avatar' | 'bio' | 'gender' | 'background' | 'isPrivate'>>
 
 /** 登录结果，对应后端 LoginVO */
 export interface LoginVO {

@@ -117,15 +117,24 @@ public interface FeedMapper {
             <script>
             SELECT COUNT(*)
             FROM note n
+            JOIN user u ON u.id = n.user_id
             WHERE n.status = 1
                 <if test="hiddenIds != null and !hiddenIds.isEmpty()">
                     AND n.user_id NOT IN
                     <foreach collection="hiddenIds" item="id" open="(" separator="," close=")">#{id}</foreach>
                 </if> AND n.user_id != #{userId}
+              AND (
+                u.is_private = 0
+                <if test="followedIds != null and !followedIds.isEmpty()">
+                    OR n.user_id IN
+                    <foreach collection="followedIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+                </if>
+              )
             </script>
             """)
     long countDiscover(@Param("userId") Long userId,
-                         @Param("hiddenIds") java.util.Collection<Long> hiddenIds);
+                         @Param("hiddenIds") java.util.Collection<Long> hiddenIds,
+                         @Param("followedIds") java.util.Collection<Long> followedIds);
 
     /**
      * 发现流排序，三级依次比较：
@@ -144,11 +153,19 @@ public interface FeedMapper {
             <script>
             SELECT n.*
             FROM note n
+            JOIN user u ON u.id = n.user_id
             WHERE n.status = 1 AND n.user_id != #{userId}
               <if test="hiddenIds != null and !hiddenIds.isEmpty()">
                   AND n.user_id NOT IN
                   <foreach collection="hiddenIds" item="id" open="(" separator="," close=")">#{id}</foreach>
               </if>
+              AND (
+                u.is_private = 0
+                <if test="followedIds != null and !followedIds.isEmpty()">
+                    OR n.user_id IN
+                    <foreach collection="followedIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+                </if>
+              )
             ORDER BY (EXISTS (SELECT 1 FROM user_follow f
                              WHERE f.user_id = #{userId} AND f.follow_id = n.user_id AND f.status = 1)) DESC,
                     (1 + 3 * n.like_count + 4 * n.collect_count + 5 * n.comment_count)
@@ -161,5 +178,6 @@ public interface FeedMapper {
     List<NoteEntity> pageDiscover(@Param("userId") Long userId,
                                   @Param("offset") long offset,
                                   @Param("size") int size,
-                                  @Param("hiddenIds") java.util.Collection<Long> hiddenIds);
+                                  @Param("hiddenIds") java.util.Collection<Long> hiddenIds,
+                                  @Param("followedIds") java.util.Collection<Long> followedIds);
 }

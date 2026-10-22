@@ -37,6 +37,7 @@ CREATE TABLE `user`
     `like_received_count` INT             NOT NULL DEFAULT 0 COMMENT '获赞总数',
 `status`             TINYINT         NOT NULL DEFAULT '1' COMMENT '状态 0禁用 1正常',
       `role`               TINYINT         NOT NULL DEFAULT '0' COMMENT '角色 0普通用户 1管理员（P20 运营后台）',
+      `is_private`         TINYINT         NOT NULL DEFAULT '0' COMMENT '私密账号 0公开 1私密（P44 隐私设置）',
       `last_login_time`    DATETIME                 DEFAULT NULL COMMENT '最后登录时间',
     `create_time`        DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
     `update_time`        DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

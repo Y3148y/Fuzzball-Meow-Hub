@@ -171,9 +171,13 @@ public class UserServiceImpl implements UserService {
         // update-strategy: not_null，值为 null 的字段不会出现在 UPDATE 语句里，
         // 因此这里直接透传 DTO 即可实现「部分更新」，
         // 不会出现「用户只改了昵称，结果简介被清空」的问题。
-update.setNickname(dto.getNickname());
+        update.setNickname(dto.getNickname());
         update.setBio(dto.getBio());
         update.setGender(dto.getGender());
+        // P44：私密账号开关。
+        // ⚠️ 「关掉私密」要靠**传 0** —— 而 update-strategy: not_null 只剔除 null，
+        //    0 会被照写 ✓（null = 不修改，保持原值）。
+        update.setIsPrivate(dto.getIsPrivate());
         // ⚠️ 头像必须在 service 里过白名单（AvatarPresets#validate），
         // 不能只靠 DTO 的 @Size —— 那只管长度，挡不住外链 / javascript: / data:。
         // 见 AvatarPresets 的类注释：这是这个字段唯一的安全边界。

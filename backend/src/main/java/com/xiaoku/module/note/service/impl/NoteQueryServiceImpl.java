@@ -66,6 +66,8 @@ public class NoteQueryServiceImpl implements NoteQueryService {
      * 理由见 {@link #isAdmin(Long)}。
      */
     private final com.xiaoku.module.user.mapper.UserMapper userMapper;
+    /** P44 私密账号的可见性闸门（唯一一份实现，别在别处再写一遍） */
+    private final com.xiaoku.module.note.support.PrivacyGate privacyGate;
 
     /**
      * <b>笔记详情需要登录。</b>
@@ -165,6 +167,14 @@ public class NoteQueryServiceImpl implements NoteQueryService {
         // 「下架后就再也没法从列表进自己的笔记」。
         if (!currentUserId.equals(userId)) {
             query.eq(NoteEntity::getStatus, STATUS_PUBLISHED);
+            // P44：**私密账号**的主页，笔记只有关注了 TA 的用户能看。
+            //
+            // ⚠️ 这里**返回空列表而不是报错**：私密账号的主页本身是可以看的
+            //    （昵称、简介、关注数都在），只是笔记看不到。
+            //    前端根据 author.isPrivate 显示「该账号已设为私密，关注后可见」。
+            if (privacyGate.isHidden(userId, currentUserId)) {
+                return PageVO.of(List.of(), 0, page, size);
+            }
         }
         Page<NoteEntity> result = noteMapper.selectPage(pageInfo, query);
 
@@ -269,6 +279,20 @@ public class NoteQueryServiceImpl implements NoteQueryService {
         if (status == STATUS_DRAFT && !isAuthor) {
             // 草稿对非作者按「不存在」处理：返回「笔记不存在」而不是「这是草稿」，
             // 否则就能靠错误码差异探测出某篇草稿是否存在。
+            throw new BizException(ErrorCodeEnum.NOTE_NOT_FOUND);
+        }
+        // P44：**私密账号**的笔记只有关注了 TA 的用户能看。
+        //
+        // ⚠️ 放在「下架」判断**之前**：私密笔记对无权限者必须报 20001（不存在），
+        //    而「该笔记已被下架」（20002）本身就泄露了「这篇存在过」——
+        //    顺序反了就等于说「有篇私密笔记，只是被下架了」。
+        //
+        // ⚠️ 报 20001 而不是 20002：「这篇是私密内容，你看不到」这句话
+        //    本身就是泄露；而「不存在」没法区分「从没存在过」和「存在但你看不到」。
+        //
+        // ⚠️ 成本：公开作者的判断走 UserVO 缓存（几乎零成本），
+        //    而关注关系**只对私密作者**才查 —— 绝大多数笔记走不到那一步。
+        if (privacyGate.isHidden(note.getUserId(), currentUserId)) {
             throw new BizException(ErrorCodeEnum.NOTE_NOT_FOUND);
         }
         if (status == STATUS_TAKEN_DOWN && !isAuthor) {

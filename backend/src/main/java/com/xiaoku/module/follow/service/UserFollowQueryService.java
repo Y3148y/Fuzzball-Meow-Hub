@@ -30,6 +30,20 @@ public interface UserFollowQueryService {
     Set<Long> batchFollowingIds(Long userId, Collection<Long> targetIds);
 
     /**
+     * 某用户**关注了谁**（全部 id，不分页）。
+     *
+     * <p>P44 私密账号过滤要用：发现流/沉浸流的 SQL 里要判断
+     * 「这篇笔记的作者是不是我关注的人」——
+     * 关注流天然满足（它列的就是我关注的人），发现流不满足。
+     *
+     * <p>为什么不在 SQL 里写 {@code EXISTS (SELECT 1 FROM user_follow ...)}：
+     * 那是**逐行**的相关子查询（AGENTS P14 实测 discover p95 ≈ 80ms，
+     * 排序那一级已经是 DEPENDENT SUBQUERY）。改成把 id 列表传进 SQL，
+     * MySQL 能把它转成临时表做 hash join。
+     */
+    Set<Long> listFollowedIds(Long userId);
+
+    /**
      * 某用户关注了谁（TA 的 followings），分页。
      *
      * <p>viewerId 与 targetUserId 可能不同：小明点开小红的关注列表，

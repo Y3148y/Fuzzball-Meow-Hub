@@ -206,9 +206,36 @@ public class SearchServiceImpl implements SearchService {
         Map<Long, UserVO> users = userQueryService.findUserVOMap(authorIds);
         Set<Long> following = userFollowQueryService.batchFollowingIds(currentUserId, authorIds);
 
-        // P8：搜索结果卡片计数以 Redis 为准（整页一次 pipeline），缺失的保持 DB 现值
-        counterStore.applyCounts(kept);
-        return kept.stream()
+        // P44：**私密账号**的笔记只有关注了 TA 的用户能看。
+        //
+        // ⚠️ 这里**零额外查询**：作者 VO 上面已经查了（users），
+        //    关注关系上面也已经批量算了（following）—— 过滤只是在这两份数据上做判断。
+        //
+        // ⚠️ **total 会偏大**（这是已知取舍）：total 取的是 ES 的命中数，
+        //    而 ES 索引里没有隐私信息（加它就得在「改隐私设置」时重建该作者的索引，
+        //    那是 AGENTS P7 踩过的「改索引要重建」的坑）。
+        //    搜索的 total 本来就因「ES 与库不同步」而抖动（被删的笔记也在里面），
+        //    私密笔记占比通常很小 —— 所以不为了这个精度去动索引结构。
+        //    表现：搜索结果里私密笔记**不出现**，但「共 N 条」可能略大。
+        final Set<Long> followingRef = following;
+        final Map<Long, UserVO> usersRef = users;
+        List<NoteEntity> visible = kept.stream()
+                .filter(n -> {
+                    UserVO author = usersRef.get(n.getUserId());
+                    boolean isPrivate = author != null
+                            && Integer.valueOf(1).equals(author.getIsPrivate());
+                    if (!isPrivate) {
+                        return true;
+                    }
+                    // 作者本人 / 关注了 TA 的人 → 可见
+                    return n.getUserId().equals(currentUserId)
+                            || followingRef.contains(n.getUserId());
+                })
+                .toList();
+
+        // P8：搜索结果卡片计数以 Redis 为准（整页一个 pipeline），缺失的保持 DB 现值
+        counterStore.applyCounts(visible);
+        return visible.stream()
                 .map(note -> NoteConverter.toListItemVO(note,
                         users.get(note.getUserId()),
                         following.contains(note.getUserId())))

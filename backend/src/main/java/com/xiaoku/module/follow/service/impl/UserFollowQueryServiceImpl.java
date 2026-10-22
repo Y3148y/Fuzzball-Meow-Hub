@@ -46,6 +46,18 @@ public class UserFollowQueryServiceImpl implements UserFollowQueryService {
     }
 
     @Override
+    public Set<Long> listFollowedIds(Long userId) {
+        if (userId == null) {
+            return Collections.emptySet();
+        }
+        return userFollowMapper.selectList(Wrappers.<UserFollowEntity>lambdaQuery()
+                        .eq(UserFollowEntity::getUserId, userId))
+                .stream()
+                .map(UserFollowEntity::getFollowId)
+                .collect(Collectors.toSet());
+    }
+
+    @Override
     public Set<Long> batchFollowingIds(Long userId, Collection<Long> targetIds) {
         if (userId == null || targetIds == null || targetIds.isEmpty()) {
             return Collections.emptySet();

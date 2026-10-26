@@ -2588,9 +2588,23 @@ async function main() {
     eq('被举报内容标记为存在', row?.targetExists, true)
     eq('举报理由是可读文案', row?.reasonText, '垃圾广告')
 
+    // P46 驳回必须填理由（放在「防重放」检查之前：同一举报第一次处置才要校验理由）
+    codeIs('驳回不带理由 → 90008（理由会发给举报人）',
+      (await post(`/api/admin/report/${repId}/handle`, {
+        token: adm, body: { action: 1 } })).json, 90008)
+    codeIs('驳回理由超 200 字 → 100001（DTO 层 @Size 先拦）',
+      (await post(`/api/admin/report/${repId}/handle`, {
+        token: adm, body: { action: 1, handleNote: '字'.repeat(201) } })).json, 100001)
+
     eq('处置（下架）成功',
       (await post(`/api/admin/report/${repId}/handle`, {
         token: adm, body: { action: 2, handleNote: '违规广告' } })).json?.code, 0)
+    // P46 下架处置后举报人应拿到 type=8 通知（含处置说明 + noteId）
+    const nrAfterTake = (await get('/api/notification/list?page=1&size=10', { token: tR })).json?.data
+    const n8take = nrAfterTake?.list?.find((n) => n.type === 8 && n.targetId === repId)
+    check('下架处置后举报人收到处理结果通知（type=8）', !!n8take, `found=${!!n8take} all=${JSON.stringify(nrAfterTake?.list?.map(n => ({ type: n.type, targetId: n.targetId })))}`)
+    check('通知文案含处置说明', n8take?.content?.includes('已下架') === true, `content=${n8take?.content}`)
+
     eq('下架后他人看详情 → 20002',
       (await get(`/api/note/${p20Id}`, { token: tR })).json?.code, 20002)
     eq('被处置的举报不再出现在待处理里',
@@ -2772,6 +2786,15 @@ async function main() {
     //    （运营看到的列表被前面的旧举报占满）。
     await post(`/api/admin/report/${rep42Id}/handle`, { token: adm, body: { action: 1, handleNote: 'P42 验收完成' } })
     await post(`/api/admin/report/${rep42NoteId}/handle`, { token: adm, body: { action: 1, handleNote: 'P42 验收完成' } })
+    // P46：两次驳回后，举报人 tA 应各收到一条 type=8 处置结果通知
+    const nrTAC = (await get('/api/notification/list?page=1&size=20', { token: tA })).json?.data
+    const n8rep = nrTAC?.list?.find((n) => n.type === 8 && n.targetId === rep42Id)
+    const n8note = nrTAC?.list?.find((n) => n.type === 8 && n.targetId === rep42NoteId)
+    check('评论举报驳回 → 举报人收到 type=8 通知', !!n8rep, `found=${!!n8rep} all=${JSON.stringify(nrTAC?.list?.map(n => ({ type: n.type, targetId: n.targetId })))}`)
+    check('通知文案含驳回理由', n8rep?.content?.includes('已驳回') === true && n8rep?.content?.includes('P42 验收完成') === true, `content=${n8rep?.content}`)
+    check('笔记举报驳回 → 举报人也收到 type=8 通知', !!n8note, `found=${!!n8note}`)
+    check('两条通知 targetId 不同（去重键按举报行区分）', n8rep?.targetId !== n8note?.targetId,
+      `rep=${n8rep?.targetId} note=${n8note?.targetId}`)
 
     await del(`/api/note/${note42}`, { token: auth })
     await del(`/api/note/${p20Id}`, { token: tA })
@@ -3527,6 +3550,11 @@ const lastTwo = (hist?.list ?? []).slice(-2)
       const setPriv = await put('/api/user/profile', { token: privAuth, body: { isPrivate: 1 } })
       eq('P44 设为私密 code=0', setPriv.json?.code, 0)
       eq('P44 /api/user/me 带得出 isPrivate=1', (await get('/api/user/me', { token: privAuth })).json?.data?.isPrivate, 1)
+      // 作者页提示条（UserView「已设为私密」）的数据源是 follow/user/{id} 的卡片 VO。
+      // ⚠️ FollowConverter 曾经漏拷 isPrivate —— 字段不在 JSON 里，提示条永远渲染
+      //    不出来，而 /api/user/me 与笔记门禁都正常，导致缺陷极难归因。钉死在契约层。
+      eq('P44 陌生人视角的作者卡带得出 isPrivate=1',
+        (await get(`/api/follow/user/${privId}`, { token: auth })).json?.data?.isPrivate, 1)
 
       /* ---------- ① 详情页：三个角色 ---------- */
       eq('P44 作者本人能看到自己的私密笔记',
@@ -3620,6 +3648,8 @@ const lastTwo = (hist?.list ?? []).slice(-2)
       eq('P44 关掉私密后陌生人就能看了',
         (await get(`/api/note/${privNote}`, { token: auth })).json?.code, 0)
       eq('P44 /api/user/me 带得出 isPrivate=0', (await get('/api/user/me', { token: privAuth })).json?.data?.isPrivate, 0)
+      eq('P44 关掉私密后作者卡带得出 isPrivate=0',
+        (await get(`/api/follow/user/${privId}`, { token: auth })).json?.data?.isPrivate, 0)
 
       /* ---------- 清理 ---------- */
       // 取关 + 删笔记 + 把账号恢复成公开（万一上面崩了，账号是本段专用的，

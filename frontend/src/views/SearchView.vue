@@ -2,9 +2,10 @@
 import { onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { BizError } from '@/api/request'
-import { searchNotes } from '@/api/search'
-import type { NoteListItemVO, TopicListVO } from '@/api/types'
+import { searchNotes, searchUsers } from '@/api/search'
+import type { NoteListItemVO, TopicListVO, UserPickVO } from '@/api/types'
 import { listHotTopics } from '@/api/topic'
+import UserAvatar from '@/components/UserAvatar.vue'
 
 /** 热门话题：只在「没搜到东西」时露出来，给用户一个往下钻的方向 */
 const hotTopics = ref<TopicListVO[]>([])
@@ -33,6 +34,10 @@ const total = ref(0)
 const page = ref(1)
 const loading = ref(false)
 const error = ref('')
+/** 用户结果（P47）：与笔记结果同框，靠数据源区分 */
+const userResults = ref<UserPickVO[]>([])
+const userLoading = ref(false)
+const userError = ref('')
 
 async function load(reset = true) {
   const kw = keyword.value.trim()
@@ -49,6 +54,18 @@ async function load(reset = true) {
     if (reset) results.value = []
   } finally {
     loading.value = false
+  }
+  // P47 用户结果独立加载（不阻塞笔记），出错不影响笔记展示
+  userLoading.value = true
+  userError.value = ''
+  try {
+    const data = await searchUsers(kw, 20)
+    userResults.value = data ?? []
+  } catch (e) {
+    userError.value = e instanceof BizError ? e.message : ''
+    userResults.value = []
+  } finally {
+    userLoading.value = false
   }
 }
 
@@ -159,6 +176,25 @@ onMounted(() => {
       >
         {{ loading ? '加载中…' : `加载更多（${results.length}/${total}）` }}
       </button>
+    </section>
+
+    <!-- P47 用户结果区块：与笔记结果并列，私密账号也露出头像昵称，点进去再走门禁 -->
+    <section
+      v-if="userResults.length || ((userLoading || userError) && keyword.trim())"
+      class="card xk-card xk-card--flat users"
+      data-test="search-users"
+    >
+      <p class="users-title">相关用户</p>
+      <p v-if="userLoading" class="hint" data-test="search-users-loading">搜索中…</p>
+      <p v-else-if="userError" class="hint" role="alert" data-test="search-users-error">{{ userError }}</p>
+      <ul v-else class="list">
+        <li v-for="u in userResults" :key="u.id" class="row" data-test="search-user">
+          <RouterLink class="main" :to="`/user/${u.id}`">
+            <UserAvatar :avatar="u.avatar" :nickname="u.nickname" :size="40" />
+            <span class="name">{{ u.nickname }}</span>
+          </RouterLink>
+        </li>
+      </ul>
     </section>
   </main>
 </template>
@@ -417,5 +453,58 @@ onMounted(() => {
 
 .author:hover {
   color: var(--xk-amber);
+}
+
+/* ==================== P47 用户结果区块 ==================== */
+
+.users {
+  margin-top: 14px;
+}
+
+.users-title {
+  margin: 0 0 10px;
+  font-size: var(--xk-fs-15);
+  font-weight: 700;
+  color: var(--xk-text-2);
+}
+
+.users .list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.users .row {
+  margin: 0;
+  padding: 0;
+}
+
+.users .main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: var(--xk-stroke-w) solid var(--xk-border);
+  border-radius: var(--xk-radius-blob);
+  background: var(--xk-surface);
+  text-decoration: none;
+  color: var(--xk-text);
+  transition: border-color 0.12s ease;
+}
+
+.users .main:hover {
+  border-color: var(--xk-amber);
+}
+
+.users .name {
+  font-size: var(--xk-fs-15);
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

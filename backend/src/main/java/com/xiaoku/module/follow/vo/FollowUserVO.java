@@ -67,4 +67,12 @@ public class FollowUserVO implements Serializable {
 
     @Schema(description = "当前登录用户是否已关注 TA")
     private Boolean followed;
+
+    /**
+     * P44 私密账号标记。作者主页的「关注后可见」提示条依赖它（UserView），
+     * 走 FollowConverter 从 UserVO 现拷，缓存里的 UserVO 同步有值
+     * （改资料会 evictUserVO），不存在滞后窗口。
+     */
+    @Schema(description = "是否私密账号 0 公开 1 私密")
+    private Integer isPrivate;
 }

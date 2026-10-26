@@ -297,7 +297,11 @@ a {
  */
 @media (max-width: 1023px) {
   html[data-tabbar='on'] .page {
-    --xk-tabbar-h: 56px;
+    /* 必须等于 TabBar 的真实外高：border-top 2px（移动端 --xk-stroke-w）
+       + padding 4 + tab min-height 48 + padding 4 = 58。
+       写 56 会让每个页面的尾部留白差 2px，私信页更明显 ——
+       输入栏最后 2px 会被 TabBar 压住（P35 记过「token 必须算外高」）。 */
+    --xk-tabbar-h: 58px;
   }
 }
 

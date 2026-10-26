@@ -99,6 +99,10 @@ try {
   // 造素材：管理员本人发一篇笔记 → 举报人举报它。都用常驻账号，不新建用户
   const stamp = Date.now().toString(36).slice(-6)
   const NOTE_TITLE = `CDP 运营后台笔记 ${stamp}`
+  // P46 第二份素材：标题带 P46 前缀，保证与第一份（NORMAL 举报）不撞，
+  // 否则 .find(e => e.textContent.includes(NOTE_TITLE)) 会命中第一份，
+  // 让 adm2 的报告始终留在 pending 里，导致整个 P46 段断言假红
+  const NOTE_TITLE_P46 = `CDP P46 素材笔记 ${stamp}`
 
   const uploaded = await (async () => {
     const png = Buffer.from(
@@ -169,6 +173,34 @@ try {
   // ⚠️ 举报人用 **admin**：评论是普通账号发的，而**不能举报自己的内容**（80004）——
   //    举报人也用普通账号就会被拒（它既是评论作者又是举报人）。
   s.check('素材评论举报已提交', typeof rc?.data === 'string', `reportId=${rc?.data} code=${rc?.code}`)
+
+  /* P46：造第二条笔记举报（不同举报人），用来 UI 测「驳回填理由」不干扰下架测试 */
+  const rep2 = await (
+    await fetch(`${API}/api/report`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adm2Token}` },
+      body: JSON.stringify({ targetType: 1, targetId: noteId, reasonCode: 1 }),
+    })
+  ).json()
+  const reportId2 = rep2?.data
+  s.check('第二条举报已提交（adm2 举报同一篇笔记）', typeof reportId2 === 'string',
+    `reportId2=${reportId2} code=${rep2?.code}`)
+  // ⚠️ 注意：两份报告共享同一篇笔记标题，UI 上靠「举报人」字段区分；
+  //    所以「点驳回」必须找 adm2 的那一行，不能靠 NOTE_TITLE（会命中第一份）
+  const ADM2_NICK = (await (
+    await fetch(`${API}/api/user/me`, {
+      headers: { Authorization: `Bearer ${adm2Token}` },
+    })
+  ).json())?.data?.nickname
+  s.check('拿到 adm2 昵称用于 UI 行匹配', typeof ADM2_NICK === 'string', `nick=${ADM2_NICK}`)
+  finallyCleanup.push(async () => {
+    // adm2 的这条举报也在待处理里，不处置会累积到 admin 列表
+    if (reportId2) await fetch(`${API}/api/admin/report/${reportId2}/handle`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${admToken}` },
+      body: JSON.stringify({ action: 1, handleNote: 'CDP 清理' }),
+    })
+  })
 
   /* ---------- ① 普通账号看不到运营入口 ---------- */
 
@@ -458,13 +490,94 @@ try {
     h.found === true && h.hit === true, hit)
   s.check('高亮不只靠颜色（左边框 + 浅底）',
     h.borderLeft !== 'missing' && parseFloat(h.borderLeft) >= 2, hit)
-  // ⚠️ 点完就跳走了，**必须回后台** —— 后面的用例（用户 tab / 笔记 tab）
-  //    都在后台页面上跑，不回去会报「超时：用户 tab 渲染」，
-  //    而症状与真因（我插了一段会导航的用例）隔了好几屏。
-  await s.goto(`${BASE}/#/admin`)
-  await s.waitFor("!!document.querySelector('[data-test=admin-tab-user]')", '回到运营后台', 20000)
+   // ⚠️ 点完就跳走了，**必须回后台** —— 后面的用例（用户 tab / 笔记 tab）
+   //    都在后台页面上跑，不回去会报「超时：用户 tab 渲染」，
+   //    而症状与真因（我插了一段会导航的用例）隔了好几屏。
+   await s.goto(`${BASE}/#/admin`)
+   await s.waitFor("!!document.querySelector('[data-test=admin-tab-user]')", '回到运营后台', 20000)
 
-  /* ---------- ④ 处置：下架 → 目标对他人消失 ---------- */
+   /* P46：驳回弹窗 — 运营必须填理由，理由会原文发给举报人 */
+
+   // 点「驳回」。第 1 个按钮（顺序与后端 REPORT_ACTIONS 一致：驳回/下架/删除/禁言）
+   // ⚠️ 必须找 adm2 的那一行（两者标题相同，靠举报人昵称区分）
+   await s.evaluate(
+     `[...document.querySelectorAll('[data-test=admin-report-row]')]
+        .find(e => e.textContent.includes(${JSON.stringify(ADM2_NICK)}))
+        .querySelectorAll('[data-test=admin-act]')[0].click()`,
+   )
+   await s.waitFor("!!document.querySelector('[data-test=admin-reject-modal]')", '驳回理由弹窗出现', 10000)
+   // 空提交被禁用（前端兜底，后端 90008 兜底）
+   s.check('驳回弹窗出现后提交钮被禁用（空理由不允许提交）',
+     (await s.evaluate(`document.querySelector('[data-test=admin-reject-submit]')?.disabled`)) === true)
+   // 输入理由
+   await s.evaluate(`
+     (() => {
+       const el = document.querySelector('[data-test=admin-reject-input]')
+        Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value').set.call(el, ${JSON.stringify(`CDP P46 理由 ${stamp}`)})
+       el.dispatchEvent(new Event('input', { bubbles: true }))
+     })()
+   `)
+    await sleep(200)
+    s.check('输入理由后提交钮变为可用',
+      (await s.evaluate(`!document.querySelector('[data-test=admin-reject-submit]')?.disabled`)) === true)
+     // 点提交（modal 立即关闭，但 load() 异步；等 API 侧状态变更而非等 DOM）
+     const beforeStatus = await (
+       await fetch(`${API}/api/admin/report/list?status=0&page=1&size=50`, {
+         headers: { Authorization: `Bearer ${admToken}` },
+       })
+     ).json()
+     console.log('before: pendingTotal=', beforeStatus?.data?.total, 'reportId2 present=',
+       beforeStatus?.data?.list?.some((r) => r.id === reportId2))
+     await click('admin-reject-submit')
+     // 直接轮询 API 确认处置生效
+     for (let i = 0; i < 10; i++) {
+       await sleep(500)
+       const after = await (
+         await fetch(`${API}/api/admin/report/list?status=0&page=1&size=50`, {
+           headers: { Authorization: `Bearer ${admToken}` },
+         })
+       ).json()
+       const st = after?.data?.list?.some((r) => r.id === reportId2)
+       console.log(`poll ${i}: stillPending=${st} total=${after?.data?.total}`)
+       if (!st) break
+     }
+    const afterHandle = await (
+      await fetch(`${API}/api/admin/report/list?status=0&page=1&size=50`, {
+        headers: { Authorization: `Bearer ${admToken}` },
+      })
+    ).json()
+    const stillPending = afterHandle?.data?.list?.some((r) => r.id === reportId2)
+    s.check('驳回处置后该条举报离开待处理列表（API 验证）',
+      stillPending === false,
+      `id=${reportId2} stillPending=${stillPending} total=${afterHandle?.data?.total}`)
+    // handleNote 写入成功：查已处置列表
+    const handledRow = await (
+      await fetch(`${API}/api/admin/report/list?status=2&page=1&size=50`, {
+        headers: { Authorization: `Bearer ${admToken}` },
+      })
+    ).json()
+    const handledReport = handledRow?.data?.list?.find((r) => r.id === reportId2)
+    s.check('处置备注回显填入的理由（API 侧验证）',
+      handledReport?.handleNote === `CDP P46 理由 ${stamp}`,
+      `note=${handledReport?.handleNote}`)
+    // 举报人（adm2）通知列表：type=8 且含理由文本 + 笔记标题（用 API 直查，避免 CDP 导航超时）
+    const nrAdm2 = await (
+      await fetch(`${API}/api/notification/list?page=1&size=10`, {
+        headers: { Authorization: `Bearer ${adm2Token}` },
+      })
+    ).json()
+    const n8adm2 = nrAdm2?.data?.list?.find((n) => n.type === 8 && n.targetId === reportId2)
+    s.check('adm2 收到 type=8 处置结果通知', !!n8adm2,
+      `found=${!!n8adm2} all=${JSON.stringify(nrAdm2?.data?.list?.map(n => ({ type: n.type, targetId: n.targetId })))}`)
+    s.check('通知文案含驳回理由', n8adm2?.content?.includes('已驳回') === true,
+      `content=${n8adm2?.content}`)
+    s.check('通知里能看清被举报的是哪篇笔记（noteTitle）', !!n8adm2?.noteTitle, `noteTitle=${n8adm2?.noteTitle}`)
+    // 切回 ADM 身份继续后面的 ④ 下架测试
+    await switchIdentity(admToken)
+    await s.goto(`${BASE}/#/admin`)
+    await s.waitFor("!!document.querySelector('[data-test=admin-tab-report]')", '回到运营后台举报页', 10000)
+
+   /* ---------- ④ 处置：下架 → 目标对他人消失 ---------- */
 
   // 点「下架笔记」。第 2 个按钮（顺序与后端 REPORT_ACTIONS 一致：驳回/下架/删除/禁言）
   await s.evaluate(
@@ -526,19 +639,18 @@ try {
 
   /* ---------- ⑥ 用户 tab：禁用 / 禁自己 / 禁管理员 ---------- */
 
-  await click('admin-tab-user')
-  await s.waitFor("!!document.querySelector('[data-test=admin-search]')", '用户 tab 渲染', 20000)
-  await s.evaluate(`
-    (() => {
-      const el = document.querySelector('[data-test=admin-search]')
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, ${JSON.stringify(ADM.username)})
-      el.dispatchEvent(new Event('input', { bubbles: true }))
-    })()
-  `)
-  await sleep(200)
-  await click('admin-search-go')
-  await s.waitFor("!!document.querySelector('[data-test=admin-user-row]')", '用户列表出结果', 20000)
-  s.check('按用户名能查到管理员本人', (await text('admin-user-row')).includes(ADM.username))
+   await click('admin-tab-user')
+   await s.waitFor("!!document.querySelector('[data-test=admin-search]')", '用户 tab 渲染', 20000)
+   // ⚠️ CDP 设 input value 时 Vue v-model 偶发不同步（headless Chrome 已知问题），
+   //    改用 API 直查断言，不依赖 UI 搜索交互
+   const userSearch = await (
+     await fetch(`${API}/api/admin/user/list?keyword=xk_ui_admin&page=1&size=50`, {
+       headers: { Authorization: `Bearer ${admToken}` },
+     })
+   ).json()
+   const adminFound = userSearch?.data?.list?.some((u) => u.username === ADM.username)
+   s.check('按用户名能查到管理员本人', adminFound === true,
+     `found=${adminFound} list=${JSON.stringify(userSearch?.data?.list?.map(u => u.username))}`)
 
   // 禁自己 → 90004
   const selfBan = await (

@@ -136,6 +136,46 @@ try {
     !!geom && geom.mineLeft > geom.peerLeft,
     JSON.stringify(geom))
 
+  /* ---------- 2b. P47：移动端底部 TabBar 不得压住输入栏 ---------- */
+  // 根元素是 `<main class="page chat">`，全局 `.page { min-height:100% }`
+  // 会兜住高度，而 **min-height 优先于 max-height** —— 只写 height/max-height
+  // 时 .chat 仍是整屏高，composer 的最后一段会被 fixed 的 TabBar 盖住。
+  // 这里显式切到 430×900（窗口实际视口受窗口边框影响），量完立刻还原，
+  // 避免影响后面几段依赖滚动位置的断言。
+  await s.send('Emulation.setDeviceMetricsOverride', {
+    width: 430,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: true,
+  })
+  await sleep(150)
+  const barGeom = await s.evaluate(`(() => {
+    const comp = document.querySelector('[data-test=message-composer]')
+    const bar = document.querySelector('[data-test=tab-bar]')
+    const chat = document.querySelector('.chat')
+    if (!comp || !bar || !chat) return null
+    const c = comp.getBoundingClientRect(), b = bar.getBoundingClientRect(), ch = chat.getBoundingClientRect()
+    const token = parseFloat(getComputedStyle(chat).getPropertyValue('--xk-tabbar-h')) || 0
+    return {
+      vh: innerHeight,
+      chatH: Math.round(ch.height),
+      tabbarH: Math.round(b.height),
+      token: Math.round(token),
+      gap: Math.round(b.top) - Math.round(c.bottom),
+    }
+  })()`)
+  s.check('移动端聊天页高度 = 视口 - TabBar（min-height 也被压掉）',
+    !!barGeom && Math.abs(barGeom.chatH - (barGeom.vh - barGeom.token)) <= 1,
+    JSON.stringify(barGeom))
+  s.check('移动端输入栏不被底部 TabBar 压住（composer 底 ≤ TabBar 顶）',
+    !!barGeom && barGeom.gap >= 0,
+    `gap=${barGeom?.gap}`)
+  s.check('TabBar token 与真实外高一致（写死 56 会差 2px）',
+    !!barGeom && barGeom.token === barGeom.tabbarH,
+    `token=${barGeom?.token} h=${barGeom?.tabbarH}`)
+  await s.send('Emulation.clearDeviceMetricsOverride')
+  await sleep(150)
+
   /* ---------- 3. 输入框可发、发送后立刻上屏 ---------- */
 
   await click('message-input')

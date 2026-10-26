@@ -224,7 +224,7 @@ CREATE TABLE `notification`
     `id`           BIGINT UNSIGNED NOT NULL COMMENT '雪花算法生成的通知ID',
     `receiver_id`  BIGINT UNSIGNED NOT NULL COMMENT '收到通知的人（当前用户）',
     `actor_id`     BIGINT UNSIGNED NOT NULL COMMENT '触发通知的人',
-    `type`         TINYINT         NOT NULL COMMENT '1赞笔记 2评论 3赞评论 4关注 5回复',
+    `type`         TINYINT         NOT NULL COMMENT '类型 1赞笔记 2评论 3赞评论 4关注 5回复 6提及 7内容被举报 8处置结果',
     `target_id`    BIGINT UNSIGNED NOT NULL COMMENT '被作用的笔记ID或评论ID（关注类=被关注者userId）',
     `note_id`      BIGINT UNSIGNED DEFAULT NULL COMMENT '所属笔记ID（冗余，免 JOIN）；**关注类通知为 NULL** —— 不要拿userId 冒充笔记ID',
     `content`      VARCHAR(200)    DEFAULT NULL COMMENT '冗余的评论/回复内容摘要，便于列表直接展示',

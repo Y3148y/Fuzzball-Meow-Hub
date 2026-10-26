@@ -31,6 +31,7 @@ public final class FollowConverter {
                 .likeReceivedCount(user.getLikeReceivedCount())
                 .createTime(user.getCreateTime())
                 .followed(followed)
+                .isPrivate(user.getIsPrivate())
                 .build();
     }
 }

@@ -11,7 +11,7 @@
  * 直接敲 <code>#/admin</code> 一样能进。真权限在后端 AdminInterceptor，
  * 所以这里的 90001 处理是**必须的**：它不是兜底，而是这一页的正常分支。
  */
-import { onMounted, ref } from 'vue'
+import { onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { showConfirmDialog, showSuccessToast, showToast } from 'vant'
 import { BizError } from '@/api/request'
@@ -41,6 +41,9 @@ const notes = ref<AdminNoteItemVO[]>([])
 const loading = ref(false)
 const errorMsg = ref('')
 const keyword = ref('')
+
+/** P46 驳回：运营必须填理由，理由会原文发给举报人 */
+const rejectModal = reactive({ visible: false, row: null as AdminReportVO | null, text: '' })
 
 /** 举报 tab 的状态过滤：默认只看待处理，否则处置完的和新来的混在一起 */
 const reportStatus = ref(0)
@@ -114,19 +117,27 @@ function switchTab(k: TabKey) {
 
 /* ==================== 举报处置 ==================== */
 
-async function doHandle(row: AdminReportVO, action: number, label: string) {
+/** P46：驳回必须填写理由（理由会发给举报人），走弹窗而不是 Vant 确认框 */
+async function doHandle(row: AdminReportVO, action: number) {
+  if (action === 1) {
+    // 让运营填理由，而不是走一次性 confirm 对话框
+    rejectModal.row = row
+    rejectModal.text = ''
+    rejectModal.visible = true
+    return
+  }
   if (busy.value) return
   // 处置不可重放（后端 90003），所以点之前先确认，点之后立刻禁用按钮
   try {
     await showConfirmDialog({
-      title: label,
+      title: action === 3 ? '强制删除笔记' : action === 4 ? '禁用作者账号' : '强制下架笔记',
       message:
         action === 3
           ? '删除后不可恢复，笔记下的评论与点赞收藏都会一并清掉。确定吗？'
           : action === 4
             ? '禁用后 TA 立刻无法发布与评论，且无法登录。确定吗？'
-            : '确定要这样处置这条举报吗？',
-      confirmButtonText: label,
+            : '下架后他人看不到这篇笔记，搜索里也会撤下。确定吗？',
+      confirmButtonText: action === 3 ? '删除' : action === 4 ? '禁用' : '下架',
       cancelButtonText: '取消',
     })
   } catch {
@@ -134,7 +145,7 @@ async function doHandle(row: AdminReportVO, action: number, label: string) {
   }
   busy.value = row.id
   try {
-    await handleReport(row.id, action, `${label}（运营后台）`)
+    await handleReport(row.id, action, `${action === 3 ? '删除' : action === 4 ? '禁用' : '下架'}（运营后台）`)
     showSuccessToast('已处置')
     await load()
     await refreshPending()
@@ -146,6 +157,30 @@ async function doHandle(row: AdminReportVO, action: number, label: string) {
       return
     }
     showToast(e instanceof BizError ? e.message : '处置失败，请稍后重试')
+  } finally {
+    busy.value = ''
+  }
+}
+
+/** P46 驳回提交：理由校验在前端完成，后端 90008 作为兜底 */
+async function submitReject() {
+  const row = rejectModal.row
+  const text = rejectModal.text.trim()
+  if (!row || !text || busy.value) return
+  rejectModal.visible = false
+  busy.value = row.id
+  try {
+    await handleReport(row.id, 1, text)
+    showSuccessToast('已驳回')
+    await load()
+    await refreshPending()
+  } catch (e) {
+    if (e instanceof BizError && e.code === 90003) {
+      await load()
+      showToast('这条举报已经被处理过了')
+      return
+    }
+    showToast(e instanceof BizError ? e.message : '驳回失败，请稍后重试')
   } finally {
     busy.value = ''
   }
@@ -410,7 +445,7 @@ onMounted(async () => {
             :class="{ danger: a.action === 3 }"
             :title="a.hint"
             :disabled="busy === r.id || (!r.targetExists && a.action === 4)"
-            @click="doHandle(r, a.action, a.label)"
+            @click="doHandle(r, a.action)"
           >
             {{ a.label }}
           </button>
@@ -421,6 +456,36 @@ onMounted(async () => {
         </p>
       </li>
     </ul>
+
+    <!-- P46 驳回理由弹窗：运营必须给出理由，理由会原文发给举报人 -->
+    <div v-if="rejectModal.visible" class="reject-mask" data-test="admin-reject-modal">
+      <div class="reject-card">
+        <h3 class="reject-title">填写驳回理由</h3>
+        <p class="reject-hint">理由会发送给举报人，让他们知道为什么这条举报不成立。</p>
+        <textarea
+          v-model="rejectModal.text"
+          data-test="admin-reject-input"
+          maxlength="200"
+          rows="3"
+          placeholder="例如：内容无违规、证据不足 …（最多 200 字）"
+        ></textarea>
+        <div class="reject-foot">
+          <button
+            type="button"
+            class="xk-btn ghost"
+            data-test="admin-reject-cancel"
+            @click="rejectModal.visible = false"
+          >取消</button>
+          <button
+            type="button"
+            class="xk-btn"
+            data-test="admin-reject-submit"
+            :disabled="!rejectModal.text.trim() || !!busy"
+            @click="submitReject"
+          >提交驳回</button>
+        </div>
+      </div>
+    </div>
 
     <!-- ============ 用户 ============ -->
     <ul v-else-if="tab === 'user'" class="list">
@@ -928,6 +993,36 @@ onMounted(async () => {
 .ops button.danger {
   color: var(--xk-amber-text);
   border-color: var(--xk-amber-text);
+}
+
+/* ================= P46 驳回理由弹窗 ================= */
+
+.reject-mask {
+  position: fixed; inset: 0; z-index: 200;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex; align-items: center; justify-content: center;
+}
+.reject-card {
+  width: min(520px, calc(100vw - 32px));
+  background: var(--xk-surface-1);
+  border: var(--xk-stroke-w) solid var(--xk-border);
+  border-radius: var(--xk-radius-lg);
+  padding: 20px;
+  box-shadow: var(--xk-shadow-hard);
+}
+.reject-title { margin: 0 0 6px; font-size: var(--xk-fs-17); font-weight: 600; }
+.reject-hint { margin: 0 0 12px; font-size: var(--xk-fs-14); color: var(--xk-text-3); }
+.reject-card textarea {
+  width: 100%; box-sizing: border-box;
+  font: inherit; resize: vertical;
+  padding: 10px 12px;
+  border: var(--xk-stroke-w) solid var(--xk-border);
+  border-radius: var(--xk-radius-md);
+  background: var(--xk-bg); color: var(--xk-text);
+}
+.reject-foot {
+  display: flex; gap: var(--xk-space-3); justify-content: flex-end;
+  margin-top: var(--xk-space-4);
 }
 
 /* ================= 桌面 ================= */

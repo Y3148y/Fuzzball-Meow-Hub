@@ -22,6 +22,7 @@ import com.xiaoku.module.moderation.mapper.ReportMapper;
 import com.xiaoku.module.note.entity.NoteEntity;
 import com.xiaoku.module.note.mapper.NoteMapper;
 import com.xiaoku.module.note.service.NoteService;
+import com.xiaoku.module.notification.service.NotificationService;
 import com.xiaoku.module.user.entity.UserEntity;
 import com.xiaoku.module.user.mapper.UserMapper;
 import lombok.RequiredArgsConstructor;
@@ -65,6 +66,7 @@ public class AdminServiceImpl implements AdminService {
     private final CommentMapper commentMapper;
     private final UserMapper userMapper;
     private final NoteService noteService;
+    private final NotificationService notificationService;
 
     /* ==================== 举报处置 ==================== */
 
@@ -113,6 +115,18 @@ public class AdminServiceImpl implements AdminService {
             throw new BizException(ErrorCodeEnum.PARAM_VALIDATION_ERROR, "评论不能下架，请改用「删除作者」或「驳回」");
         }
 
+        // P46 驳回必填理由：放在「防重放」检查之后（90003 优先），
+        // 这样对已处置过的举报再发一次请求仍然报 90003 而不是 90008
+        if (action == ReportAction.REJECT
+                && (dto.getHandleNote() == null || dto.getHandleNote().isBlank())) {
+            throw new BizException(ErrorCodeEnum.REPORT_HANDLE_NOTE_REQUIRED);
+        }
+
+        // P46 处置结果通知举报人：举报链路最后一环 —— 举报人应当知道结论
+        // 提前计算，避免删除笔记/评论后再查不到 noteId
+        Long reporterId = report.getReporterId();
+        Long targetNoteId = resolveTargetNoteId(isNote, report.getTargetId());
+
         Long authorId = null;
         if (action.affectsNote()) {
             // 下架与删除：作者先记住（删除会把笔记行带走，之后就查不到了）
@@ -134,6 +148,13 @@ public class AdminServiceImpl implements AdminService {
                 .set(ReportEntity::getStatus, action.resultStatus())
                 .set(ReportEntity::getHandleNote, dto.getHandleNote())
                 .set(ReportEntity::getUpdateTime, LocalDateTime.now()));
+
+        // P46 处置完立刻通知举报人（afterCommit + try/catch 吞异常）
+        String outcome = action == ReportAction.REJECT
+                ? "你举报的内容经人工审核不构成违规，已驳回：" + dto.getHandleNote().strip()
+                : "你举报的内容" + action.text() + "，感谢你的监督";
+        notificationService.notifyReportDisposed(reporterId, UserContextHolder.requireUserId(),
+                reportId, targetNoteId, outcome);
 
         log.info("举报已处置 reportId={} action={} targetType={} targetId={} authorId={}",
                 reportId, action.name(), report.getTargetType(), report.getTargetId(), authorId);
@@ -274,6 +295,21 @@ public class AdminServiceImpl implements AdminService {
         }
         CommentEntity comment = commentMapper.selectById(targetId);
         return comment == null ? null : comment.getUserId();
+    }
+
+    /**
+     * P46 处置通知跳往的笔记 id。
+     *
+     * <p>笔记举报就是它自己（{@code targetId} = noteId）；
+     * 评论举报取评论所在的那篇笔记（运营要跳过去看的是「那一篇帖子」）。
+     * 内容已不存在时返回 null —— 前端就不会给一个必然 20001 的死链。
+     */
+    private Long resolveTargetNoteId(boolean isNote, Long targetId) {
+        if (isNote) {
+            return targetId;
+        }
+        CommentEntity comment = commentMapper.selectById(targetId);
+        return comment == null ? null : comment.getNoteId();
     }
 
     private void banUser(Long userId, String reason) {

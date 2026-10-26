@@ -7,15 +7,15 @@
 
 | | |
 |---|---|
-| 阶段 | **P0 → P45 已完成**（详见第 7 节各阶段小节） |
-| 测试 | 契约 **791** 条 · CDP **786** 条，全部绿 |
-| prod | `18080`，跑的是 **P39 前后端**（背景头图 + 主页/作者页移动端两列瀑布） |
+| 阶段 | **P0 → P47 已完成**（详见第 7 节各阶段小节） |
+| 测试 | 契约 **801** 条 · CDP **798** 条，全部绿 |
+| prod | `18080`，跑的是 **P45 前后端**（评论举报定位 + 私密账号 + 用户中心） |
 | 重建 prod 的坑 | 见第 8 节：8.2 镜像构建三道墙 / 8.5 nginx 缓存旧 IP / 8.6 `--no-deps` |
 | 上一次部署 | P45（前后端一起）· prod 真调用 **13/13** |
 | 待做 | 其余 14 页的顶栏统一（B-b）· 视频多码率与进度条（都不急） |
 | 重启后 | **跑 `tools\dev-up.cmd`**（见 2.0 节，引擎没起它会自己拉起，33s）· 手工清单留在 2.0 的折叠块里兜底 |
 
-**最近三个阶段做了什么**：P37 长视频实测（172MiB 端到端 43.5s，抓出 nginx 只允许 100m 的三层不一致）·
+**最近几个阶段做了什么**：P37 长视频实测（172MiB 端到端 43.5s，抓出 nginx 只允许 100m 的三层不一致）·
 P38 用户中心（编辑资料独立成页 + 笔记/收藏/赞过三 Tab + `GET /api/note/liked`）·
 P39 主页对齐（背景头图 + 移动端两列瀑布，顺手修好 P23 断言的口径不一致）·
 P40 布局收口（移动端首屏见笔记 + 桌面只留一条顶栏 + SiteNav 当前页高亮）·
@@ -23,7 +23,9 @@ P41 手测修复（运营后台看不懂 + 编辑资料页按钮重叠）·
 P42 运营能点进去看被举报的原文（后台新增 targetNoteId + 管理员只读视角）·
 P43 桌面端页面顶栏降级（一行 CSS，14 页受益）·
 P44 隐私设置：私密账号（关注者可见 + 四处查询过滤）·
-P45 评论举报定位到那条评论（GET /api/comment/{id} + ?comment= 定位高亮）。
+P45 评论举报定位到那条评论（GET /api/comment/{id} + ?comment= 定位高亮）·
+P46 举报处置闭环（通知类型 8 + 驳回必填理由）·
+P47 搜索页「相关用户」+ 私信页 TabBar 遮挡修复（token 56→58px）。
 
 ---
 
@@ -4717,3 +4719,154 @@ P24 那条方法在「一个 chunk 打天下」时成立，代码一拆就恒假
    中文字符串再 `writeFileSync(p, s,'latin1')`，中文会变乱码
    （码点 > 0xFF 被截成低字节）。**全程 `Buffer` 才安全**。
    这条与 P22 记的「只有 node 的 `spawnSync({input})` 能让字节原样送达」同源。
+
+### P46 举报处置闭环（本 commit）
+
+契约 **801** 条（791 + P46 的 10），CDP **795** 条（786 + `ui-admin` 9）。
+
+**用户反馈**："关注搭子举报的评论被驳回了，为什么不发通知？驳回总得有理由吧。"
+
+#### 两个真缺口
+
+| 缺口 | 现状 | 修法 |
+|---|---|---|
+| 举报人被处置结果失联 | 运营驳回/下架/删除/禁用后，举报人**完全不知道**结论 | 新增通知类型 8（`REPORT_DISPOSED`），四种 action 处置后都发 |
+| 驳回不需要理由 | `handleNote` 可选，驳回可以留空 | service 层加必填校验（action=REJECT 时 `handleNote` 空白 → 90008） |
+
+#### 后端三处改动
+
+**① `NotificationType` 加 `REPORT_DISPOSED(8, "你的举报有处理结果")`**
+`targetId` = 举报行 id（uk 去重键），`noteId` = 被举报内容所在笔记（已删则 null，前端不渲染死链）。
+
+**② `ErrorCodeEnum` 加 `REPORT_HANDLE_NOTE_REQUIRED(90008)`**
+必须放在 `REPORT_ALREADY_HANDLED(90003)` **之后**检查：对已处置举报再请求应报 90003，而不是 90008。
+
+**③ `AdminServiceImpl.handleReport` 加 P46 逻辑**
+- REJECT 理由空白 → 90008
+- 提前计算 `reporterId` + `targetNoteId`（在删除/下架**之前**查，否则查不到）
+- 处置成功后调 `notificationService.notifyReportDisposed(reporter, admin, reportId, noteId, outcomeText)`
+- 文案格式：驳回 → `你举报的内容经人工审核不构成违规，已驳回：{理由}`；其他 → `你举报的内容{action.text()}，感谢你的监督`
+
+`resolveTargetNoteId` 新私有方法：笔记举报返回 `targetId`；评论举报查 comment.getNoteId()（内容为 null 时返回 null）。
+
+#### 前端两处改动
+
+**① `AdminView.vue` 驳回走弹窗**
+`doHandle` 对 action=1 改走 `rejectModal`（自定义覆盖层，不是 Vant confirmDialog）：
+- textarea 绑定理由，maxlength=200（与 DTO 一致）
+- 提交按钮 `:disabled="!text.trim() || busy"`
+- 点提交 → `handleReport(id, 1, text)` → 成功后刷新列表
+- 弹窗模板带 `data-test=admin-reject-modal/input/submit/cancel`
+
+**② `NotificationView.vue` type=8 特殊渲染**
+- 头像 + 昵称列显示「**平台**」而不是管理员昵称（P18 原则：不暴露运营身份）
+- 点击时：有 noteId 跳笔记详情（已下架也对 reporter 可见）；无 noteId 只标已读不跳转
+
+#### 测试改动
+
+**契约 P20 段 +4 条**：驳回不带理由 → 90008；理由超 200 字 → 100001；下架后举报人收到 type=8 通知；P42 清理的两条驳回各产生一条 type=8 通知（targetId 不同 → 去重键正确）。
+
+**契约 P42 段 +4 条**：两次驳回后 tA 的通知列表含两条 type=8（content 含「已驳回：P42 验收完成」）。
+
+**CDP `ui-admin` +9 条**：驳回弹窗出现 + 空提交禁用 + 填理由后提交可用 + API 验证处置生效 + handleNote 写入 + adm2 收到 type=8 通知 + 通知含理由文本 + 通知含 noteTitle。
+
+⚠️ **CDP 踩过的坑**：两份举报共享同一笔记标题时，`.find(e => e.textContent.includes(NOTE_TITLE))` 命中第一份（NORMAL），adm2 那份永远动不了。修法：用举报人昵称（`ADM2_NICK`）区分行；通知检查改用 API 直查（避免 CDP 导航到通知页超时）。
+
+#### 已知取舍
+
+- **驳回必填，其他 action 不强制**：下架/删除/禁用是平台主动处置，理由由运营自己决定；只有「不成立」需要解释为什么。
+- **type=8 通知的 actor 是管理员，但前端展示「平台」**：不泄露运营身份（P18 原则的延伸）。
+- **内容已删时的 noteId = null**：点击只标已读，不跳死链。
+- **schema.sql 注释同步了 6/7/8**，存量库 comment 列无需 ALTER（cosmetic）。
+
+**P46/P47 在 dev 已验证；prod 部署记录见本轮之后的 docs 提交**（本次提交前
+prod `18080` 是 P45，P46/P47 的 prod 真调用按 8.2 / 8.5 / 8.6 的流程另跑）。
+
+### P47 搜索页「相关用户」区块（本 commit）
+
+契约 **801**（未动，纯前端），CDP **798**（795 + `ui-message` 3，见下一节；
+`ui-search` 仍 19 条 —— **本轮没加断言**，见文末取舍）。
+
+用户手测：「搜索页只能搜到笔记，搜不到人」。而 P29 早就为 @ 候选做了
+`GET /api/search/user?keyword=&limit=`，**只是结果页没接** —— 又一处「接口有、
+界面没入口」的覆盖空洞，后端零改动。
+
+- `api/search.ts` 新增 `searchUsers(keyword, limit = 20)`，并让
+  `searchMentionUsers` **委托**给它（同一个接口、只差默认条数）。
+  不共用实现的话，两处路径/参数迟早漂移成「@ 候选能搜到、结果页搜不到」，
+  而界面不会报错。
+- `SearchView.vue` 在笔记结果**下面**并列一块 `[data-test=search-users]`：
+  `UserAvatar` + 昵称，点进 `#/user/{id}`。只取前 20 条、**没有分页**
+  （后端接口本来就是候选语义）。
+- 用户搜索**独立加载、独立报错**：`searchUsers` 失败只让这一块显示
+  `[data-test=search-users-error]`（`role=alert`），**不影响笔记结果**。
+  写成「一个 await 串起来」的话，用户接口抖动会让整页看起来像搜索坏了。
+- 关键词为空不发请求 —— 与笔记搜索同一道闸。
+
+⚠️ 这块**没有自己的 CDP 断言**（`ui-search` 19 条原样通过），这是本轮
+明确的欠账：它验的是「接口能返回」，没验「结果页真的渲染出来」。
+下一轮动搜索页时应当补两条：`[data-test=search-user]` 数量 > 0，
+且点进去落在该用户主页。**「19/19 全绿」在这里不代表这个区块被覆盖过。**
+
+### 私信页移动端 TabBar 压住输入栏（本 commit）
+
+CDP **795 → 798**（`ui-message` 74 → 77）。纯前端，契约不变。
+
+用户截图反馈：私信页**底部输入栏被 TabBar 压住**，打字框最下面一条被切掉。
+
+#### 两级根因，缺一个都修不好
+
+**① `.chat` 的移动端高度没减 TabBar，且 `min-height` 压过 `max-height`**
+
+根元素是 `<main class="page chat">`（MessageView.vue L443），全局
+`.page { min-height: 100% }`（main.css L274）= **整个视口高**。
+`.chat` 虽然写了 `height/max-height: calc(100dvh - var(--xk-tabbar-h))`，
+但 **CSS 里 `min-height` 优先于 `max-height`** —— 全局那条 `min-height: 100%`
+把它兜回 900px，calc 那条 max-height 形同虚设。
+
+桌面 media 块（L698-702）本来就同时写了 `min-height`，**移动块漏了** ——
+P35 在 `.chat` 上踩过同一个坑（那次是桌面），这次是同一处代码的另一个分支。
+修法：移动 media 块补 `min-height: calc(100dvh - var(--xk-tabbar-h, 0px))`。
+
+**② `--xk-tabbar-h` 写 56px，而 TabBar 真实外高是 58px**
+
+补完 ① 后实测仍差 **2px**（`composer.bottom 844 / tabbar.top 842`）。
+量 TabBar 的盒子：`border-top 2px`（移动端 `--xk-stroke-w`）+ `padding 4`
++ `tab min-height 48` + `padding 4` = **58**。也就是说 token 少算了
+**边框**那 2px —— 与 P35 记的「token 要用外高（`.inner` 50 + padding 16 +
+border 1 = 67）」是**同一条教训的第二次**。
+
+修法：`main.css` 的 `html[data-tabbar='on'] .page { --xk-tabbar-h: 58px }`。
+这个 token 同时被 `.page` 的 `padding-bottom`（L285）消费，所以**全站移动端
+底部留白都 +2px** —— 那正是正确的行为（原来每页都少留 2px）。
+
+#### 验收（430×900，真机尺寸）
+
+```
+--xk-tabbar-h = 58px        .chat  h=842 b=842
+#message-composer b=842 h=75    .tab-bar t=842 b=900 h=58
+overlap=false  gap=0
+```
+
+#### 回归断言（`ui-message` 第 2b 段，+3 条）
+
+用 `Emulation.setDeviceMetricsOverride` 显式切到 430×900（浏览器窗口尺寸
+不等于视口，靠 `--window-size` 量出来的值不可信），量三件事：
+
+1. `.chat` 高度 == 视口高 − `--xk-tabbar-h`（钉 ① 的 min-height）
+2. 输入栏底边 ≤ TabBar 顶边（钉「不遮挡」这个用户可见结果）
+3. token 实测值 == TabBar 的 `offsetHeight`（钉 ② 的「token=真实外高」）
+
+⚠️ **用完必须 `Emulation.clearDeviceMetricsOverride()`**，否则后面的
+「加载更早的滚动补偿」断言会在 900px 视口里量，而它假设的是默认视口。
+这与 P31 的「补偿断言必须滚到中间才有判别力」是同一类：**改环境的断言
+要自己收拾现场**。
+
+判别力验证：把 token 改回 56px → 第 3 条红；去掉 ① 的 min-height →
+前两条红（`chat h=900`，输入栏落到 900）。两条都实测过。
+
+#### 顺带记一笔
+
+`npm run build` 后 `MessageView-*.css` 里能看到三行 height/max-height/min-height
+同时是 `calc(100dvh - var(--xk-tabbar-h,0px))` —— **三个都要写**，
+只写 max-height 就是这次 bug 的形状。

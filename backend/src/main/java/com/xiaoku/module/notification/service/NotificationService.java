@@ -88,6 +88,20 @@ public interface NotificationService {
     void notifyReported(Long receiverId, Long actorId, Long targetId,
                         Integer targetType, String reasonText);
 
+    /**
+     * P46 举报处置结果已出炉（类型 8）：通知的是**举报人**。
+     *
+     * <p>举报链路的最后一环：运营驳回/下架/删除/禁用之后，举报人应当拿到结论，
+     * 否则「我举报了然后石沉大海」会让举报功能失去公信力。
+     *
+     * @param reportId 举报行 id，作为 {@code uk_notify_once} 的 target_id ——
+     *                 举报不可重放（90003），所以每条举报至多产生一条处置通知
+     * @param noteId   被举报内容所在的笔记 id；内容已被删除时传 null，
+     *                 前端就不会给「去这条笔记」出一个必然 404 的入口
+     */
+    void notifyReportDisposed(Long receiverId, Long actorId, Long reportId,
+                              Long noteId, String outcomeText);
+
     /* ---------------- 撤回（P21：互动被撤销时把通知一并撤掉） ---------------- */
 
     /**

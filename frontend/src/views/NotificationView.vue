@@ -39,6 +39,11 @@ async function load() {
   }
 }
 
+/** P46 处置结果（type=8）：操作是平台的公共治理行为，不让举报人知道是哪个运营处理的 */
+function whoName(n: NotificationVO) {
+  return n.type === 8 ? '平台' : (n.actorNickname ?? '已注销用户')
+}
+
 async function open(n: NotificationVO) {
   if (n.isRead === 0) {
     // 先本地改，标已读的响应回来再由铃铛刷新角标
@@ -48,6 +53,14 @@ async function open(n: NotificationVO) {
     } catch {
       // 标失败不打断跳转
     }
+  }
+  // P46 处置结果（type=8）：有 noteId 跳原文（即使已下架 reporter 也能看到），
+  // 无 noteId（内容已被删）就不跳转 —— 点它只标已读，别把人甩到首页
+  if (n.type === 8) {
+    if (n.noteId) {
+      void router.push({ name: 'note-detail', params: { id: String(n.noteId) } })
+    }
+    return
   }
   // 关注类（type=4）的 targetId 是被关注者 userId，其余都是笔记
   if (n.type === 4) {
@@ -121,10 +134,14 @@ onMounted(load)
           :data-test="n.isRead === 0 ? 'notification-item-unread' : 'notification-item'"
           :data-type="n.type"
         >
-          <UserAvatar :avatar="n.actorAvatar" :nickname="n.actorNickname" :size="34" />
+          <UserAvatar
+            :avatar="n.type === 8 ? null : n.actorAvatar"
+            :nickname="whoName(n)"
+            :size="34"
+          />
           <div class="body">
             <p class="line">
-              <b class="who">{{ n.actorNickname }}</b>
+              <b class="who">{{ whoName(n) }}</b>
               <span class="text">{{ n.typeText }}</span>
             </p>
             <p v-if="n.noteTitle" class="note">{{ n.noteTitle }}</p>
@@ -132,7 +149,7 @@ onMounted(load)
             <p class="time">{{ formatDateTime(n.createTime) }}</p>
           </div>
           <!-- 整行可点：按钮包住整条，屏幕阅读器也能当一个可读区域 -->
-          <button class="hit" type="button" :aria-label="`${n.actorNickname}${n.typeText}`" @click="open(n)">
+          <button class="hit" type="button" :aria-label="`${whoName(n)}${n.typeText}`" @click="open(n)">
             <span class="sr">{{ n.typeText }}</span>
           </button>
         </li>

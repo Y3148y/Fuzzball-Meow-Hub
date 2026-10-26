@@ -24,5 +24,19 @@ export function searchNotes(keyword: string, page = 1, size = 20) {
  * 就会出现「候选里有但 @ 出去解析不出来」的鬼影，而界面看不出异常。
  */
 export function searchMentionUsers(keyword: string, limit = 10) {
+  return searchUsers(keyword, limit)
+}
+
+/**
+ * P47 搜索页「用户」区块：查与关键词匹配的用户，只露头像+昵称
+ *
+ * <p>与 {@link searchMentionUsers} 是**同一个接口**，只是默认条数与语义不同
+ * （这里最多 20 条、给结果页；那里 10 条、给 @ 候选）。共用一份实现，
+ * 免得两处 `limit` 或路径漂移成「候选能搜到、结果页搜不到」。
+ *
+ * <p>不返回 {@code followed} / {@code isPrivate}：那是 UserView 的职责，
+ * 点进去由那里的门禁决定要不要展示笔记。这里只做「认出是谁」。
+ */
+export function searchUsers(keyword: string, limit = 20) {
   return get<UserPickVO[]>('/search/user', { keyword, limit })
 }

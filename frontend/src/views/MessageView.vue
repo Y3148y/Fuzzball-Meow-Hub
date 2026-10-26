@@ -925,9 +925,23 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 1023px) {
-  /* 表情面板占 236px；不加这个 page 会多出等高的死空白（与 P28 的
-     --bar-h 同源：面板出现时输入框被推上去，但要给 TabBar 让位） */
-  .chat { padding-bottom: 0; }
+  /* 移动端 .chat 高度要减去 TabBar（58px = 边框 2 + 上 4 + 项 48 + 下 4），
+     否则输入栏会被 TabBar 压住。
+     --xk-tabbar-h 是 main.css 的全局变量（html[data-tabbar='on'] 时 = 58px），
+     scoped 样式通过 CSS 变量继承，不需要额外定义。
+     原来只写 padding-bottom: 0 是为了表情面板出现时不让页底多出空白，
+     但那只是针对面板场景的临时处理，不能替代高度修正。 */
+  .chat {
+    height: calc(100dvh - var(--xk-tabbar-h, 0px));
+    max-height: calc(100dvh - var(--xk-tabbar-h, 0px));
+    /* ⚠️ min-height 必须一起压掉：根元素是 `.page chat`，全局
+       `.page { min-height: 100% }` = 整个视口高，而 min-height 优先于
+       max-height —— 只写 height/max-height 时实测 height 仍是 900px
+       （max-height 844px 明明生效），输入栏照样被 TabBar 压住。
+       桌面块早就写了 min-height，这里漏了。 */
+    min-height: calc(100dvh - var(--xk-tabbar-h, 0px));
+    padding-bottom: 0;
+  }
 }
 
 /* ⚠️ flex 内 textarea 必须 min-width:0 —— 否则 placeholder 一长

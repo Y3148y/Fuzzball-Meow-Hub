@@ -305,6 +305,14 @@ public class NotificationServiceImpl implements NotificationService {
         push(receiverId, actorId, NotificationType.REPORTED, targetId, targetId, text);
     }
 
+    @Override
+    public void notifyReportDisposed(Long receiverId, Long actorId, Long reportId,
+                                     Long noteId, String outcomeText) {
+        // P46 处置结果通知举报人：targetId = 举报行 id（避免跨举报撞去重键）
+        // noteId 有值时前端才会渲染「去这条笔记」；已删内容传 null
+        push(receiverId, actorId, NotificationType.REPORT_DISPOSED, reportId, noteId, outcomeText);
+    }
+
     /** 通知正文摘要：单行、限长，超出用省略号 */
     private static String excerpt(String content) {
         if (content == null) {

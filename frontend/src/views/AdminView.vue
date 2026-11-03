@@ -252,7 +252,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="page">
+  <div class="page admin-page">
     <header class="top">
       <button class="back" type="button" aria-label="返回" @click="router.back()">‹</button>
       <h1>运营后台</h1>

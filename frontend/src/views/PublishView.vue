@@ -339,7 +339,7 @@ const { markClean } = useUnsavedChanges(
 </script>
 
 <template>
-  <main class="page">
+  <main class="page publish-page">
     <header class="top">
       <button class="back" type="button" aria-label="返回" @click="router.back()">‹</button>
       <span class="brand">发布笔记</span>

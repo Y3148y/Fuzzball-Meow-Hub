@@ -760,7 +760,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <main ref="pageEl" class="page">
+  <main ref="pageEl" class="page note-detail-page">
     <header class="top">
       <button class="back" type="button" aria-label="返回" @click="router.back()">‹</button>
       <span class="brand">笔记详情</span>

@@ -215,7 +215,7 @@ async function save() {
 </script>
 
 <template>
-  <main class="page edit-page">
+  <main class="page profile-edit-page">
     <div class="top">
       <button class="back" type="button" aria-label="返回" data-test="edit-back" @click="back">
         <van-icon name="arrow-left" />

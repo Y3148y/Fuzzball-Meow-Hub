@@ -93,7 +93,7 @@ onMounted(load)
 </script>
 
 <template>
-  <main class="page">
+  <main class="page notification-page">
     <header class="top">
       <button class="back" type="button" aria-label="返回" @click="router.back()">
         <van-icon name="arrow-left" />

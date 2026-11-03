@@ -741,3 +741,24 @@ h2 {
     box-shadow: var(--xk-shadow-hard-sm);
   }
 }
+
+/* B-b: desktop unify page topbars (keep only SiteNav >=1024px) */
+@media (min-width: 1024px) {
+  .page.login {
+    padding-top: 0;
+  }
+
+  .page > .top {
+    display: none !important;
+  }
+
+  .page.publish-page > .top,
+  .page.note-edit-page > .top,
+  .page.profile-edit-page > .top,
+  .page.notification-page > .top,
+  .page.note-detail-page > .top,
+  .page.message-page > .top,
+  .page.admin-page > .top {
+    display: flex !important;
+  }
+}

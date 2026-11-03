@@ -440,7 +440,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <main class="page chat">
+  <main class="page chat message-page">
     <header class="top">
       <button class="back" type="button" aria-label="返回" @click="router.back()">
         <van-icon name="arrow-left" />

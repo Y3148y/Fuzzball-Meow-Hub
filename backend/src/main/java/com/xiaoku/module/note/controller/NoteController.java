@@ -12,6 +12,7 @@ import com.xiaoku.module.note.service.NoteService;
 import com.xiaoku.module.follow.vo.FollowUserVO;
 import com.xiaoku.module.note.vo.NoteListItemVO;
 import com.xiaoku.module.note.vo.NoteVO;
+import com.xiaoku.module.note.vo.VideoUploadVO;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -64,24 +65,26 @@ public class NoteController {
     }
 
     /**
-     * 上传视频。
+     * 上传视频（多码率，P48）。
      *
      * <p><b>限流比图片严得多</b>（10/min vs 30/min）：一个视频就是几十上百 MB，
      * 放开一分钟 30 个就是几个 GB 的入站流量。
      *
-     * <p><b>只存原文件，不转码</b>：mp4/webm 浏览器能直接播；mov/avi 需要
-     * 转码，那是另一件事（要引 ffmpeg、要处理转码失败）。
+     * <p><b>返回整包产物</b>：{@code url} = 默认播放档（最高清晰度）、
+     * {@code qualities} = 全部档位（降级时为 null）。响应与旧版
+     * {@code {url}} 形状兼容 —— 老调用方把 {@code url} 当 videoUrl 用，语义不变。
      */
     @Operation(summary = "上传视频",
-            description = "multipart/form-data，字段名 file；只支持 mp4/webp，各不超过 200MB；不转码")
+            description = "multipart/form-data，字段名 file；只支持 mp4/webm，不超过 200MB；"
+                    + "服务端转码出多码率（主档 720p，高分辨率源追加 480p），降级时保留原文件")
     @RateLimit(count = 10, seconds = 60, dimension = RateLimit.Dimension.USER,
             message = "视频上传太频繁了，请稍后再试")
     @Idempotent
     @PostMapping("/video")
-    public Result<Map<String, String>> uploadVideo(
+    public Result<VideoUploadVO> uploadVideo(
             @Parameter(description = "视频文件", required = true)
             @RequestParam("file") MultipartFile file) {
-        return Result.success(Map.of("url", noteService.uploadVideo(file)));
+        return Result.success(noteService.uploadVideo(file));
     }
 
     @Operation(summary = "编辑笔记",

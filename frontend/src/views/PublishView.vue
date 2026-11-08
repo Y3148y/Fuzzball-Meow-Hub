@@ -265,15 +265,17 @@ async function submit() {
     // 不合并成一次 multipart 是因为图片存到一半失败时无法回滚已落盘的文件。
     const urls: string[] = []
     if (isVideo.value && videoFile.value) {
-      // 视频：先传视频拿 URL，再按 type=2 发布。
-      // 后端不转码，所以这里没有「等转码」这一步 —— 上传返回即可发布
-      const { url } = await uploadVideo(videoFile.value)
-      videoUrl.value = url
+      // 视频：先传视频拿产物包（url + 多码率 qualities），再按 type=2 发布。
+      // 转码在这次请求里同步完成（P48），上传返回即可发布；
+      // qualities 为空 = 降级单文件，只带 videoUrl 原样兼容。
+      const up = await uploadVideo(videoFile.value)
+      videoUrl.value = up.url
       const note = await publishNote({
         title: title.value.trim(),
         content: content.value.trim(),
         type: 2,
-        videoUrl: url,
+        videoUrl: up.url,
+        videoQualities: up.qualities,
       })
       showSuccessToast('发布成功')
       markClean()

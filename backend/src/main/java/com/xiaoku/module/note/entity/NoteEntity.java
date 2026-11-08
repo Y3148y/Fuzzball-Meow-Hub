@@ -42,6 +42,13 @@ public class NoteEntity implements Serializable {
 
     private String videoUrl;
 
+    /**
+     * 多码率清晰度列表 JSON（P48）：{@code [{label,url,width,height}]}。
+     * <b>NULL = 单码率</b>（降级 / 已达标跳过转码），详情页据此不渲染清晰度切换。
+     * 存 JSON 而不是拆表：一篇最多 3 档、只被整列读写，拆表换不来任何查询能力。
+     */
+    private String videoQualities;
+
     /** 0 草稿 1 正常 2 下架 */
     private Integer status;
 

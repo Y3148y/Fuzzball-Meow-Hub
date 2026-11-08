@@ -77,6 +77,7 @@ import { useReportSheet } from '@/composables/useReportSheet'
 import { useShare } from '@/composables/useShare'
 import { blockUser } from '@/api/report'
 import MentionPicker from '@/components/MentionPicker.vue'
+import VideoPlayer from '@/components/VideoPlayer.vue'
 import { useMentionPicker } from '@/composables/useMentionPicker'
 import UserAvatar from '@/components/UserAvatar.vue'
 
@@ -636,7 +637,18 @@ function onImgLoad(i: number, e: Event) {
 }
 
 /** 图还没解码出来之前按 3:4 兜底，免得图框首帧闪一下塌掉 */
-const activeRatio = computed(() => imgRatios.value[imgIdx.value] ?? 0.75)
+const activeRatio = computed(() => {
+  // 视频笔记：比例用自己的元数据（播放器 loadedmetadata 上报），9/16 兜底 ——
+  // 手机视频以竖屏为主，3:4 兜底会先闪一个「太胖」的框
+  if (note.value?.videoUrl) return videoRatio.value || 9 / 16
+  return imgRatios.value[imgIdx.value] ?? 0.75
+})
+
+/** P48：视频真实宽高比（w/h），VideoPlayer 的 @ratio 回上来；0 = 还没量到 */
+const videoRatio = ref(0)
+function onVideoRatio(w: number, h: number) {
+  if (w > 0 && h > 0) videoRatio.value = w / h
+}
 
 async function load() {
   loading.value = true
@@ -647,6 +659,7 @@ async function load() {
     note.value = await getNoteDetail(String(route.params.id))
     imgIdx.value = 0
     imgRatios.value = []
+    videoRatio.value = 0
     await loadComments()
     // P45：URL 带 ?comment=xxx 时定位到那条评论（运营从举报后台点进来）
     await locateComment()
@@ -835,21 +848,16 @@ onBeforeUnmount(() => {
       <!--
         视频。**放在图片区之前并用 v-if 排他**：`videoUrl` 存在时这篇是视频笔记
         （后端 publish 时 type=2 要求 videoUrl 非空），不该同时渲染图。
-        controls 保留 —— 小红书也是手动播放，自动播放在移动端会被浏览器拦，
-        而且自动播有声视频是很烦人的。
-        preload="metadata" 而不是 auto：一进页面就下载几十上百 MB 是不可接受的。
+        P48：原生 controls 换成 VideoPlayer 自绘进度条 + 清晰度切换；
+        poster 用视频抽帧封面（发布/转码时推导进 cover 列）。
       -->
       <div v-if="note.videoUrl" class="videobox" data-test="note-video">
-        <video
-          class="player"
+        <VideoPlayer
           :src="note.videoUrl"
+          :qualities="note.videoQualities ?? undefined"
           :poster="note.cover ?? undefined"
-          controls
-          preload="metadata"
-          playsinline
-          data-test="note-video-player"
+          @ratio="onVideoRatio"
         />
-        <p class="videohint">原视频，未转码</p>
       </div>
 
       <div v-if="!note.videoUrl && note.images.length" class="grid" data-test="note-detail-images">
@@ -1308,26 +1316,10 @@ ref="contentEl"
 }
 .admin-note strong { color: var(--xk-amber-text); }
 
-/* 视频播放器：宽度跟随左栏，比例用 9/16 兜底（竖屏视频最常见），
-   实际比例由浏览器按视频元数据调整，max-height 防止横屏视频把左栏撑得过高 */
+/* 视频播放器（P48）：VideoPlayer 组件自带描边/圆角/进度条，
+   这里只剩外距；比例的 --img-ratio 由 <article> 统一给（视频元数据上报后跟着视频形状走） */
 .videobox {
   margin-bottom: 12px;
-}
-
-.player {
-  display: block;
-  width: 100%;
-  max-height: 72vh;
-  aspect-ratio: var(--img-ratio, 9 / 16);
-  background: #000;
-  border: var(--xk-stroke-w) solid var(--xk-stroke);
-  border-radius: var(--xk-radius-blob);
-}
-
-.videohint {
-  margin: 6px 0 0;
-  color: var(--xk-text-3);
-  font-size: var(--xk-fs-12);
 }
 /* 话题 chip：横排可换行，琥珀描边（品牌色里最弱的一档，不抢正文注意力） */
 .topics {

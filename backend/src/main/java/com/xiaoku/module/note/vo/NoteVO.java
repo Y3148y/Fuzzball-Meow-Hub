@@ -53,6 +53,13 @@ public class NoteVO implements Serializable {
     @Schema(description = "视频URL")
     private String videoUrl;
 
+    /**
+     * 多码率档位（P48）。null = 单码率原文件（降级或已达标跳过转码），
+     * 详情/沉浸流的视频卡据此决定要不要显示清晰度切换。
+     */
+    @Schema(description = "视频清晰度档位列表；null = 单码率")
+    private List<VideoQualityVO> videoQualities;
+
     @Schema(description = "状态 0草稿 1正常 2下架")
     private Integer status;
 

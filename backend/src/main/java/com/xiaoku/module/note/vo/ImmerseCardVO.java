@@ -41,6 +41,14 @@ public class ImmerseCardVO implements Serializable {
     @Schema(description = "视频 URL，仅 type=2")
     private String videoUrl;
 
+    /** 多码率档位（P48）；null = 单码率。自动播会用到，别再打一次详情 */
+    @Schema(description = "清晰度档位；null = 单码率")
+    private List<VideoQualityVO> videoQualities;
+
+    /** 封面（视频卡 = 转码抽帧、图文卡 = 第一张图）。视频加载/自动播前的占位画 */
+    @Schema(description = "封面图 URL")
+    private String cover;
+
     /** 全部图片，按 note_image 的顺序。沉浸流卡片在卡内轮播用 */
     @Schema(description = "图片列表（按笔记内顺序）")
     private List<String> images;

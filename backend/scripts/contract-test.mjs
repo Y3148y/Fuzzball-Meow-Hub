@@ -2437,10 +2437,15 @@ async function main() {
   // 契约测试发上去的是构造出来的字节，不是真 mp4，验证不了解码。
   // 「详情页播放器拿得到 src」由 CDP 的 ui-note 验（那边是真浏览器）。
   //
-  // 三个刻意不做：
-  //   ① 不做转码（引 ffmpeg 是另一件事，要单独立项）
-  //   ② 不校验魔数 —— 只按 content-type 白名单放行 mp4/webm
-  //   ③ 不做多码率切片
+  // P48 多码率之后这一段有了第二个价值：**它发出去的字节是伪的，探测必然
+  // 失败 → 全部走降级路径**（保留原文件、无清晰度档位）。也就是说这里钉的
+  // 正是「ffmpeg 坏了/不存在时上传仍必须成功」这条硬承诺 —— 真视频的多码率
+  // 产物验证在 prod 真调用里做过（P33/P37 的流程），契约层没有真 mp4 可发。
+  //
+  // 两个刻意不做：
+  //   ① 不校验魔数 —— 只按 content-type 白名单放行 mp4/webm（转码失败会降级，
+  //     伪造文件名的后果是「存下一个播不了的文件」而不是安全洞）
+  //   ② 原生 controls 由播放器组件接管（P48 测试锚点在 ui-note 的 vp-* 上）
   {
     const up = async (filename, type, bytes) => {
       const fd = new FormData()
@@ -2463,8 +2468,27 @@ async function main() {
     // 目录按日期分：避免单目录几百万个文件（ext4 查目录会明显变慢）
     check('按日期分目录存放', /\/\d{4}\/\d{2}\/\d{2}\//.test(videoUrl), `url=${videoUrl}`)
 
+    // P48：伪字节 → 探测失败 → **降级**。qualities 必须是 null（non_null 序列化
+    // 下连字段都不下发）—— 它只能指向真转码产物，伪造字节不可能有第二/第三档
+    check('降级路径：响应不带清晰度档位（有档位的只有真视频）',
+      up1?.data?.qualities == null, JSON.stringify(up1?.data))
+    // 条件不变式：将来哪天真发了可探测的文件，这几条会开始钉结构
+    const qs1 = up1?.data?.qualities
+    check('有档位时：videoUrl = 最高档 url（默认播放档）',
+      qs1 == null || (videoUrl != null && videoUrl === qs1[0]?.url), JSON.stringify(up1?.data))
+    check('有档位时：结构合法（label 非空、url 站内路径、宽高是数字）',
+      qs1 == null || Array.isArray(qs1)
+        && qs1.every((q) => typeof q?.label === 'string' && q.label.length > 0
+          && typeof q?.url === 'string' && q.url.startsWith('/')
+          && Number.isFinite(q?.width) && q.width > 0
+          && Number.isFinite(q?.height) && q.height > 0), JSON.stringify(qs1))
+    check('有档位时：档位数量不超过 3（MAX_QUALITY_COUNT）',
+      qs1 == null || (qs1.length >= 1 && qs1.length <= 3), `len=${qs1?.length}`)
+
     const up2 = await up('p19.webm', 'video/webm', new Uint8Array(1024))
     codeIs('上传 webm 成功（浏览器能直接播的两种格式）', up2, 0)
+    check('webm 伪字节同样走降级（无档位）',
+      up2?.data?.qualities == null, JSON.stringify(up2?.data))
 
     // mov / avi 需要转码，放行它们等于「传完看到黑屏」，比明确拒绝更糟
     const mov = await up('p19.mov', 'video/quicktime', new Uint8Array(1024))
@@ -2483,6 +2507,13 @@ async function main() {
     const { json: detail } = await get(`/api/note/${note?.data?.id}`, { token: auth })
     eq('详情里的 videoUrl 与上传一致', detail?.data?.videoUrl, videoUrl)
     eq('视频笔记的 type 是 2', detail?.data?.type, 2)
+    // P48：详情回带的 qualities 与上传响应同形（降级单码率时整个省略）。
+    // 钉形状不钉内容：伪字节没有档位可带
+    const dq = detail?.data?.videoQualities
+    check('详情 videoQualities 为空或与档位结构同形',
+      dq == null || (Array.isArray(dq) && dq.every((q) =>
+        typeof q?.label === 'string' && typeof q?.url === 'string' && q.url.startsWith('/'))),
+      JSON.stringify(dq))
 
     // 反过来：type=2 却没给视频地址，必须被拒（否则会产生「永远播不出来」的笔记）
     const { json: noVid } = await post('/api/note/publish', {

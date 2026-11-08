@@ -64,6 +64,7 @@ CREATE TABLE `note`
     `content`     VARCHAR(2000)            DEFAULT NULL COMMENT '正文',
     `cover`       VARCHAR(512)             DEFAULT NULL COMMENT '封面图URL',
     `video_url`   VARCHAR(512)             DEFAULT NULL COMMENT '视频URL（type=2时必填）',
+    `video_qualities` VARCHAR(2048)        DEFAULT NULL COMMENT '视频清晰度档位JSON [{label,url,width,height}]；NULL=单码率原文件',
     `status`      TINYINT         NOT NULL DEFAULT 1 COMMENT '状态 0草稿 1正常 2下架',
     `like_count`  INT             NOT NULL DEFAULT 0 COMMENT '点赞数',
     `collect_count` INT           NOT NULL DEFAULT 0 COMMENT '收藏数',
@@ -78,6 +79,12 @@ CREATE TABLE `note`
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4
   COLLATE = utf8mb4_general_ci COMMENT ='笔记表';
+
+-- 存量库手动加列（P48 多码率；schema.sql 只在新库初始化时跑）：
+-- ALTER TABLE xiaoku_db.note
+--   ADD COLUMN video_qualities VARCHAR(2048) DEFAULT NULL
+--   COMMENT '视频清晰度档位JSON [{label,url,width,height}]；NULL=单码率原文件'
+--   AFTER video_url;
 
 -- ---------------------------------------------------------------------
 -- 笔记图片表（一篇笔记多张图，独立成表便于分页/排序）

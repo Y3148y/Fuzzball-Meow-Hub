@@ -1,7 +1,9 @@
 package com.xiaoku.module.note.service;
 
+import com.xiaoku.common.storage.VideoStorage;
 import com.xiaoku.module.note.dto.NotePublishDTO;
 import com.xiaoku.module.note.vo.NoteVO;
+import com.xiaoku.module.note.vo.VideoUploadVO;
 import org.springframework.web.multipart.MultipartFile;
 
 /**
@@ -27,7 +29,15 @@ public interface NoteService {
      */
     String uploadImage(MultipartFile file);
 
-    String uploadVideo(MultipartFile file);
+    /**
+     * 上传视频（多码率，P48），返回整包产物 {@link VideoUploadVO}：
+     * {@code url} = 默认播放档（最高清晰度），{@code qualities} = 全部档位
+     * （降级时为 null，表示只有这一个文件能播）。
+     *
+     * <p>封面不在这里给：发布时由服务端从 {@code videoUrl} 推导
+     * （{@link VideoStorage#coverOf}），客户端传了也不信。
+     */
+    VideoUploadVO uploadVideo(MultipartFile file);
 
     /**
      * 编辑笔记（作者本人），请求体与发布同构（全量更新）。

@@ -1,5 +1,6 @@
 package com.xiaoku.module.note.dto;
 
+import com.xiaoku.module.note.vo.VideoQualityVO;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
@@ -41,6 +42,16 @@ public class NotePublishDTO {
 
     /** type=2 时必填 */
     private String videoUrl;
+
+    /**
+     * 视频清晰度档位（P48 多码率），由 {@code POST /api/note/video} 返回后
+     * 原样随发布提交。Service 校验后序列化进 {@code note.video_qualities}。
+     *
+     * <p>刻意的<b>服务端校验、DTO 不加注解</b>（与 {@code imageUrls} 同一条规矩）：
+     * 「档位超 3 个」这类业务上限要有自己的语义，被 100001 的参数校验
+     * 抢先拦掉反而看不清是谁挡的。
+     */
+    private List<VideoQualityVO> videoQualities;
 
     /**
      * 正文 @ 了谁（用户ID列表，P30）

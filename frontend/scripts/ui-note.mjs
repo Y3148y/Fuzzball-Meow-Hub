@@ -515,22 +515,44 @@ async function setVal(sel, value) {
     '详情页播放器渲染',
     20000,
   )
+  // P48：原生 <video> 已无 controls，控制条是 VideoPlayer 自绘的
+  // （进度条 role=slider + 时间文本 + 静音/全屏），所以这里量组件级锚点
   const vs = await s.evaluate(`(() => {
     const v = document.querySelector('[data-test=note-video-player]')
+    const q = (t) => document.querySelector('[data-test=' + t + ']')
+    const track = q('vp-track')
+    const time = q('vp-time')
+    const qualities = q('vp-qualities')
     return JSON.stringify({
       src: v?.getAttribute('src') ?? null,
       controls: v?.hasAttribute('controls'),
       preload: v?.getAttribute('preload'),
       w: Math.round(v?.getBoundingClientRect().width ?? 0),
+      trackW: Math.round(track?.getBoundingClientRect().width ?? 0),
+      trackRole: track?.getAttribute('role') ?? null,
+      timeText: time?.textContent?.trim() ?? null,
+      timeVisible: !!(time && time.getBoundingClientRect().width > 0),
+      hasMute: !!q('vp-mute'),
+      hasFull: !!q('vp-full'),
+      hasPlay: !!q('vp-play'),
+      qText: qualities?.textContent?.trim() ?? null,
     })
   })()`)
   const vd = JSON.parse(vs)
   s.check('详情页有 <video> 且 src 是上传后的路径（UUID 命名）',
     typeof vd.src === 'string' && /\/[0-9a-f]{32}\.mp4$/.test(vd.src), vs)
-  s.check('播放器带 controls（移动端自动播会被拦，且有声自动播很烦人）', vd.controls === true)
+  s.check('原生 controls 已被组件接管（P48：自绘进度条下发，原生控件不再出现）',
+    vd.controls === false, `controls=${vd.controls}`)
   s.check('preload=metadata 而不是 auto（一进页面就下上百 MB 不可接受）',
     vd.preload === 'metadata', vs)
   s.check('播放器有实际宽度（不是 0 宽的隐藏元素）', vd.w > 100, `w=${vd.w}`)
+  s.check('自绘进度条在且 role=slider（键盘可达 + 语义正确）',
+    vd.trackW > 50 && vd.trackRole === 'slider', vs)
+  s.check('自绘时间文本可见，「当前 / 总时长」两种数字都有',
+    vd.timeVisible && /\d+:?\d*\s*\/\s*\d+:?\d*/.test(vd.timeText ?? ''), `time=${vd.timeText}`)
+  s.check('静音与全屏按钮在（控制条的另外两个功能件）', vd.hasMute && vd.hasFull, vs)
+  s.check('初始是暂停态：中央大播放键露出（点击才开始播）', vd.hasPlay, vs)
+  s.check('伪视频走降级（探测失败）：不发清晰度切换按钮', vd.qText == null, `q=${vd.qText}`)
   s.check('视频笔记不渲染图集（图文与视频互斥）',
     (await s.evaluate("!!document.querySelector('[data-test=note-detail-images]')")) === false)
 

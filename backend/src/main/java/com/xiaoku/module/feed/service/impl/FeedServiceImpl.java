@@ -1,5 +1,6 @@
 package com.xiaoku.module.feed.service.impl;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xiaoku.common.context.UserContextHolder;
 import com.xiaoku.common.result.PageVO;
 import com.xiaoku.module.feed.mapper.FeedMapper;
@@ -15,6 +16,7 @@ import com.xiaoku.module.user.vo.UserVO;
 import com.xiaoku.module.note.entity.NoteImageEntity;
 import com.xiaoku.module.note.mapper.NoteImageMapper;
 import com.xiaoku.module.note.vo.ImmerseCardVO;
+import com.xiaoku.module.note.vo.VideoQualityVO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -39,6 +41,8 @@ public class FeedServiceImpl implements FeedService {
     private final UserFollowQueryService userFollowQueryService;
     private final UserBlockService userBlockService;
     private final NoteImageMapper noteImageMapper;
+    /** 仅供 {@code VideoQualityVO.parse} 读 note.video_qualities（P48，沉浸流卡内切清晰度用） */
+    private final ObjectMapper objectMapper;
 
     @Override
     public PageVO<NoteListItemVO> followFeed(int page, int size) {
@@ -113,6 +117,11 @@ public class FeedServiceImpl implements FeedService {
                     .id(note.getId())
                     .type(note.getType())
                     .videoUrl(note.getVideoUrl())
+                    // P48：沉浸流的视频卡要支持卡内切清晰度 + 自动播前的封面占位画，
+                    // 都来自详情接口的话每划一屏多一次往返 —— 手感上就是「偶尔卡一下」。
+                    // 视频 cover 通用 cover 列（P33 推导进来的抽帧图）
+                    .cover(note.getCover())
+                    .videoQualities(VideoQualityVO.parse(objectMapper, note.getVideoQualities()))
                     .images(imgs)
                     .title(note.getTitle())
                     .contentBrief(brief(note.getContent()))

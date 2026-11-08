@@ -24,6 +24,7 @@ import { useRouter } from 'vue-router'
 import { immerseFeed } from '@/api/feed'
 import type { ImmerseCardVO } from '@/api/types'
 import UserAvatar from '@/components/UserAvatar.vue'
+import VideoPlayer from '@/components/VideoPlayer.vue'
 
 const router = useRouter()
 
@@ -152,9 +153,25 @@ onBeforeUnmount(() => {
         :data-test="'immerse-slide'"
         :data-slide-index="i"
       >
-        <!-- 视频笔记：全屏播放；图文笔记：卡内轮播 -->
+        <!--
+          视频笔记：全屏播放；图文笔记：卡内轮播。
+          P48：原生 controls 换 VideoPlayer —— 星标逻辑：
+          · autoplay + start-muted：滑到当前卡静音自动播（浏览器只放行静音自动播）
+          · :active="i === active"：滑走即暂停（组件内 watch，不常驻下载）
+          · poster 用视频抽帧封面（cover），元数据没到之前画面不是黑的
+          · compact + fill：全屏卡里的紧凑形态
+        -->
         <div v-if="c.type === 2 && c.videoUrl" class="media">
-          <video :src="c.videoUrl" controls preload="metadata" playsinline class="video" />
+          <VideoPlayer
+            :src="c.videoUrl"
+            :qualities="c.videoQualities ?? undefined"
+            :poster="c.cover ?? undefined"
+            :active="i === active"
+            autoplay
+            start-muted
+            compact
+            fill
+          />
         </div>
         <div v-else class="media">
           <img :src="c.images[imgOf(c)]" :alt="c.title" class="pic" data-test="immerse-pic">
@@ -282,11 +299,7 @@ onBeforeUnmount(() => {
   max-height: 100%;
   object-fit: contain;
 }
-.video {
-  max-width: 100%;
-  max-height: 100%;
-  background: #000;
-}
+/* 视频卡改走 VideoPlayer（fill 形态铺满 .media，P48），不再有裸 <video> */
 
 /* 多图指示器：细条，不用圆点 —— 9 张图时圆点排不开 */
 .strip {

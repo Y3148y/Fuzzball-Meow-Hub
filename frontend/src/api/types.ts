@@ -191,6 +191,8 @@ export interface NoteVO {
   content: string
   cover: string | null
   videoUrl: string | null
+  /** 视频清晰度档位（P48）；null（被 non_null 省略）= 单码率原文件，不渲染清晰度菜单 */
+  videoQualities?: VideoQualityVO[]
   likeCount: number
   collectCount: number
   commentCount: number
@@ -265,6 +267,8 @@ export interface NotePublishDTO {
   type?: number
   imageUrls?: string[]
   videoUrl?: string
+  /** 视频清晰度档位（P48）—— 上传接口返回后原样带回发布；图文笔记不传 */
+  videoQualities?: VideoQualityVO[]
   /** 正文 @ 了谁（P30）—— 服务端不从文本解析，昵称允许重复 */
   mentionUserIds?: SnowflakeId[]
 }
@@ -272,6 +276,36 @@ export interface NotePublishDTO {
 /** 上传单张图片的返回体 */
 export interface ImageUploadVO {
   url: string
+}
+
+/**
+ * 视频清晰度档位（P48 多码率），对应后端 VideoQualityVO。
+ *
+ * <p>width/height 是 <b>JSON number 不是字符串</b>：后端特意没用 Long ——
+ * Long 会被全局序列化成字符串（雪花 ID 精度保护），而这两个是像素数，
+ * 播放器拿它们没意义但清晰度菜单可以展示。
+ */
+export interface VideoQualityVO {
+  /** 档位名，如 720p / 480p */
+  label: string
+  /** 该档位视频的站点路径（可直接做 <video src>） */
+  url: string
+  /** 画面宽（像素） */
+  width: number
+  /** 画面高（像素） */
+  height: number
+}
+
+/**
+ * 上传视频的返回体（P48），对应后端 VideoUploadVO。
+ *
+ * <p>{@code url} = 默认播放档（最高清晰度）；{@code qualities} = 全部档位。
+ * <b>降级（ffmpeg 不可用/转码失败/已达标跳过）时 qualities 不存在</b>
+ * （后端 non_null 规则），表示「只有这一个文件能播，别渲染清晰度菜单」。
+ */
+export interface VideoUploadVO {
+  url: string
+  qualities?: VideoQualityVO[]
 }
 
 /**
@@ -408,6 +442,10 @@ export interface ImmerseCardVO {
   type: 1 | 2
   /** 视频 URL，仅 type=2 */
   videoUrl?: string
+  /** 视频清晰度档位（P48）；缺省 = 单码率，不渲染清晰度菜单 */
+  videoQualities?: VideoQualityVO[]
+  /** 封面图 URL（视频卡 = 转码抽帧、图文卡 = 第一张图），加载/自动播前的占位画 */
+  cover?: string | null
   /** 全部图片，按笔记内顺序。图文笔记至少有 1 张（P11 起的规则） */
   images: string[]
   title: string

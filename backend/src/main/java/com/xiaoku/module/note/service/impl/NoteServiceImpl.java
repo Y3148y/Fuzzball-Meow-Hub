@@ -1,6 +1,7 @@
 package com.xiaoku.module.note.service.impl;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xiaoku.common.context.UserContextHolder;
 import com.xiaoku.common.exception.BizException;
 import com.xiaoku.module.moderation.TextModeration;
@@ -28,6 +29,8 @@ import com.xiaoku.module.note.service.NoteService;
 import com.xiaoku.common.storage.VideoStorage;
 import com.xiaoku.module.note.support.NoteCounterStore;
 import com.xiaoku.module.note.vo.NoteVO;
+import com.xiaoku.module.note.vo.VideoQualityVO;
+import com.xiaoku.module.note.vo.VideoUploadVO;
 import com.xiaoku.module.search.event.NoteEventDTO;
 import com.xiaoku.module.user.service.UserQueryService;
 import lombok.RequiredArgsConstructor;
@@ -46,7 +49,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import com.xiaoku.common.util.IdListUtil;
-import com.xiaoku.common.support.VideoTranscoder;
 
 @Slf4j
 @Service
@@ -55,6 +57,9 @@ public class NoteServiceImpl implements NoteService {
 
     /** 单篇笔记图片上限，与 NOTE_IMAGE_LIMIT_EXCEED 的文案保持一致 */
     private static final int MAX_IMAGE_COUNT = 9;
+
+    /** 单篇笔记清晰度档位上限（720p + 480p 已经是最多两档，上限放宽给以后的更多档） */
+    private static final int MAX_QUALITY_COUNT = 3;
 
     private static final int TYPE_GRAPHICAL = 1;
     private static final int TYPE_VIDEO = 2;
@@ -78,6 +83,8 @@ public class NoteServiceImpl implements NoteService {
     private final TextModeration textModeration;
     private final TopicRelationService topicRelationService;
     private final NotificationService notificationService;
+    /** 仅供 {@code VideoQualityVO.serialize/parse} 序列化清晰度 JSON；Spring 容器里全局唯一 */
+    private final ObjectMapper objectMapper;
 
     @Value("${xiaoku.kafka.note-topic}")
     private String noteEventTopic;
@@ -93,6 +100,10 @@ public class NoteServiceImpl implements NoteService {
         note.setTitle(dto.getTitle().trim());
         note.setContent(dto.getContent().trim());
         note.setVideoUrl(dto.getVideoUrl());
+        // P48：多码率档位随发布一起落库（null = 单码率/图文）。
+        // 序列化失败会静默落 null（单码率播放语义），不会让发布失败 ——
+        // 它是展示字段，不值得为它回滚整个事务。
+        note.setVideoQualities(VideoQualityVO.serialize(objectMapper, params.qualities()));
         // 封面缺省取第一张图，省得前端每篇都单独上传一张
         //
         // ⚠️ **视频笔记必须从 videoUrl 推导封面**（P33）：视频没有 note_image 行，
@@ -103,8 +114,12 @@ public class NoteServiceImpl implements NoteService {
         // 让它们各自判断「type==2 就去算封面」要改十几个 VO 与前端分支，
         // 而封面**本来就是 cover 这个字段该有的东西** ——
         // P19 当时留空只是因为「还没想清楚视频的封面从哪来」。
+        //
+        // P48 改走 coverOf（带磁盘存在性检查）而不是裸字符串推导：
+        // 降级路径（没转码成功）没有封面文件，裸推导会推出一个 404 的假封面 ——
+        // 返回 null 让列表卡落到吉祥物兜底，是「空白卡」的正确形态。
         String cover = !params.images().isEmpty() ? params.images().get(0)
-                : VideoTranscoder.coverUrlOf(dto.getVideoUrl());
+                : videoStorage.coverOf(dto.getVideoUrl());
         note.setCover(cover);
         note.setStatus(1);
         noteMapper.insert(note);
@@ -136,8 +151,11 @@ log.info("笔记发布成功 noteId={} userId={} images={}", note.getId(), userI
         // 放在写完 note/note_image 之后 —— 关系行需要 noteId，而 noteId 到这里才有。
         topicRelationService.replaceRelations(note, note.getTitle(), note.getContent(),
                 IdListUtil.parse(dto.getMentionUserIds()));
-        // 刚发布的笔记必然没有点赞/收藏/关注作者（自己不能关注自己），三者都是 false
-        return NoteConverter.toVO(note, userQueryService.getUserVO(userId), params.images(), false, false, false);
+        // 刚发布的笔记必然没有点赞/收藏/关注作者（自己不能关注自己），三者都是 false。
+        // 档位直接回填入参（比从库里的 JSON 再 parse 一遍更省，且此刻两者必然一致）
+        NoteVO vo = NoteConverter.toVO(note, userQueryService.getUserVO(userId), params.images(), false, false, false);
+        vo.setVideoQualities(params.qualities());
+        return vo;
     }
 
     @Override
@@ -162,13 +180,21 @@ log.info("笔记发布成功 noteId={} userId={} images={}", note.getId(), userI
         // 用 LambdaUpdateWrapper 显式 set 而不是 updateById：全项目配了
         // update-strategy not_null，updateById 会把「清空的字段」（cover / videoUrl）
         // 当 null 跳过，导致旧值残留。wrapper 的 set 连 null 一起写，语义才是完整覆盖。
+        //
+        // P48 两处新 set 同一个道理：
+        //   - video_qualities 全量覆盖（编辑改成视频/清空视频都要正确归零）；
+        //   - 封面对视频笔记也要重新推导（换成新视频后旧封面是错的——它抽帧自旧视频）。
+        //     图文沿用第一张图；视频走 coverOf（带磁盘检查，没有封面就落 null，
+        //     让列表卡退吉祥物兜底，而不是挂一张 404 的旧图）。
         noteMapper.update(null, Wrappers.<NoteEntity>lambdaUpdate()
                 .eq(NoteEntity::getId, noteId)
                 .set(NoteEntity::getType, params.type())
                 .set(NoteEntity::getTitle, dto.getTitle().trim())
                 .set(NoteEntity::getContent, dto.getContent().trim())
                 .set(NoteEntity::getVideoUrl, dto.getVideoUrl())
-                .set(NoteEntity::getCover, params.images().isEmpty() ? null : params.images().get(0))
+                .set(NoteEntity::getVideoQualities, VideoQualityVO.serialize(objectMapper, params.qualities()))
+                .set(NoteEntity::getCover, params.images().isEmpty()
+                        ? videoStorage.coverOf(dto.getVideoUrl()) : params.images().get(0))
                 .set(NoteEntity::getUpdateTime, LocalDateTime.now()));
 
         // 图片策略：删旧重插。增删/换序都用「整表重建」表达，不做逐张 diff——
@@ -277,8 +303,19 @@ log.info("笔记发布成功 noteId={} userId={} images={}", note.getId(), userI
     }
 
     @Override
-    public String uploadVideo(MultipartFile file) {
-        return videoStorage.store(file);
+    public VideoUploadVO uploadVideo(MultipartFile file) {
+        VideoStorage.Stored stored = videoStorage.store(file);
+        if (stored.qualities() == null || stored.qualities().isEmpty()) {
+            // 降级路径：没有转码出额外档位，qualities 不下发（JSON non_null 连字段都省掉）
+            log.info("视频上传完成（单码率）：url={}", stored.url());
+            return VideoUploadVO.builder().url(stored.url()).build();
+        }
+        List<VideoQualityVO> qualities = stored.qualities().stream()
+                .map(q -> VideoQualityVO.builder().label(q.label()).url(q.url())
+                        .width(q.width()).height(q.height()).build())
+                .toList();
+        log.info("视频上传完成（{} 档）：url={}", qualities.size(), stored.url());
+        return VideoUploadVO.builder().url(stored.url()).qualities(qualities).build();
     }
 
     @Override
@@ -428,11 +465,33 @@ log.info("笔记发布成功 noteId={} userId={} images={}", note.getId(), userI
         // 免得「发的时候干净、编辑时塞进去」
         textModeration.check(dto.getTitle(), TextModeration.Scene.NOTE_TITLE);
         textModeration.check(dto.getContent(), TextModeration.Scene.NOTE_CONTENT);
-        images.forEach(NoteServiceImpl::checkImageUrl);
-        return new PublishParams(type, images);
+        images.forEach(url -> checkUrl(url, "图片"));
+
+        // P48 多码率档位：只有视频笔记带档位；null/空表都归一成 null（= 单码率）。
+        // 刻意的<b>服务端校验而不靠 DTO 注解</b>：档位上限、字段越界这类业务语义
+        // 统一在这里，避免「发布挡得住、另一条路径漏放行」的双份门槛。
+        List<VideoQualityVO> qualities = dto.getVideoQualities();
+        if (type != TYPE_VIDEO || qualities == null || qualities.isEmpty()) {
+            qualities = null;
+        } else {
+            if (qualities.size() > MAX_QUALITY_COUNT) {
+                throw new BizException(ErrorCodeEnum.PARAM_VALIDATION_ERROR,
+                        "清晰度档位最多 " + MAX_QUALITY_COUNT + " 个");
+            }
+            for (VideoQualityVO q : qualities) {
+                if (q == null) {
+                    throw new BizException(ErrorCodeEnum.PARAM_VALIDATION_ERROR, "清晰度档位不能为空");
+                }
+                checkUrl(q.getUrl(), "清晰度");
+                if (q.getWidth() != null && q.getWidth() < 0 || q.getHeight() != null && q.getHeight() < 0) {
+                    throw new BizException(ErrorCodeEnum.PARAM_VALIDATION_ERROR, "清晰度尺寸不能为负");
+                }
+            }
+        }
+        return new PublishParams(type, images, qualities);
     }
 
-    private record PublishParams(int type, List<String> images) {
+    private record PublishParams(int type, List<String> images, List<VideoQualityVO> qualities) {
     }
 
     /**
@@ -441,17 +500,20 @@ log.info("笔记发布成功 noteId={} userId={} images={}", note.getId(), userI
      * <p>不校验的话，用户可以把 {@code javascript:alert(1)} 或 {@code data:text/html,...}
      * 存进 note_image.url，前端渲染成 img src 时就构成 XSS。
      * 允许外域 http(s) 是因为业务上要支持引用外部图床，不能一刀切。
+     *
+     * <p>「what」进报错文案而不是写死「图片」：P48 的清晰度 url 走同一套规则
+     * （即便是同一个校验，报「图片地址不合法」也会让用户以为传错的是图）。
      */
-    private static void checkImageUrl(String url) {
+    private static void checkUrl(String url, String what) {
         if (url == null || url.isBlank()) {
-            throw new BizException(ErrorCodeEnum.PARAM_VALIDATION_ERROR, "图片地址不能为空");
+            throw new BizException(ErrorCodeEnum.PARAM_VALIDATION_ERROR, what + "地址不能为空");
         }
         String lower = url.toLowerCase(Locale.ROOT);
         boolean ok = lower.startsWith("http://")
                 || lower.startsWith("https://")
                 || (url.startsWith("/") && !url.startsWith("//"));
         if (!ok) {
-            throw new BizException(ErrorCodeEnum.PARAM_VALIDATION_ERROR, "图片地址不合法：" + url);
+            throw new BizException(ErrorCodeEnum.PARAM_VALIDATION_ERROR, what + "地址不合法：" + url);
         }
     }
 }

@@ -1,5 +1,5 @@
 import { del, get, post, postForm, put } from './request'
-import type { ImageUploadVO, NotePublishDTO, NoteVO } from './types'
+import type { ImageUploadVO, NotePublishDTO, NoteVO, VideoUploadVO } from './types'
 
 /**
  * 笔记模块接口。
@@ -33,19 +33,23 @@ export function uploadImage(file: File, onProgress?: (percent: number) => void) 
 }
 
 /**
- * 上传视频（mp4 / webp 各不超过 200MB，**后端不转码**）
+ * 上传视频（mp4 / webm，不超过 200MB，P48 多码率）。
  *
  * <p>超时给到 5 分钟：图片是 10MB 级的，60s 够用；视频是几十上百 MB，
  * 弱网下 60s 会必然超时，用户看到的是一个假失败。
  *
  * <p>只放行 mp4/webm 是因为这两种浏览器能直接播；mov/avi 上传完是黑屏，
  * 比明确拒绝更糟 —— 前端在选文件时就拦掉并提示转格式。
+ *
+ * <p><b>响应是整包产物</b>：{@code url} = 默认播放档、{@code qualities} = 全部档位
+ * （降级时不存在）。发布时 url 填进 videoUrl、qualities 原样带回，
+ * 服务端会按 videoUrl 推导封面并持久化档位 JSON。
  */
 export function uploadVideo(file: File, onProgress?: (percent: number) => void) {
   const form = new FormData()
   form.append('file', file)
 
-  return postForm<{ url: string }>('/note/video', form, {
+  return postForm<VideoUploadVO>('/note/video', form, {
     timeout: 300000,
     idempotent: true,
     onUploadProgress: (e) => {

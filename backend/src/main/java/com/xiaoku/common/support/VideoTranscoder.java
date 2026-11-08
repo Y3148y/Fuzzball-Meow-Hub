@@ -15,7 +15,7 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 视频转码（P33）
+ * 视频转码（P33 引入；P48 升级为多码率）
  *
  * <p><b>为什么现在才做</b>：P19 做完「上传 + 存原文件 + 播放器」时刻意不转码，
  * 理由是当时全库 {@code video_url} 全是 NULL —— 给一个 0 条数据的功能做转码是投机。
@@ -24,13 +24,26 @@ import java.util.concurrent.TimeUnit;
  * 播不出来」。
  *
  * <p><b>同步而不是异步</b>：本机实测 60 秒 1080x1920 转 720x1280 只要 3.4s
- * （17.8x 实时，24 核），封面抽取 0.13s。同步完全在上传请求的预算内，
+ * （17.8x 实时，24 核），封面抽取 0.13s。同步完全在上传请求的预算内
+ * （P37 实测 172MB/180s 源端到端 43.5s，含两条 ffmpeg 也远够），
  * 而异步要引入「转码队列 + 状态机 + 失败重试 + 前端轮询转码进度」——
  * 一整套状态机的复杂度换一个 3.4 秒的等待，不划算。
  *
- * <p><b>降级策略</b>：ffpeg 不存在 / 转码失败时**保留原文件并继续**，
+ * <p><b>降级策略</b>：ffmpeg 不存在 / 转码失败时**保留原文件并继续**，
  * 而不是让整个上传失败。理由：原文件多半本来就能播（用户传的就是 mp4/webm），
  * 转码是「让它在更多设备上能播」的增强，不该成为「能不能发」的门禁。
+ *
+ * <p><b>P48 档位规则</b>：
+ * <ul>
+ *   <li>主档（720p）：短边 &gt; 720 <b>或</b> 非 H.264 就转（后者的原因是
+ *       HEVC/vp9 等老 Safari/安卓播不了，必须落地成 H.264 才算「能播」）——
+ *       输出画布 720x1280 / 1280x720，{@code force_original_aspect_ratio=decrease}
+ *       所以短边小于 720 的源不会被放大；</li>
+ *   <li>次档（480p）：仅当源短边 &gt; 720 才追加（隔条小清晰度），
+ *       弱网/省流量时用；失败只丢这一档，主档照常返回；</li>
+ *   <li>源已是目标规格（H.264 且短边≤720）→ 整个跳过，保持单文件：
+ *       白码一遍换不来画质差异。</li>
+ * </ul>
  */
 @Slf4j
 @Component
@@ -59,12 +72,22 @@ public class VideoTranscoder {
     /** 目标分辨率：竖屏 720x1280 / 横屏 1280x720（小红书与各短视频平台的主流档） */
     private static final int SHORT_EDGE = 720;
 
-    /** 转码结果 */
+    /** 480p 画布的短边：只要 <b>码率</b>下降，不追求真 480（黑边由 pad 决定） */
+    private static final int SECONDARY_SHORT_EDGE = 480;
+
+    /**
+     * 一个档位变体：二进制产物 + 展示用档名（720p/480p…由真实输出短边得来）
+     * + 文件尺寸（画布，缩放减小的源会带黑边，但容器就是这么大）。
+     */
+    public record Variant(Path video, String label, int width, int height) {
+    }
+
+    /** 转码结果：宽高取自<b>主档画布</b>（720x1280 / 1280x720），兼容 P33 的日志口径 */
     public record Result(boolean transcoded, Path video, Path cover, int width, int height,
-                         long durationSec, String reason) {
+                         long durationSec, String reason, List<Variant> variants) {
         /** 没转码时（降级）的便捷结果 */
         public static Result skipped(Path video, String reason) {
-            return new Result(false, video, null, 0, 0, 0, reason);
+            return new Result(false, video, null, 0, 0, 0, reason, List.of());
         }
     }
 
@@ -101,18 +124,20 @@ public class VideoTranscoder {
     }
 
     /**
-     * 转码 + 抽封面
+     * 转码（多码率）+ 抽封面
      *
-     * @param src   原始视频（已在磁盘上）
-     * @param dstDir 输出目录（与原文件同级，按日期分目录）
-     * @param baseName 输出文件基名（UUID，与 LocalVideoStorage 一致）
+     * @param src           原始视频（已在磁盘上）
+     * @param dstDir        输出目录（与原文件同级，按日期分目录）
+     * @param primaryBase   主档（最高清晰度）输出基名，独立 UUID（不带扩展名）
+     * @param secondaryBase 次档（480p）输出基名，独立 UUID（不带扩展名）
      */
-    public Result transcode(Path src, Path dstDir, String baseName) {
+    public Result transcode(Path src, Path dstDir, String primaryBase, String secondaryBase) {
         // ⚠️ **每个降级出口都要打日志**：只有「未转码：<reason>」一行时，
         // reason 可能是「源文件不存在」这种与 ffmpeg 无关的字样，
         // 于是人会去怀疑转码逻辑，而真因（ffmpeg 没装 / 权限 / 路径）
         // 只在这一行里出现不了。降级路径必须自带可诊断性。
-        log.info("转码开始 src={} base={} enabled={} ffmpeg={}", src, baseName, enabled, ffmpegPath);
+        log.info("转码开始 src={} primary={} secondary={} enabled={} ffmpeg={}",
+                src, primaryBase, secondaryBase, enabled, ffmpegPath);
 
         if (!enabled) {
             log.info("转码降级：enabled=false");
@@ -151,24 +176,13 @@ public class VideoTranscoder {
         // 症状是「120MB 的视频传上去还是 120MB」，而日志说「未转码：已是目标规格」。
         boolean portrait = probe.height() >= probe.width();
         int shortEdge = Math.min(probe.width(), probe.height());
-        if (shortEdge <= SHORT_EDGE && "h264".equalsIgnoreCase(probe.codec())) {
+        boolean needPrimary = shortEdge > SHORT_EDGE || !"h264".equalsIgnoreCase(probe.codec());
+        if (!needPrimary) {
             log.info("转码降级：已是目标规格 {}x{} codec={} shortEdge={}", probe.width(), probe.height(),
                     probe.codec(), shortEdge);
             return Result.skipped(src, "已是目标规格（H.264 且短边≤720）");
         }
-        log.info("需要转码：{}x{} codec={} shortEdge={} → {} 画布", probe.width(), probe.height(),
-                probe.codec(), shortEdge, portrait ? "720x1280" : "1280x720");
 
-        // ⚠️ **输出文件名必须与输入不同**。曾经直接用 `<base>.mp4`，
-        // 而输入此刻也正是那个文件（store() 刚落盘）——ffmpeg 会把自己的
-        // 输入截断，`exit=-22`（Invalid argument），产物 0 字节。
-        // ⚠️ 这个 bug 极阴：手工跑同一条命令是**成功**的（因为输出目录不同），
-        // 症状是「上传 200、下载 0、封面 404」，而日志里只有一行
-        // `exit=-22` —— 真因（读写同一个文件）要对着参数列表逐个看才找得到。
-        // 加 `-t <n>` 后缀而不是换目录：同目录换名字最省事，
-        // 且清理逻辑（删原文件）不用跨目录判断。
-        Path out = dstDir.resolve(baseName + "-t.mp4");
-        Path cover = dstDir.resolve(baseName + ".jpg");
         try {
             Files.createDirectories(dstDir);
         } catch (IOException e) {
@@ -176,49 +190,26 @@ public class VideoTranscoder {
             return Result.skipped(src, "建输出目录失败");
         }
 
-        // scale+pad：竖屏与横屏各自的画布尺寸不同，force_original_aspect_ratio=decrease
-        // 保证不裁切（窄视频留黑边），pad 把它居中。
-        // ⚠️ **不能用 -vf scale 只缩不补**：那样输出尺寸会随源变化，
-        // 而播放器按固定比例摆容器，下一次换台设备播就是另一个比例。
-        String canvas = portrait ? "720:1280" : "1280:720";
-        List<String> cmd = new ArrayList<>(List.of(
-                ffmpegPath,
-                "-y",
-                "-i", src.toString(),
-                "-vf", "scale=" + canvas + ":force_original_aspect_ratio=decrease,pad=" + canvas + ":-1:-1",
-                "-c:v", "libx264",
-                // veryfast 而不是 slower：慢 1~2 倍画质几乎看不出差别，
-                // 而转码时长直接决定用户上传时等多久。
-                "-preset", "veryfast",
-                "-crf", "23",
-                // yuv420p 是浏览器兼容性的硬要求：H.264 的 4:2:2/4:4:4 profile
-                // Chrome/Safari 都能播，但部分安卓机不能，而这个成本是零。
-                "-pix_fmt", "yuv420p",
-                "-c:a", "aac",
-                "-b:a", "128k",
-                // faststart 把 moov 原子挪到文件头：不加这条，播放器要下完整个文件
-                // 才知道时长，于是「进度条卡在 0」一直等到缓冲完 —— 表现为「点播放没反应」。
-                "-movflags", "+faststart",
-                out.toString()));
+        // ⚠️ **输出文件名必须与输入不同**：曾经直接用 `<base>.mp4`，
+        // 而输入此刻也正是那个文件（store() 刚落盘）——ffmpeg 会把自己的
+        // 输入截断，`exit=-22`（Invalid argument），产物 0 字节。
+        // P48 起每个档位都是**调用方传入的独立 UUID**，天然不同名，
+        // 连手工拿同一条命令重放都不会再撞上。
+        Path primaryOut = dstDir.resolve(primaryBase + ".mp4");
+        Path cover = dstDir.resolve(primaryBase + ".jpg");
 
+        // 主档画布：竖屏 720x1280 / 横屏 1280x720。
+        // scale+pad：force_original_aspect_ratio=decrease 保证不裁切（窄视频留黑边），
+        // pad 把它居中。⚠️ **不能用 -vf scale 只缩不补**：那样输出尺寸会随源变化，
+        // 而播放器按固定比例摆容器，下一次换台设备播就是另一个比例。
+        String primaryCanvas = portrait ? SHORT_EDGE + ":1280" : "1280:" + SHORT_EDGE;
         long start = System.currentTimeMillis();
-        ExecResult r;
-        try {
-            r = exec(cmd, TIMEOUT_SEC);
-        } catch (Exception e) {
-            log.warn("调起 ffmpeg 失败，降级为不转码：{}", e.getMessage());
-            deleteQuietly(out);
-            return Result.skipped(src, "ffmpeg 调起失败");
-        }
+        boolean primaryOk = runFfmpeg(src, primaryCanvas, "23", primaryOut);
         long cost = System.currentTimeMillis() - start;
-        if (r.exitCode() != 0 || !Files.isRegularFile(out) || fileSize(out) == 0) {
-            // ⚠️ stderr 要**打全**：第一版只打末段 400 字符，而 ffmpeg 的
-            // 参数错误写在**第一行**（「Unrecognized option ...」），末段反而是
-            // 「Output file is empty」这种下游现象 —— 于是只能看到症状看不到原因。
-            log.warn("转码失败（exit={}），降级为保留原文件。命令={} | stderr 头={} | stderr 尾={}",
-                    r.exitCode(), String.join(" ", cmd), head(r.stderr(), 300), tail(r.stderr(), 300));
-            deleteQuietly(out);
-            return Result.skipped(src, "转码失败（exit=" + r.exitCode() + "）");
+        if (!primaryOk) {
+            deleteQuietly(primaryOut);
+            deleteQuietly(cover);
+            return Result.skipped(src, "转码失败（主档）");
         }
 
         // 封面：取第 1 秒而不是第 0 帧 —— 手机拍的视频第 0 帧常常是纯黑
@@ -238,25 +229,103 @@ public class VideoTranscoder {
             log.warn("抽封面调起失败，视频仍可用：{}", e.getMessage());
         }
 
-        log.info("视频转码完成：{}x{} {}s→{}ms 输出 {}KB 封面={}",
+        // 次档（480p）：仅当源短边 > 720 才有「降一档」的意义 ——
+        // 源本身 ≤720 时次档跟主档画质几乎重合，白占一份磁盘。
+        List<Variant> variants = new ArrayList<>();
+        String primaryLabel = shortEdgeLabel(Math.min(SHORT_EDGE, shortEdge));
+        variants.add(new Variant(primaryOut, primaryLabel,
+                portrait ? SHORT_EDGE : 1280,
+                portrait ? 1280 : SHORT_EDGE));
+        if (shortEdge > SHORT_EDGE) {
+            String secondaryCanvas = portrait
+                    ? SECONDARY_SHORT_EDGE + ":854" : "854:" + SECONDARY_SHORT_EDGE;
+            Path secondaryOut = dstDir.resolve(secondaryBase + ".mp4");
+            if (runFfmpeg(src, secondaryCanvas, "28", secondaryOut)) {
+                variants.add(new Variant(secondaryOut, "480p",
+                        portrait ? SECONDARY_SHORT_EDGE : 854,
+                        portrait ? 854 : SECONDARY_SHORT_EDGE));
+            } else {
+                // ⚠️ 次档失败只丢一档：主档已经成功，让整次上传失败是本末倒置
+                deleteQuietly(secondaryOut);
+                log.warn("次档（480p）转码失败，仅返回主档。src={}", src);
+            }
+        }
+
+        log.info("视频转码完成：{}x{} {}s → {}ms 输出 {} 档（{}）封面={} {}KB",
                 probe.width(), probe.height(), probe.durationSec(), cost,
-                fileSize(out) / 1024, coverOk);
-        return new Result(true, out, coverOk ? cover : null,
-                portrait ? 720 : 1280, portrait ? 1280 : 720, probe.durationSec(), null);
+                variants.size(), variants.stream().map(Variant::label).toList().toString(),
+                coverOk, fileSize(primaryOut) / 1024);
+        return new Result(true, primaryOut, coverOk ? cover : null,
+                portrait ? SHORT_EDGE : 1280, portrait ? 1280 : SHORT_EDGE,
+                probe.durationSec(), null, List.copyOf(variants));
     }
 
     /**
-     * 由视频 URL 推出封面 URL
+     * 跑一次 ffmpeg 转码并校验产物。
      *
-     * <p>转码产物叫 {@code <base>-t.mp4}，封面叫 {@code <base>.jpg} ——
-     * 所以这里要去掉 {@code -t} 而不是替换扩展名。
-     * 命名分开的理由见上面「输出文件名必须与输入不同」那条注释。
+     * <p>⚠️ stderr 要**打全**（头 + 尾）：ffmpeg 的参数错误写在**第一行**
+     * （「Unrecognized option ...」），末段反而是「Output file is empty」
+     * 这种下游现象 —— 只打末段时只能看到症状看不到原因。
+     */
+    private boolean runFfmpeg(Path src, String canvas, String crf, Path out) {
+        List<String> cmd = new ArrayList<>(List.of(
+                ffmpegPath,
+                "-y",
+                "-i", src.toString(),
+                "-vf", "scale=" + canvas + ":force_original_aspect_ratio=decrease,pad=" + canvas + ":-1:-1",
+                "-c:v", "libx264",
+                // veryfast 而不是 slower：慢 1~2 倍画质几乎看不出差别，
+                // 而转码时长直接决定用户上传时等多久。
+                "-preset", "veryfast",
+                "-crf", crf,
+                // yuv420p 是浏览器兼容性的硬要求：H.264 的 4:2:2/4:4:4 profile
+                // Chrome/Safari 都能播，但部分安卓机不能，而这个成本是零。
+                "-pix_fmt", "yuv420p",
+                "-c:a", "aac",
+                "-b:a", "128k",
+                // faststart 把 moov 原子挪到文件头：不加这条，播放器要下完整个文件
+                // 才知道时长，于是「进度条卡在 0」一直等到缓冲完 —— 表现为「点播放没反应」。
+                "-movflags", "+faststart",
+                out.toString()));
+
+        ExecResult r;
+        try {
+            r = exec(cmd, TIMEOUT_SEC);
+        } catch (Exception e) {
+            log.warn("调起 ffmpeg 失败，降级为不转码：{}", e.getMessage());
+            return false;
+        }
+        if (r.exitCode() != 0 || !Files.isRegularFile(out) || fileSize(out) == 0) {
+            log.warn("转码失败（exit={}），降级为保留原文件。命令={} | stderr 头={} | stderr 尾={}",
+                    r.exitCode(), String.join(" ", cmd), head(r.stderr(), 300), tail(r.stderr(), 300));
+            return false;
+        }
+        return true;
+    }
+
+    /** 档名：短边数 + 「p」。540p / 640p 这类中间档也如实展示，不硬凑 720p */
+    private static String shortEdgeLabel(int shortEdge) {
+        return shortEdge + "p";
+    }
+
+    /**
+     * 由视频 URL 推出封面 URL（P48 起扩展名互换）
+     *
+     * <p>P33 时代转码产物叫 {@code <base>-t.mp4}、封面叫 {@code <base>.jpg}，
+     * 所以当年要去掉 {@code -t}。P48 多码率下每个档位都是**独立 UUID** 命名
+     * （{@code <uuid>.mp4}），封面只随主档生成、命名为 {@code <主档uuid>.jpg}，
+     * 因此规则简化成 {@code .mp4/.webm → .jpg}。
+     *
+     * <p>⚠️ 本方法<b>不做存在性检查</b>（静态推导）：需要判断「封面文件真的在不在」
+     * 的调用方请走 {@link com.xiaoku.common.storage.VideoStorage#coverOf} ——
+     * 降级的视频没有封面，裸推导会推出一个 404 的假封面对。旧存量笔记的
+     * {@code note.cover} 已固化在列上，不再经过这里反推，不受命名迁移影响。
      */
     public static String coverUrlOf(String videoUrl) {
         if (videoUrl == null) {
             return null;
         }
-        return videoUrl.replaceFirst("(?i)-t\\.(mp4|webm)$", ".jpg");
+        return videoUrl.replaceFirst("(?i)\\.(mp4|webm)$", ".jpg");
     }
 
     /* ================= 内部 ================= */

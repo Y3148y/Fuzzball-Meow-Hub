@@ -18,6 +18,8 @@ import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
@@ -25,10 +27,9 @@ import java.util.UUID;
 /**
  * 本地视频存储（默认实现）
  *
- * <p><b>本轮只存原文件，不做转码。</b>这不是省事，而是明确的边界：
- * 转码要引入 ffmpeg 依赖、CPU 开销、以及「转码失败怎么办」的一整套状态机，
- * 属于要单独立项的工程。反过来，「能上传能播」这件事本身有价值 ——
- * 现在 {@code note.video_url} 存了但详情页根本不播，等于这个字段是死的。
+ * <p>P19 只存原文件、P33 加转码 + 抽封面、<b>P48 升级为多码率</b>：
+ * 一次上传最多产出 {@code 主档 720p + 次档 480p + 封面} 三个文件，
+ * 全部整包返回（{@link Stored}），不再让调用方事后补查封面。
  *
  * <p><b>只放行 mp4 / webm</b>：这两种浏览器能直接播，不需要转码。
  * 放行 mov/avi 的话，用户上传完在浏览器里看到的是黑屏加一个下载按钮，
@@ -63,7 +64,7 @@ public class LocalVideoStorage implements VideoStorage {
     private final VideoTranscoder transcoder;
 
     @Override
-    public String store(MultipartFile file) {
+    public Stored store(MultipartFile file) {
         if (file == null || file.isEmpty()) {
             throw new BizException(ErrorCodeEnum.PARAM_VALIDATION_ERROR, "视频不能为空");
         }
@@ -80,10 +81,14 @@ public class LocalVideoStorage implements VideoStorage {
         }
 
         String dateDir = LocalDate.now().format(DATE_DIR);
-        String baseName = UUID.randomUUID().toString().replace("-", "");
-        String filename = baseName + ext;
+        // 原文件名（降级路径下它就是最终产物）；转码产物用**独立 UUID**命名 ——
+        // 三个名字各不相同而不是「同一 base 换后缀」，这样清理逻辑（成功后删原文件）
+        // 不用猜文件名，也不会出现 ffmpeg 读写同一个文件截断自己的事故。
+        String origName = UUID.randomUUID().toString().replace("-", "") + ext;
+        String primaryBase = UUID.randomUUID().toString().replace("-", "");
+        String secondaryBase = UUID.randomUUID().toString().replace("-", "");
         Path dir = Paths.get(storageConfig.getLocalPath(), dateDir).toAbsolutePath().normalize();
-        Path target = dir.resolve(filename).normalize();
+        Path target = dir.resolve(origName).normalize();
         if (!target.startsWith(dir)) {
             throw new BizException(ErrorCodeEnum.NOTE_UPLOAD_FAILED, "视频存储路径非法");
         }
@@ -94,13 +99,13 @@ public class LocalVideoStorage implements VideoStorage {
                 Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
             }
         } catch (IOException e) {
-            log.error("视频落盘失败 dir={} file={}", dir, filename, e);
+            log.error("视频落盘失败 dir={} file={}", dir, origName, e);
             throw new BizException(ErrorCodeEnum.NOTE_UPLOAD_FAILED);
         }
 
         long mb = file.getSize() / 1024 / 1024;
 
-        // P33：转码 + 抽封面。
+        // P33：转码 + 抽封面；P48：多码率。
         //
         // ⚠️ **转码失败一律降级为「保留原文件」，不让整个上传失败**：
         // 用户传的就是 mp4/webm，原文件多半本来就能播，转码是
@@ -109,27 +114,37 @@ public class LocalVideoStorage implements VideoStorage {
         // ⚠️ 降级时把原文件留着（不删）：它就是最终产物。
         // 转码成功时删原文件 —— 留着它只是浪费磁盘，而用户永远看不到它
         //（URL 已经指向转码产物）。
-        VideoTranscoder.Result tr = transcoder.transcode(target, dir, baseName);
+        VideoTranscoder.Result tr = transcoder.transcode(target, dir, primaryBase, secondaryBase);
+        String urlPrefix = storageConfig.getLocalUrlPrefix() + "/" + dateDir + "/";
         if (tr.transcoded()) {
             deleteQuietly(target);
             long outMb = tr.video().toFile().length() / 1024 / 1024;
-            log.info("视频已转码 {} → {}（{}MB → {}MB）{}x{} {}s",
-                    filename, tr.video().getFileName(), mb, outMb, tr.width(), tr.height(), tr.durationSec());
-            return storageConfig.getLocalUrlPrefix() + "/" + dateDir + "/" + tr.video().getFileName();
+            log.info("视频已转码 {} → {} 档（{}MB → {}MB）{}s 封面={}",
+                    origName, tr.variants().size(), mb, outMb, tr.durationSec(), tr.cover() != null);
+            List<Quality> qualities = new ArrayList<>(tr.variants().size());
+            for (VideoTranscoder.Variant v : tr.variants()) {
+                qualities.add(new Quality(v.label(),
+                        urlPrefix + v.video().getFileName(), v.width(), v.height()));
+            }
+            return new Stored(urlPrefix + tr.video().getFileName(),
+                    tr.cover() == null ? null : urlPrefix + tr.cover().getFileName(),
+                    qualities);
         }
-        log.info("视频已存储 {}（{}MB，未转码：{}）", filename, mb, tr.reason());
-        return storageConfig.getLocalUrlPrefix() + "/" + dateDir + "/" + filename;
+        log.info("视频已存储 {}（{}MB，未转码：{}）", origName, mb, tr.reason());
+        return new Stored(urlPrefix + origName, null, List.of());
     }
 
     /**
      * 取某个视频对应的封面 URL（转码时抽的那一帧）
      *
-     * <p>刻意**不缓存**每次转码的返回：封面是转码的副产品，而
-     * {@link #store} 的签名返回 URL 单值。让调用方拿不到封面，
-     * 结果就是「列表页全是空白占位」—— 所以这里提供补查路径。
+     * <p>{@link #store} 已经整包返回封面，这里是给<b>存量笔记</b>的补查路径：
+     * 发布/编辑需要从 {@code videoUrl} 反推 {@code note.cover}，而库里
+     * P48 之前的笔记没有这个问题（cover 已固化）。带磁盘存在性检查 ——
+     * 降级的视频没有封面，裸推导会推出一个 404 的假封面对。
      *
      * <p>找不到就返回 {@code null}（封面是可选产物，没有它视频照样能用）。
      */
+    @Override
     public String coverOf(String videoUrl) {
         String coverUrl = VideoTranscoder.coverUrlOf(videoUrl);
         if (coverUrl == null || !coverUrl.startsWith(storageConfig.getLocalUrlPrefix() + "/")) {

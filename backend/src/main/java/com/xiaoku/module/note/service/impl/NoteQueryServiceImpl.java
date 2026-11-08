@@ -2,6 +2,7 @@ package com.xiaoku.module.note.service.impl;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xiaoku.common.context.UserContextHolder;
 import com.xiaoku.common.exception.BizException;
 import com.xiaoku.common.result.ErrorCodeEnum;
@@ -22,6 +23,7 @@ import com.xiaoku.module.note.mapper.NoteMapper;
 import com.xiaoku.module.note.service.NoteQueryService;
 import com.xiaoku.module.note.support.NoteCounterStore;
 import com.xiaoku.module.note.vo.NoteListItemVO;
+import com.xiaoku.module.note.vo.VideoQualityVO;
 import com.xiaoku.module.topic.service.TopicRelationService;
 import com.xiaoku.module.topic.vo.MentionVO;
 import com.xiaoku.module.topic.vo.TopicVO;
@@ -68,6 +70,8 @@ public class NoteQueryServiceImpl implements NoteQueryService {
     private final com.xiaoku.module.user.mapper.UserMapper userMapper;
     /** P44 私密账号的可见性闸门（唯一一份实现，别在别处再写一遍） */
     private final com.xiaoku.module.note.support.PrivacyGate privacyGate;
+    /** 仅供 {@code VideoQualityVO.parse} 读 note.video_qualities（P48） */
+    private final ObjectMapper objectMapper;
 
     /**
      * <b>笔记详情需要登录。</b>
@@ -124,6 +128,10 @@ public class NoteQueryServiceImpl implements NoteQueryService {
         // note_mention 的索引，代价可忽略；列表页则用批量版，见 applyRelations）
         vo.setTopics(topicRelationService.listTopics(noteId));
         vo.setMentions(topicRelationService.listMentions(noteId));
+        // P48：多码率档位从列上的 JSON 反解出来；null（或坏 JSON→null）= 单码率，
+        // 前端据此不渲染清晰度切换。解析失败按单码率降级而不报错：
+        // 一个展示字段不该让整篇详情 500
+        vo.setVideoQualities(VideoQualityVO.parse(objectMapper, note.getVideoQualities()));
         // 计数以 Redis 为准；key 缺失（被驱逐/清库/多实例分发）时回退「DB 关系行的实时数」，
         // 不能回退 note.like_count 列——那是异步落库的产物，最多滞后 30s，
         // 详情页拿滞后值会对不上「刚点赞完的 +1」。

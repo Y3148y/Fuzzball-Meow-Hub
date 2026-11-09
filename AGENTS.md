@@ -3,16 +3,16 @@
 给后续接手的人（和 AI 助手）看。这里只写**不看就会踩坑**的东西；
 设计意图和阶段规划在 `README.md`。
 
-## 0. 进度速查（2026-10-19）
+## 0. 进度速查（2026-11-09）
 
 | | |
 |---|---|
 | 阶段 | **P0 → P48 已完成**（详见第 7 节各阶段小节） |
 | 测试 | 契约 **807** 条 · CDP **803** 条，全部绿 |
-| prod | `18080`，跑的是 **P47 前后端**（举报处置闭环 + 搜索页相关用户 + 私信页 TabBar 遮挡）—— **P48 未部署** |
+| prod | `18080`，跑的是 **P48 前后端**（视频多码率 720p/480p + 自绘播放器 + TabBar 修复） |
 | 重建 prod 的坑 | 见第 8 节：8.2 镜像构建三道墙 / 8.5 nginx 缓存旧 IP / 8.6 `--no-deps` |
-| 上一次部署 | P47（前后端一起）· prod 真调用：P47 搜索用户 **OK**、P46 全流程受限于现有 report 状态（接口已部署） |
-| 待做 | P48 部署到 prod 并补真调用记录（照 8.2 / 8.5 / 8.6 流程；**存量库要 ALTER `note.video_qualities`**） |
+| 上一次部署 | P48（前后端一起）· prod 真调用：后端 **12/12**（上传转两档 + 发布 + 详情 + 封面 + 删除）+ UI **15/15**（自绘播放器 + 两档切换 + 断点续播）|
+| 待做 | （无）|
 | 重启后 | **跑 `tools\dev-up.cmd`**（见 2.0 节，引擎没起它会自己拉起，33s）· 手工清单留在 2.0 的折叠块里兜底 |
 
 **最近几个阶段做了什么**：P37 长视频实测（172MiB 端到端 43.5s，抓出 nginx 只允许 100m 的三层不一致）·
@@ -4926,8 +4926,32 @@ message 74→77 那三条属 TabBar 修复轮）。**后端 + 前端都改了，
 
 - 视频仍不上 3 档之上的更多分辨率：部分码率收益递减，存储/带宽代价真实。
 - 搜索页「相关用户」区块本轮仍未补 CDP 断言（P47 的欠账原样保留）。
-- **prod 未部署本轮**：部署时照 8.2 / 8.5 / 8.6 流程，先给 prod 库 ALTER 列
-  再起容器，并补部署后的真调用记录。
+- （下面一段是后续部署记录，prod 已上线 P48。）
+
+### P48 prod 部署与真调用（2026-11-09 完结）
+
+部署链路照 8.2 / 8.5 / 8.6，全部踩平：
+
+1. host 构建 jar：`mvnw -DskipTests package`（JDK17，**不带 `-o`**）→ 119MB产物。
+2. ffmpeg/ffprobe 从**旧 prod 容器** `docker cp xiaoku-prod-backend-1:/usr/local/bin/{ffmpeg,ffprobe}` 取出（先于容器删除），COPY 进临时 Dockerfile。
+3. 临时 `backend/Dockerfile.localtemp`（temurin:17-jre + 非 root app uid 1001 + 两个二进制 chmod 0755 + wget healthcheck 由 compose 提供，**不装 curl=不踩 8.2 墙③**），`DOCKER_BUILDKIT=0` classic 构建，`.dockerignore` 临时改 `target/*`+`!target/xiaoku-backend.jar`（用完 `git checkout --` 还原，BOM 教训不犯）。
+4. **prod 库先 ALTER**：`ALTER TABLE xiaoku_db.note ADD COLUMN video_qualities VARCHAR(2048) DEFAULT NULL COMMENT 'video qualities json' AFTER video_url;`（SQL 全 ASCII，`Get-Content | docker exec -i mysql` 管道即可，**在起新 backend 之前**做——否则详情接口全列 SELECT 直接炸）。
+5. backend `up -d --no-deps --force-recreate backend` → healthy；frontend `docker build` 后 `--no-deps --force-recreate` + **`docker restart xiaoku-prod-frontend-1`**（8.5 nginx 旧 IP 本轮再次需要）。
+
+**后端真调用 12/12**（单探针账号 `prod48*`，注册限流 10/min/IP 内）：
+上传同步转码出 **720p/480p 两档**（720x1280 / 480x854，H.264）→ 两档 GET 200（91758B / 42656B）→ publish code=0 → 详情 videoUrl=主档一致 + videoQualities 两档 + cover GET 200（60251B，发布时由 VideoStorage.coverOf 推导）→ 删除 code=0 → 删除后 20001。
+⚠️ **publish 请求体字段名是 `videoQualities`**（`NotePublishDTO`）——传 `qualities` 会被静默丢弃，详情 `videoQualities=null` 而**不报任何错**。
+
+**UI 真调用 15/15**（CDP headless 走 18080 真界面）：登录 → 详情页 `video[data-test=note-video-player]` 渲染 → 原生 controls 关（自绘）→ playsinline → `vp-track` role=slider → `vp-time` 显示 `0:00 / 0:08`（元数据回填）→ video src 属性 == 详情 videoUrl → 页面内 fetch 详情带两档 → 档位主按钮渲染且可见（**量盒子不只查 DOM**，P30 教训）→ 点开菜单两档项（720p/480p）→ **切 480p 后 video src 换到 480p 文件 + 按钮名变 480p** → 元数据落地时长≈8s。
+
+四个探针教训（都写进对应测试/部署认知里）：
+
+1. **`vp-quality` 是菜单项、`vp-qualities` 是常驻按钮**。菜单关闭时 `document.querySelectorAll('[data-test=vp-quality]')` 返回 **0 —— 那不是 bug**，「无档位之外也不渲染按钮」与「有档位但按钮不存在」要从**正确的锚点**区分：先断 `[data-test=vp-qualities]` 可见，再点开菜单数 `vp-quality`。
+2. **`v.slice(-48)` 这类字符串截断会伪造断言输入**：video.src 的绝对 URL 以 `/static/uploads/…` 开头，只看尾部 48 字符却判「src 指向 /static」必然假红。断言要用**完整取值**（getAttribute 全文）。
+3. **headless Chrome 拒绝 play()（autoplay 政策）**：点击 vp-play 后 paused 仍为 true 属**环境限制**而不是缺陷——dev 的 ui-note 也从不断言「开播」，prod 只断元数据（duration=8、videoWidth/videoHeight 正确）。真播放留给真机。
+4. **页面 video 元素与详情接口的数据一致性**直接对齐 `getAttribute('src') === api.videoUrl`，别在「浏览器 currentSrc 解析后的绝对路径」上做字符串匹配（见 2）。
+
+**收尾**：探针的两条视频笔记（含首轮探针漏记的那条）都走 DELETE API 清掉并验 20001；`prod48%` 账号及 notification/user_follow/report/message 派生行按 8.8 派生表物化 SQL 清零；临时 Dockerfile / build-tmp / 探针脚本删除、`.dockerignore` 还原。**prod 现存 6 篇笔记是用户本人 `xk_ui_admin` 手测内容（含一篇 480p 标题），与 pending report 1 条，均刻意保留。**
 
 #### ⚠️ 本轮修复的 AGENTS.md 自身损坏（记录在案，防止再犯）
 

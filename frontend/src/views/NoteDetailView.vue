@@ -180,6 +180,12 @@ async function onNoteMore(key: string) {
 /** 有没有任何可显示的媒体（视频或图片）。P21：col-media 只在有内容时渲染 */
 const hasMedia = computed(() => !!note.value?.videoUrl || (note.value?.images?.length ?? 0) > 0)
 
+/**
+ * P49：视频笔记的移动端沉浸式（黑底满宽 + 顶栏浮层 + 变量换白系）。
+ * 图文笔记永远 false —— 图文保持既有的纸面卡片布局，不许被波及。
+ */
+const hasVideo = computed(() => !!note.value?.videoUrl)
+
 const isFollowingAuthor = computed(() => note.value?.authorFollowed === true)
 
 async function toggleFollowAuthor() {
@@ -773,7 +779,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <main ref="pageEl" class="page note-detail-page">
+  <main ref="pageEl" class="page note-detail-page" :class="{ immerse: hasVideo }">
     <header class="top">
       <button class="back" type="button" aria-label="返回" @click="router.back()">‹</button>
       <span class="brand">笔记详情</span>
@@ -810,6 +816,7 @@ onBeforeUnmount(() => {
     <article
       v-else-if="note"
       class="card xk-card"
+      :class="{ 'has-video': hasVideo }"
       data-test="note-detail"
     :style="{ '--img-ratio': String(activeRatio) }"
   >
@@ -1615,6 +1622,115 @@ ref="contentEl"
   order: 8;
 }
 
+/* ==================== P49：视频笔记移动端沉浸式 ====================
+ * 对齐小红书的视频页：黑底满宽、顶栏浮层、白字正文。
+ *
+ * 三个措施，只对「有 videoUrl 的这篇笔记」生效（图文笔记一个像素都不动）：
+ * ① 字色系整体换白 —— 在作用域里重定义 var()（--xk-text/-2/-3、
+ *    --xk-surface/-2、--xk-border、--xk-amber-text、--xk-bg），靠继承
+ *    一次到达所有后代（评论行 / 话题 chip / 点赞行 / 操作栏 / Vant 底色）。
+ *    反过来逐个选择器覆盖是 14 处起步，迟早漏一处出现「黑底黑字」。
+ * ② 正文顶到屏幕上沿：.top 从流里拿走改 fixed 浮层（黑渐变托白字）。
+ * ③ 卡片外壳（描边/圆角/内边距/硬阴影）在黑底里失去意义，全下。
+ */
+@media (max-width: 1023px) {
+  .page.immerse {
+    padding-top: 0;
+    padding-left: 0;
+    padding-right: 0; /* ≈ 负 margin，但不用算断点差异，768 段的左右 24px 一并归零 */
+    /* color 必须在这里显式设：全站文字的颜色是 body { color: var(--xk-text) }
+       沿 DOM 继承下来的，标题/正文/昵称根本没有自己的 color 规则 ——
+       只重定义变量不会让 body 换值，必须在这个作用域里开新的继承起点 */
+    color: var(--xk-text);
+    --xk-text: #f2f2f5;
+    --xk-text-2: #cfccd6;
+    --xk-text-3: #9d99a6;
+    --xk-bg: #0d0d10;
+    --xk-surface: #0d0d10;
+    --xk-surface-2: rgba(255, 255, 255, 0.07);
+    --xk-border: rgba(255, 255, 255, 0.16);
+    --xk-amber-text: #f5cd7a;
+  }
+
+  /* 整个视口黑。html 上的规则必须在 scoped 里用 :global 包：
+     data-v 属性只打在本组件模板内的元素上，html/body 永远没有它，
+     不用 :global 的话这条选择器永远匹配不到 —— 静默失效，不报错。 */
+  :global(html:has(.page.immerse)) {
+    --xk-bg: #0d0d10;
+  }
+
+  /* 顶栏浮到视频上。fixed 脱流后正文才能顶到 0；渐变托底保证白字可读 */
+  .page.immerse > .top {
+    position: fixed;
+    top: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 100%;
+    max-width: 480px;
+    box-sizing: border-box;
+    z-index: 50;
+    padding: calc(var(--xk-space-2) + env(safe-area-inset-top, 0px))
+      var(--xk-space-4) var(--xk-space-2);
+    background: linear-gradient(rgba(0, 0, 0, 0.6), rgba(0, 0, 0, 0));
+  }
+
+  .page.immerse .card {
+    padding: 0;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    background: transparent;
+  }
+
+  .page.immerse .videobox {
+    margin: 0;
+  }
+
+  /* VideoPlayer 的外壳是子组件自己的 scoped 规则，父侧要 :deep 穿透 */
+  .page.immerse .videobox :deep(.vp) {
+    border: 0;
+    border-radius: 0;
+  }
+
+  .page.immerse .videobox :deep(.vp-video) {
+    max-height: none;
+  }
+
+  /* .page 左右 padding 已归零。注释里要写清：.col-text 移动端是
+     display:contents（不生成盒子），padding 挂它身上是静默 no-op ——
+     所以左右留白必须兜在每一个真实子元素上（who/title/content/
+     expand/topics/interacts）。.comments 自己有盒，可以直接挂。 */
+  .page.immerse .col-text > * {
+    padding-left: var(--xk-space-4);
+    padding-right: var(--xk-space-4);
+  }
+
+  .page.immerse .comments {
+    padding-left: var(--xk-space-4);
+    padding-right: var(--xk-space-4);
+  }
+
+  /* 视频下缘一条黑晕，让作者区「浮」进视频的收尾里 */
+  .page.immerse .col-text .who {
+    margin-top: calc(var(--xk-space-2) * -1);
+  }
+}
+
+/* ==================== P49：视频笔记桌面端两栏（修补後） ====================
+ * P49-A 把 `.card:not(:has(.grid, .videobox))` 的单栏兜底从视频笔记手里拿走后，
+ * 视频笔记回到与图文相同的三件套网格。这里只做一件补偿：竖屏视频按
+ * 「高 = 72vh × 宽高比」收窄左栏宽度，不让 440px 的列宽把它上下裁切
+ * （比列窄是视频自己的形状，比黑边补丁干净）。
+ */
+@media (min-width: 1024px) {
+  .card.has-video .videobox {
+    width: calc(72vh * var(--img-ratio, 0.5625));
+    max-width: var(--xk-col1);
+  }
+}
+
+
 /*
  * 图片轮播：容器按当前图的真实宽高比定高（--img-ratio 从 <article> 继承），
  * 圆角裁住内层滑轨。桌面端它就是左栏的第一块，靠 aspect-ratio 定高，
@@ -1761,15 +1877,18 @@ ref="contentEl"
     margin: 0 0 16px;
   }
 
-  /* 没有图片的笔记（改图后清空等）退回单栏居中，不留一整片空白左栏 */
-  .card:not(:has(.grid)) {
+  /* 没有任何媒体（改图后清空等）退回单栏居中，不留一整片空白左栏。
+     P49：判据必须是「grid 或 videobox」——视频笔记没有 .grid，
+     只判 grid 会把视频笔记也误判成无媒体，整篇塌进 620px 单栏（右栏消失，
+     桌面截图里只剩 324px 窄视频）。 */
+  .card:not(:has(.grid, .videobox)) {
     grid-template-columns: minmax(0, 1fr);
     max-width: var(--xk-col1-narrow);
     margin: 0 auto;
   }
 
-  .card:not(:has(.grid)) .col-media,
-  .card:not(:has(.grid)) .col-text {
+  .card:not(:has(.grid, .videobox)) .col-media,
+  .card:not(:has(.grid, .videobox)) .col-text {
     grid-column: 1;
   }
 

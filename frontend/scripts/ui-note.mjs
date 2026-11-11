@@ -556,6 +556,68 @@ async function setVal(sel, value) {
   s.check('视频笔记不渲染图集（图文与视频互斥）',
     (await s.evaluate("!!document.querySelector('[data-test=note-detail-images]')")) === false)
 
+  // ---- P49 永久回归钉（原来的验收探针 _shot49.mjs 已删，断言收编进本组）----
+  // 移动沉浸式：显式切 430 —— 默认窗口宽度（~512）不同环境不保证落在 ≤1023，
+  // 量的是「沉浸作用域 + 顶栏浮层 + 视频满宽」三件 ：media 里的东西
+  await s.send('Emulation.setDeviceMetricsOverride', { width: 430, height: 900, deviceScaleFactor: 1, mobile: true })
+  await sleep(500)
+  const im = await s.evaluate(`(() => {
+    const page = document.querySelector('.page.note-detail-page')
+    const top = page?.querySelector(':scope > .top')
+    const r = document.querySelector('[data-test=note-video]')?.getBoundingClientRect()
+    return JSON.stringify({
+      immerse: !!page?.classList.contains('immerse'),
+      bodyBg: getComputedStyle(document.body).backgroundColor,
+      topPos: top ? getComputedStyle(top).position : null,
+      vbW: Math.round(r?.width ?? 0),
+      innerW: innerWidth,
+    })
+  })()`)
+  const imv = JSON.parse(im)
+  s.check('视频笔记移动端走沉浸作用域（main 带 immerse 且视口变黑）',
+    imv.immerse && imv.bodyBg === 'rgb(13, 13, 16)', im)
+  s.check('沉浸态顶栏浮到视频上（fixed 浮层，正文才能顶到屏幕上沿）',
+    imv.topPos === 'fixed', `top=${imv.topPos}`)
+  s.check('沉浸态视频满宽（与视口同宽，卡片外壳已去）',
+    Math.abs(imv.vbW - imv.innerW) <= 2, im)
+  await s.send('Emulation.clearDeviceMetricsOverride')
+  await sleep(300)
+
+  // ---- P49-A 桌面塌栏回归钉：视频卡回到与图文同款的两栏网格，
+  //      补偿规则是「宽 = 72vh × 视频真实宽高比，上限 440 列宽」。
+  //      本组的视频 fixture 是**伪字节**（makeFakeVideo），元数据永远解不出
+  //      —— 所以比例从卡片上已绑定的 --img-ratio 读（onVideoRatio 上报过真值
+  //      就用真值；没上报就是 9/16 兜底），量的是同一条公式路径本身。
+  await s.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
+  await sleep(600)
+  const dv = await s.evaluate(`(() => {
+    const card = document.querySelector('[data-test=note-detail]')
+    const cs = getComputedStyle(card)
+    const vbEl = document.querySelector('[data-test=note-video]')
+    const vb = vbEl.getBoundingClientRect()
+    const title = document.querySelector('[data-test=note-detail-title]').getBoundingClientRect()
+    const ratio = parseFloat(cs.getPropertyValue('--img-ratio')) || 9 / 16
+    const maxW = parseFloat(getComputedStyle(vbEl).maxWidth)
+    return JSON.stringify({
+      nCols: cs.gridTemplateColumns.split(' ').length,
+      videoLeft: Math.round(vb.left),
+      titleLeft: Math.round(title.left),
+      vbW: Math.round(vb.width),
+      vbH: Math.round(vb.height),
+      expW: Math.round(Math.min(0.72 * innerHeight * ratio, maxW)),
+      innerH: innerHeight,
+    })
+  })()`)
+  const dvv = JSON.parse(dv)
+  s.check('桌面视频笔记回到两栏网格（P49-A：不再塌进 620px 单栏）',
+    dvv.nCols === 2 && dvv.videoLeft < dvv.titleLeft, dv)
+  s.check('桌面视频框高度 = 72vh（补偿规则不再上下裁切视频）',
+    Math.abs(dvv.vbH - dvv.innerH * 0.72) <= 6, dv)
+  s.check('桌面视频框宽 = 72vh × 视频宽高比（上限 440 列宽）',
+    Math.abs(dvv.vbW - dvv.expW) <= 8, dv)
+  await s.send('Emulation.clearDeviceMetricsOverride')
+  await sleep(300)
+
   // 清理（走裸接口：这时人在详情页）
   const tok9 = await s.evaluate("localStorage.getItem('xk_token')")
   await fetch(`${API}/api/note/${videoNoteId}`, {

@@ -4965,3 +4965,74 @@ message 74→77 那三条属 TabBar 修复轮）。**后端 + 前端都改了，
 here-string 会按控制台代码页切碎三字节 UTF-8。**校验文件是否真好的判据不是
 Read 工具看不看得出乱码，而是 `git show <commit>:<file>` 的字节流跑一次
 严格 UTF-8 解码。**
+
+### P49 视频体验三档改造（本 commit）
+
+CDP **803 → 809**（ui-note 169→175，+6 条永久钉）。**纯前端**，契约仍 807。
+
+用户反馈两件事：**桌面视频笔记整个塌进 620px 单栏**（标题/作者/评论全掉到视频
+下面，右侧一大片空白）；**播放器形制不像 web 版**（裸原生 controls，没有播放键
+与形制化进度条）。
+
+#### A 桌面塌栏（真 bug，根因是特判本身）
+
+- 根因：P48 给视频笔记的媒体框按竖屏 `aspect-ratio` 占位，桌面列宽 440 装不下
+  16:9 横屏视频 → 特判把 `.card.has-video` 整卡降级成 `--xk-col1-narrow`(620px)
+  单栏。**这个特判本身就是塌栏**：视频卡失去两栏骨架，右侧永远空着。
+- 修法是**删特判**，不是调参数：
+  1. `.card.has-video` 回到与图文同款的两栏网格；单栏兜底判据改成
+     `.card:not(:has(.grid, .videobox))`（视频卡被排除在兜底之外）。
+  2. 竖屏视频装不进 440px 列 → **高度优先**补偿：
+     `.card.has-video .videobox { width: calc(72vh * var(--img-ratio, 0.5625)); max-width: var(--xk-col1) }`
+     —— 框高恒 72vh，宽按视频真实宽高比收窄；横屏视频自然回到满列宽。
+  3. `--img-ratio` 由 `<article>` 统一给，`VideoPlayer @ratio` 上报
+     `videoWidth/videoHeight`，无元数据时回退 9/16。
+- 实测：1920×1080 视频 → 框 324×572（=72vh×0.5625），x=90、右栏 562 起，
+  无裁切无黑边；`.grid` 图文卡的 72vh 上限规则不受影响。
+
+#### B 播放器 chrome 对齐小红书 web
+
+- 中央大播放键（暂停态露出、开播淡出）+ 底部控制条：进度条（`role=slider`，
+  键盘可达）+ 时间 `0:00 / 0:10` + 静音 + 全屏；P48 档位按钮保留。
+- 原生 `controls=false`；`preload=metadata` 不变。
+- 桌面 compact：控制条 hover 显隐、`max-height:72vh`；移动端 `max-height:none`
+  满宽。`.vp { width:100% }` 保底，两种宿主（桌面定宽框 / 移动满宽）都成立。
+
+#### C 移动端视频详情沉浸式
+
+- `main` 加 `:class="{ immerse: hasVideo }"`（**只视频笔记**）：在
+  `@media (max-width:1023px)` 里变量域整体换暗（`--xk-text:#f2f2f5` 系 +
+  `color: var(--xk-text)` 继承起点 + `:global(html:has(.page.immerse))` 黑视口）、
+  顶栏变 fixed 浮层、`.card` 外壳与描边去除、视频满宽。
+- 桌面 ≥1024 不进沉浸（顶栏回落、变量不换）。返回键颜色取 `--xk-text-2`。
+- 图文详情完全不走这条分支，保持 P12 起的构图。
+
+#### 永久回归钉（ui-note 视频段 +6，探针 `_shot49.mjs` 用完即删）
+
+- 移动（**显式切 430**，不赌默认窗口宽度落在 ≤1023）：main 带 immerse 且
+  body 变黑 `rgb(13,13,16)`、顶栏 `position:fixed`、视频满宽（vbW≈innerW±2）。
+- 桌面（1280 override）：card 两列网格 + `videoLeft < titleLeft`、
+  vbH = 72vh（±6）、vbW = 72vh × ratio（上限列宽，±8）。
+
+⚠️ **比例别从 `videoWidth` 读**：本组的视频 fixture 是伪字节（`makeFakeVideo`），
+`videoWidth` 永远是 0，`waitFor(videoWidth > 0)` 是死等 —— 首轮就栽在这，
+10s 超时把整段中断。改读卡片 computed `--img-ratio`：onVideoRatio 上报过真值
+就用真值，没上报就是 9/16 兜底，量的是**同一条公式路径**。
+
+⚠️ **中止运行会留孤儿，且列表 API 查不到**：首轮在桌面段超时中止，其后的
+清理段没跑，伪视频笔记残留在 demo 名下 —— 而 demo 已积累 728 篇笔记，
+`/api/note/user/{id}` 第一页（100 条）根本翻不到它。**用 SQL 定位**
+（`WHERE user_id=? AND video_url IS NOT NULL`）再走 DELETE API（级联/计数/ES
+由服务端处理）。「列表 API 查 0 条」不等于没有孤儿。
+
+#### 验收与已知取舍
+
+一次性探针 16/16（移动 13 + 桌面 3 + 控制台 0 错误）；截图
+`img/v49-mobile-top/bottom.png`、`v49-desktop.png`；`npm run typecheck` 通过；
+全量 CDP 13 组 803/803（钉子加入后 ui-note 175，总数 809）。
+
+- 沉浸态控制条在视频框内（`.videobox` 底部）而非吸底浮层 —— 滚动看评论时
+  控制条跟着走，与小红书 app 的悬浮条不同，刻意简化。
+- 沉浸变量域盖整页（评论/操作栏同域变暗），不做局部 dark。
+- 图文笔记不走沉浸（hasVideo=false）。
+

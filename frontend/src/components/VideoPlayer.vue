@@ -17,7 +17,7 @@
  * <p><b>duration 未知（预加载 metadata 没完成）时显示 0:00、忽略 seek</b>：
  * 拖一个还没量出来的进度条等于瞎猜，等元数据到了再放开。
  */
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { VideoQualityVO } from '@/api/types'
 
 const props = withDefaults(defineProps<{
@@ -245,13 +245,57 @@ const fmt = (s: number) => {
   return `${m}:${ss < 10 ? '0' : ''}${ss}`
 }
 const timeText = computed(() => `${fmt(cur.value)} / ${fmt(duration.value)}`)
+
+/*
+ * 控制条闲时淡出（P49-B，对齐小红书 web）：播放中指针停 2.2s 后整条
+ * 控制层淡出，只留画面；动一下指针/触摸立即回来；暂停态不淡出。
+ * compact（沉浸流）不启用 —— 沉浸流要的是轨道常显的低头滑动体验。
+ * pointermove/down 在触屏上同样触发（Pointer Events 统一），无事件分叉。
+ */
+const hoverBar = ref(false)
+const controlsIdle = ref(false)
+let idleTimer = 0
+
+function wakeControls() {
+  controlsIdle.value = false
+  window.clearTimeout(idleTimer)
+  idleTimer = window.setTimeout(() => {
+    if (playing.value && !props.compact) controlsIdle.value = true
+  }, 2200)
+}
+
+onMounted(() => {
+  const el = root.value
+  if (!el) return
+  el.addEventListener('pointermove', wakeControls)
+  el.addEventListener('pointerdown', wakeControls)
+  el.addEventListener('pointerenter', () => { hoverBar.value = true })
+  el.addEventListener('pointerleave', () => { hoverBar.value = false })
+  wakeControls()
+})
+
+onBeforeUnmount(() => {
+  window.clearTimeout(idleTimer)
+})
+
+/* 暂停时回到显示态 */
+watch(playing, (on) => {
+  if (!on) {
+    controlsIdle.value = false
+    wakeControls()
+  }
+})
+
+watch(dragging, (d) => {
+  if (d) controlsIdle.value = false
+})
 </script>
 
 <template>
   <div
     ref="root"
     class="vp"
-    :class="{ compact, fill }"
+    :class="{ compact, fill, 'is-dragging': dragging }"
     data-test="vp-root"
     @keydown="onKey"
   >
@@ -285,11 +329,12 @@ const timeText = computed(() => `${fmt(cur.value)} / ${fmt(duration.value)}`)
       data-test="vp-play"
       aria-label="播放"
       @click="toggle"
-    >▶</button>
+    ><van-icon name="play" /></button>
 
-    <div class="vp-bar">
-      <span class="vp-time" data-test="vp-time">{{ timeText }}</span>
+    <!-- 拖动进度时的中央大时间浮层（小红书同款手感） -->
+    <div v-show="dragging" class="vp-seek" data-test="vp-seek">{{ fmt(cur) }}</div>
 
+    <div class="vp-bar" :class="{ idle: controlsIdle }" data-test="vp-bar">
       <div
         ref="trackEl"
         class="vp-track"
@@ -309,6 +354,8 @@ const timeText = computed(() => `${fmt(cur.value)} / ${fmt(duration.value)}`)
         <div class="vp-cur" :style="{ width: pct + '%' }" />
         <div class="vp-knob" :style="{ left: pct + '%' }" />
       </div>
+
+      <span class="vp-time" data-test="vp-time">{{ timeText }}</span>
 
       <!-- 清晰度：只有多档才渲染。按钮直接写档位名，比一个小图标更好懂 -->
       <div v-if="qualities" class="vp-qwrap">
@@ -335,13 +382,17 @@ const timeText = computed(() => `${fmt(cur.value)} / ${fmt(duration.value)}`)
         </div>
       </div>
 
+      <!--
+        图标一律 van-icon：🔇/🔊/⛶ 这类 emoji 在部分环境渲染成竖线豆腐块
+        （P22 记过的坑，P49 又踩了一次截图），字体图标才稳定。
+      -->
       <button
         class="vp-btn"
         type="button"
         data-test="vp-mute"
         :aria-label="muted ? '取消静音' : '静音'"
         @click="muted = !muted"
-      >{{ muted ? '🔇' : '🔊' }}</button>
+      ><van-icon :name="muted ? 'volume-o' : 'volume'" /></button>
 
       <button
         class="vp-btn"
@@ -349,15 +400,18 @@ const timeText = computed(() => `${fmt(cur.value)} / ${fmt(duration.value)}`)
         data-test="vp-full"
         aria-label="全屏"
         @click="fullscreen"
-      >⛶</button>
+      ><van-icon name="expand" /></button>
     </div>
   </div>
 </template>
 
 <style scoped>
-/* 详情页形态：宽度跟左栏，比例用视频元数据上报的 --img-ratio（父组件写入），9/16 兜底 */
+/* 详情页形态：宽度跟左栏，比例用视频元数据上报的 --img-ratio（父组件写入），9/16 兜底。
+   width:100% 是必须的：没有它 .vp 被 <video> 的 intrinsic 宽度（720px）撑爆，
+   控制条 left/right:0 跟着溢出视口，全屏按钮落到屏幕外（2026-11-10 CDP 实测）。 */
 .vp {
   position: relative;
+  width: 100%;
   overflow: hidden;
   background: #000;
   border: var(--xk-stroke-w) solid var(--xk-stroke);
@@ -388,7 +442,9 @@ const timeText = computed(() => `${fmt(cur.value)} / ${fmt(duration.value)}`)
 }
 .vp-big:active { background: rgba(0, 0, 0, 0.75); }
 
-/* 控制条：贴底，渐变托底保证白字在浅色视频上可读 */
+/* 控制条：贴底，渐变托底保证白字在浅色视频上可读。
+   idle（播放中指针停 2.2s）时整条淡出只留画面，动一下就回来（小红书 web 手感）；
+   pointer-events 同步关掉，避免看不见的层吃点击。 */
 .vp-bar {
   position: absolute;
   left: 0;
@@ -397,8 +453,14 @@ const timeText = computed(() => `${fmt(cur.value)} / ${fmt(duration.value)}`)
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px));
-  background: linear-gradient(transparent, rgba(0, 0, 0, 0.62));
+  padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px));
+  padding-right: calc(10px + env(safe-area-inset-right, 0px));
+  background: linear-gradient(rgba(0, 0, 0, 0) 30%, rgba(0, 0, 0, 0.72));
+  transition: opacity 0.22s ease;
+}
+.vp-bar.idle {
+  opacity: 0;
+  pointer-events: none;
 }
 
 .vp-time {
@@ -408,7 +470,7 @@ const timeText = computed(() => `${fmt(cur.value)} / ${fmt(duration.value)}`)
   white-space: nowrap;
 }
 
-/* 轨道本体 6px，但热区用 flex 撑满整行高度（≥40px 靠 bar 的 padding 补足） */
+/* 轨道 4px 细条（小红书粗细），hover/拖动时变 6px；热区靠 24px 的 track 盒子 */
 .vp-track {
   position: relative;
   flex: 1 1 auto;
@@ -423,31 +485,66 @@ const timeText = computed(() => `${fmt(cur.value)} / ${fmt(duration.value)}`)
   left: 0;
   right: 0;
   top: 50%;
-  height: 5px;
+  height: 4px;
   transform: translateY(-50%);
-  border-radius: 3px;
-  background: rgba(255, 255, 255, 0.28);
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.26);
+  transition: height 0.12s ease;
+}
+.vp:hover .vp-track::before,
+.vp.is-dragging .vp-track::before {
+  height: 6px;
 }
 .vp-buffered, .vp-cur {
   position: absolute;
   left: 0;
   top: 50%;
-  height: 5px;
+  height: 4px;
   transform: translateY(-50%);
-  border-radius: 3px;
+  border-radius: 2px;
+  transition: height 0.12s ease;
 }
-.vp-buffered { background: rgba(255, 255, 255, 0.42); }
+.vp:hover .vp-buffered,
+.vp:hover .vp-cur,
+.vp.is-dragging .vp-buffered,
+.vp.is-dragging .vp-cur {
+  height: 6px;
+}
+.vp-buffered { background: rgba(255, 255, 255, 0.38); }
 .vp-cur { background: var(--xk-amber, #f5a623); }
 
+/* knob 平时收起（只留细条），hover / 拖动 / 聚焦时才浮出 —— 小红书 web 同款 */
 .vp-knob {
   position: absolute;
   top: 50%;
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
   border-radius: 999px;
   background: #fff;
   transform: translate(-50%, -50%);
-  box-shadow: 0 0 3px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  pointer-events: none;
+}
+.vp:hover .vp-knob,
+.vp.is-dragging .vp-knob,
+.vp-track:focus-visible .vp-knob {
+  opacity: 1;
+}
+
+/* 拖动时的中央大时间 */
+.vp-seek {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  padding: 4px 14px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 30px;
+  font-variant-numeric: tabular-nums;
   pointer-events: none;
 }
 

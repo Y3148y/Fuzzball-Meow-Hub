@@ -5025,6 +5025,21 @@ CDP **803 → 809**（ui-note 169→175，+6 条永久钉）。**纯前端**，�
 （`WHERE user_id=? AND video_url IS NOT NULL`）再走 DELETE API（级联/计数/ES
 由服务端处理）。「列表 API 查 0 条」不等于没有孤儿。
 
+#### prod 验收探针补记（2026-11-11，`_p49prod.mjs` 系，用完即删）
+
+prod 真界面 10/10（登录 → 元数据 → 桌面 5 条 → 移动 3 条）。调试中踩了两个坑，
+都不是产品 bug：
+
+- **`[data-test=note-video-player]` 是 `<video>` 本体，不是容器**（VideoPlayer.vue
+  L315 把 data-test 挂在 video 上）。写 `…player video` 后代选择器**永远查不到**、
+  `videoWidth` 永远 undefined —— 同一个错在一场会话里踩了 **3 次**（探针元数据
+  waitFor 死等 20s 超时、桌面测量 `el.videoWidth` 直接 NPE）。正确写法就是直接
+  querySelector 它本身。
+- **`net::ERR_ABORTED canceled=true`（type=Media）是 Chrome 媒体栈的正常模式**：
+  初始 `Range: bytes=0-` 探测请求被媒体管线接管后取消，随后数据经内部通道加载
+  （rs=4 时没有对应的 loadingCompleted 事件）。别把这条 FAIL 当「加载被拦」去查
+  nginx/CORS。
+
 #### 验收与已知取舍
 
 一次性探针 16/16（移动 13 + 桌面 3 + 控制台 0 错误）；截图

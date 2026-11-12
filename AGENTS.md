@@ -9,10 +9,10 @@
 |---|---|
 | 阶段 | **P0 → P50 已完成**（详见第 7 节各阶段小节） |
 | 测试 | 契约 **845** 条（P50 段 38 条，含无正文草稿 7 条）· CDP **825** 条（ui-note 182 + ui-search 28 为 P50 扩的两组），全部绿 |
-| prod | `18080`，跑的是 **P49 前端 + P48 后端** —— **P50 未部署**（后端+前端都改了，要按 8.2/8.5/8.6 全链重建，见 P50 段结尾） |
+| prod | `18080`，跑的是 **P50 全链**（2026-11-12 部署：后端 jar 重建 + 前端镜像重建 + nginx 重启；prod 库已 ALTER `note.content` 可空） |
 | 重建 prod 的坑 | 见第 8 节：8.2 镜像构建三道墙 / 8.5 nginx 缓存旧 IP / 8.6 `--no-deps` |
-| 上一次部署 | P49（**纯前端**，backend 未动）· prod 真调用：UI **10/10**（登录 + 元数据 + 桌面 5 + 移动 3）|
-| 待做 | P50 prod 部署 + 真调用（**存量库要 ALTER `note.content` 为可空**，见 P50 段「部署注意」）|
+| 上一次部署 | P50（**后端+前端**）· prod 真调用：接口 **24/24** + UI **12/12**（草稿全链 + 搜索筛选 + 自清）|
+| 待做 | （无）|
 | 重启后 | **跑 `tools\dev-up.cmd`**（见 2.0 节，引擎没起它会自己拉起，33s）· 手工清单留在 2.0 的折叠块里兜底 |
 
 **最近几个阶段做了什么**：P37 长视频实测（172MiB 端到端 43.5s，抓出 nginx 只允许 100m 的三层不一致）·
@@ -5135,4 +5135,48 @@ ALTER TABLE xiaoku_db.note MODIFY COLUMN content VARCHAR(2000) DEFAULT NULL COMM
   （顺序错了详情/列表全列 SELECT 会炸 —— P48 的 video_qualities 前科）。
 - 编辑已有「已下架」笔记后保存仍走原 `submit()`（不要求正文空豁免 ——
   下架不是草稿，语义边界维持 P10 原状）。
+
+### P50 prod 部署与真调用（2026-11-12 完结）
+
+部署链路照 8.2 / 8.5 / 8.6 全部走平：host `mvnw -DskipTests package`（不带 `-o`）→
+`docker cp` 从旧容器取 ffmpeg/ffprobe → 临时 Dockerfile.localtemp（不装 curl，
+healthcheck 由 compose 用 wget）→ `DOCKER_BUILDKIT=0` classic 构建 →
+**prod 库先 ALTER `note.content` 可空**（在起新 backend 之前；MODIFY 不带 COMMENT
+会清掉原注释，这次顺手换成 ASCII 注释 `'content'`）→ backend `--no-deps
+--force-recreate` → healthy → **`chown -R 1001:999 /app/uploads`**（P35-c 教训
+每次重建后都跑）→ 前端 build + `--no-deps` 重建 + **重启 nginx**（8.5）。
+
+**接口真调用 24/24**（探针 `prod50a*`，三个账号共注册 3 次都在 10/min/IP 内）：
+只写标题存草稿 → 直发无图无正文报「正文不能为空」→ 草稿 0→1 无图报「缺图」
+（image 在前）→ 草稿本体完好 → 编辑草稿（可写正文）→ 0→1 有正文无图报缺图 →
+正常发布 → 1→0 报「已发布的笔记不能转回草稿」→ 下架 2→0 拒 → 恢复上架 →
+补图 0→1 成功 → 详情 status/正文/cover 一致 → 搜索 type=1 命中 / type=2 空 /
+sort=latest 命中 / type=99 与 sort 非法都 100001（钉新后端真在跑）→ 删除与 20001。
+
+**UI 真调用 12/12**（CDP headless 走 18080，登录 `xk_ui_admin`）：
+空表单存草稿禁用 → 只写标题解禁 + 发布仍禁用 → 主页草稿行（data-status=0 +
+「草稿」角标 + 编辑/删除）→ 编辑页草稿态双按钮 → 填正文发布（自动文字卡）→
+详情正文正确 → 搜索筛选器默认态 → 切视频空态无残留 → 切图文素材在 →
+最新排序选中且素材在 → 自清。
+
+#### 探针自己的三个错（prod 行为与 dev 完全一致，不是产品缺陷）
+
+1. **「直发无图无正文」报「正文不能为空」而「0→1 无图无正文」报「缺图」**
+   —— 这不是不一致：publish 直发的正文校验在**方法体里、先于** `requirePublishReady`，
+   0→1 只走 `requirePublishReady`（image 检查在前）。探针第一版把两条的期望
+   message 写反了，dev 契约（28 节）本来就是按真实顺序钉的。
+2. **1→0 的 message 是「已发布的笔记不能转回草稿」，探针正则错写成
+   「status 只能是 0（存草稿）或 1（发布）」** —— 后者是 publish DTO 层的文案；
+   而 changeStatus 对 target=0 且非草稿**统一报前者**（包括 2→0）。
+   dev 契约只钉 code 没钉 message，prod 与 dev 同 jar 同行为。
+3. **编辑草稿 `imageUrls=[]` 全量覆盖清了图**，后面 0→1 自然缺图 —— 探针流程
+   顺序错误（图传给了另一篇笔记），不是「编辑丢图」的 bug。
+
+#### 两条顺带的记录
+
+- **2→0 的报错文案语义略歪**：下架的笔记转草稿也报「已发布的笔记不能转回草稿」。
+  实现里把非草稿态的拒绝文案通用化了，dev 契约未钉。要精确只能按 current status
+  分文案，收益低 —— 记录在案，不当缺陷追。
+- **探针基建小坑**：`createSession` 是 **async**，忘了 `await` 时 `s.goto` 直接
+  `is not a function` —— 与 P20 记的「助手返回形态不一致」同源，抄 API 前先看签名。
 

@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { showSuccessToast } from 'vant'
-import { getNoteDetail, updateNote, uploadImage } from '@/api/note'
+import { changeNoteStatus, getNoteDetail, updateNote, uploadImage } from '@/api/note'
 import { BizError } from '@/api/request'
 import { ErrorCode, NOTE_IMAGE_LIMIT } from '@/api/types'
 import {
@@ -33,16 +33,23 @@ const previewPage = ref(0)
 const previewPages = ref(1)
 /** 编辑态只针对图文（发布只支持图文），下拉不用做 */
 const noteType = ref(1)
+/** P50：加载回来的状态。0 = 草稿 —— 保存不生成文字卡、顶栏多一个「发布」 */
+const noteStatus = ref(1)
+const isDraft = computed(() => noteStatus.value === 0)
 
 const titleLen = computed(() => title.value.length)
 const contentLen = computed(() => content.value.length)
 /** 没图 = 保存时自动生成文字卡片，避免存出「type=1 但零图」的脏笔记 */
 const textMode = computed(() => urls.value.length === 0)
+/*
+ * P50：草稿允许正文为空（存草稿时只写标题也合法），已发布/已下架的编辑
+ * 仍要求正文非空 —— 与后端 service 里的状态分支校验同口径。
+ */
 const canSubmit = computed(
   () =>
     !submitting.value &&
     title.value.trim().length > 0 &&
-    content.value.trim().length > 0 &&
+    (content.value.trim().length > 0 || isDraft.value) &&
     titleLen.value <= 64 &&
     contentLen.value <= 2000,
 )
@@ -128,7 +135,8 @@ async function load() {
     // 编辑入口只对作者开放，详情页按钮已隐藏；这里再兜一层防手输 URL
     title.value = note.title
     content.value = note.content
-noteType.value = note.type
+    noteType.value = note.type
+    noteStatus.value = note.status ?? 1
         urls.value = [...note.images]
         // 记下「原值」作为未保存判定的基准（见文件末尾 useUnsavedChanges）
         initialTitle = note.title
@@ -189,6 +197,68 @@ async function submit() {
   }
 }
 
+/*
+ * P50 草稿的两条独立出口：
+ *  - 存草稿：**不**生成文字卡 —— 草稿保留原始正文与零图状态，
+ *    模板/正文/图片在草稿期都还能改（发布那一刻才固化）；
+ *  - 发布：零图先渲卡片（0→1 要求图文带图），PUT 更新后再 PUT /status 0→1。
+ *    发布失败（比如只写了标题就点发布）时草稿本体已保存，留在本页改完再发。
+ */
+async function saveDraft() {
+  if (!canSubmit.value || loading.value) return
+  submitting.value = true
+  errorMsg.value = ''
+  try {
+    await updateNote(String(route.params.id), {
+      title: title.value.trim(),
+      content: content.value.trim(),
+      type: noteType.value,
+      imageUrls: [...urls.value],
+    })
+    showSuccessToast('草稿已保存')
+    markClean()
+    await router.replace('/profile')
+  } catch (e) {
+    errorMsg.value = e instanceof BizError ? e.message : '保存失败，请稍后重试'
+  } finally {
+    submitting.value = false
+  }
+}
+
+async function publishDraft() {
+  if (!canSubmit.value || loading.value) return
+  submitting.value = true
+  errorMsg.value = ''
+  try {
+    const finalUrls = [...urls.value]
+    if (!finalUrls.length && noteType.value === 1) {
+      const blobs = await textCardBlobs(title.value.trim(), content.value.trim(), tplId.value)
+      for (const b of blobs) {
+        const file = new File([b], 'text-card.png', { type: 'image/png' })
+        finalUrls.push((await uploadImage(file)).url)
+      }
+    }
+    const note = await updateNote(String(route.params.id), {
+      title: title.value.trim(),
+      content: content.value.trim(),
+      type: noteType.value,
+      imageUrls: finalUrls,
+    })
+    await changeNoteStatus(String(note.id), 1)
+    showSuccessToast('发布成功')
+    markClean()
+    await router.replace(`/note/${note.id}`)
+  } catch (e) {
+    if (e instanceof BizError) {
+      errorMsg.value = e.message
+    } else {
+      errorMsg.value = '发布失败，请稍后重试'
+    }
+  } finally {
+    submitting.value = false
+  }
+}
+
 onMounted(load)
 
 /*
@@ -215,7 +285,34 @@ const { markClean } = useUnsavedChanges(() => {
     <header class="top">
       <button class="back" type="button" aria-label="返回" @click="router.back()">‹</button>
       <span class="brand">编辑笔记</span>
-      <button class="submit" type="button" :disabled="!canSubmit || loading" @click="submit">
+      <!-- P50：草稿态多一个「发布」出口；已发布/已下架保持原来的单个「保存」 -->
+      <span v-if="isDraft" class="ops">
+        <button
+          class="draft"
+          type="button"
+          data-test="note-edit-save-draft"
+          :disabled="!canSubmit || loading"
+          @click="saveDraft"
+        >
+          存草稿
+        </button>
+        <button
+          class="submit"
+          type="button"
+          data-test="note-edit-publish"
+          :disabled="!canSubmit || loading"
+          @click="publishDraft"
+        >
+          {{ submitting ? '发布中…' : '发布' }}
+        </button>
+      </span>
+      <button
+        v-else
+        class="submit"
+        type="button"
+        :disabled="!canSubmit || loading"
+        @click="submit"
+      >
         {{ submitting ? '保存中…' : '保存' }}
       </button>
     </header>
@@ -260,7 +357,8 @@ const { markClean } = useUnsavedChanges(() => {
 
         <p class="tip">
           移除某张图即从列表删除；保存时以当前列表为准。
-          <span v-if="textMode">已全部移走 — 保存时自动回填一张文字卡片。</span>
+          <span v-if="textMode && isDraft">已全部移走 — 发布时自动生成一张文字卡片。</span>
+          <span v-else-if="textMode">已全部移走 — 保存时自动回填一张文字卡片。</span>
         </p>
 
         <div v-if="textMode" class="tpls" role="group" aria-label="文字卡模板" data-test="tpl-list">
@@ -419,6 +517,28 @@ const { markClean } = useUnsavedChanges(() => {
 }
 
 .submit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* P50 草稿态顶栏双按钮：与 PublishView 同一套视觉语言（描边降权 + 实心主行动） */
+.ops {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.draft {
+  padding: 6px 14px;
+  border: var(--xk-stroke-w) solid var(--xk-border);
+  border-radius: 999px;
+  background: var(--xk-surface-2);
+  color: var(--xk-text-2);
+  font-size: var(--xk-fs-14);
+  cursor: pointer;
+}
+
+.draft:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }

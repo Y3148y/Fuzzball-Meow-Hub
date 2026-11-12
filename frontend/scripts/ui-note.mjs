@@ -19,6 +19,9 @@ import zlib from 'node:zlib'
 import { createSession, loginDemo, preflight } from './ui-cdp.mjs'
 import { writePng } from './png.mjs'
 
+/* P50 在文件末尾追加了「草稿流」段（第 18 段）：只写标题存草稿 → 主页角标/操作
+ * → 继续编辑 → 编辑页「发布」（0→1）→ 自清。 */
+
 const BASE = 'http://localhost:5180'
 const API = 'http://localhost:8088'
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -1929,6 +1932,98 @@ await s.evaluate("document.querySelector('[data-test=img-next]').click()")
     headers: { Authorization: `Bearer ${await s.evaluate("localStorage.getItem('xk_token')")}` },
   })).json()
   s.check('纯文字笔记删除后详情返回 20001', cleaned.code === 20001, `code=${cleaned.code}`)
+
+  // ---- 18. P50 草稿流：只写标题存草稿 → 主页角标/操作 → 继续编辑 → 发布（0→1）
+  //
+  // 全程不碰文件上传：文字草稿存原始正文（不生成文字卡），发布那一刻在编辑页
+  // 由 textMode 兜底生成卡片 —— 这正是「草稿保留原始正文」设计的端到端验证。
+  // 结尾把发布出来的笔记删掉，本组自清。
+  const DRAFT_TITLE = 'P50 草稿流测试笔记'
+  const DRAFT_CONTENT = 'P50 草稿发布正文。'
+  /** 主页笔记列表里找草稿行的状态包（标题锚定，不用 :first-child ——
+   *  历史草稿/其它笔记会换位置，锚文本才稳） */
+  const draftRowExpr = `(() => {
+    const rows = [...document.querySelectorAll('[data-test=profile-note]')];
+    const hit = rows.find((e) => e.textContent.includes(${JSON.stringify(DRAFT_TITLE)}));
+    if (!hit) return JSON.stringify({ found: false, total: rows.length });
+    return JSON.stringify({
+      found: true,
+      status: hit.getAttribute('data-status'),
+      badge: hit.querySelector('[data-test=note-draft-mark]')?.textContent?.trim() ?? null,
+      hasOps: !!hit.querySelector('[data-test=note-draft-ops]'),
+      edit: !!hit.querySelector('[data-test=note-draft-edit]'),
+      del: !!hit.querySelector('[data-test=note-draft-del]'),
+    });
+  })()`
+  const setInput = (testSel, value) => s.evaluate(`
+    (() => {
+      const el = document.querySelector(${JSON.stringify('[data-test=' + testSel + ']')})
+      if (!el) throw new Error('找不到输入框 ' + ${JSON.stringify(testSel)})
+      const proto = el instanceof HTMLTextAreaElement
+        ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+      Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, ${JSON.stringify(value)})
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+    })()
+  `)
+
+  await s.goto(`${BASE}/#/publish`)
+  await s.waitFor("document.querySelector('[data-test=note-title]')", '回到发布页', 20000)
+  s.check(
+    '空表单时「存草稿」也禁用',
+    (await s.evaluate("document.querySelector('[data-test=publish-draft]')?.disabled")) === true,
+  )
+  await setInput('note-title', DRAFT_TITLE)
+  await sleep(300)
+  s.check(
+    '只写标题「存草稿」解禁',
+    (await s.evaluate("document.querySelector('[data-test=publish-draft]')?.disabled")) === false,
+  )
+  s.check(
+    '只写标题「发布」仍禁用（正文非空）',
+    (await s.evaluate("document.querySelector('.submit')?.disabled")) === true,
+  )
+  await s.evaluate("document.querySelector('[data-test=publish-draft]').click()")
+  await s.waitFor("location.hash === '#/profile'", '存草稿跳主页', 20000)
+
+  await s.waitFor("document.querySelector('[data-test=profile-note]')", '主页笔记列表', 20000)
+  const row = JSON.parse(await s.evaluate(draftRowExpr))
+  s.check(
+    '草稿行带「草稿」角标与操作行（data-status=0）',
+    row.found === true && row.status === '0' && row.badge === '草稿' && row.hasOps && row.edit && row.del,
+    JSON.stringify(row),
+  )
+
+  await s.evaluate(`(() => {
+    const hit = [...document.querySelectorAll('[data-test=profile-note]')]
+      .find((e) => e.textContent.includes(${JSON.stringify(DRAFT_TITLE)}));
+    hit.querySelector('[data-test=note-draft-edit]').click();
+  })()`)
+  await s.waitFor("location.hash.includes('#/edit/')", '进入草稿编辑页', 20000)
+  await s.waitFor(
+    "!!document.querySelector('[data-test=note-edit-save-draft]')",
+    '编辑页草稿态按钮出现',
+    20000,
+  )
+  s.check('草稿态编辑页出现「发布」按钮', (await exists('note-edit-publish')) === true)
+
+  await setInput('note-edit-content', DRAFT_CONTENT)
+  await sleep(200)
+  await s.evaluate("document.querySelector('[data-test=note-edit-publish]').click()")
+  await s.waitFor("location.hash.startsWith('#/note/')", '草稿发布跳详情', 25000)
+  await s.waitFor("document.querySelector('[data-test=note-detail-content]')", '详情正文', 20000)
+  s.check('草稿发布后正文与编辑页输入一致', (await text('note-detail-content')) === DRAFT_CONTENT)
+
+  // 清理：发布出来的笔记从详情页删掉（页面正好停在详情）。
+  // ⚠️ id 必须在删除**之前**取 —— 删除成功后 hash 已变 #/，再取就拿到空串
+  const draftNoteId = (await s.evaluate('location.hash')).split('/').pop()
+  await s.evaluate("document.querySelector('[data-test=note-delete-btn]').click()")
+  await s.waitFor("document.querySelector('.van-dialog')", '草稿发布笔记删除确认', 10000)
+  await s.evaluate("document.querySelector('.van-dialog__confirm').click()")
+  await s.waitFor("location.hash === '#/'", '删除后回首页', 20000)
+  const draftGone = await (await fetch(`${API}/api/note/${draftNoteId}`, {
+    headers: { Authorization: `Bearer ${await s.evaluate("localStorage.getItem('xk_token')")}` },
+  })).json()
+  s.check('草稿发布笔记清理后详情返回 20001', draftGone.code === 20001, `code=${draftGone.code}`)
 } catch (e) {
   s.check('用例执行到底', false, String(e.message));
 } finally {

@@ -7,9 +7,25 @@ import type { NoteListItemVO, PageVO, UserPickVO } from './types'
  * <p>后端只对 <b>标题（权重 2）+ 正文</b> 做 multi_match，
  * 结果按相关性与发布时间倒序；卡片字段由后端回 MySQL 现组装，保证昵称/计数不过期。
  * 第二个形参就是 query 参数本身（见 request.ts 约定），不要包一层 params。
+ *
+ * <p>P50 筛选器：<code>type</code> 0=全部 1=图文 2=视频、<code>sort</code>
+ * synthesis=综合（默认）latest=最新。默认值**不发参数**（后端对缺参/空串
+ * 同样按全部/综合处理，省一个字段；契约两侧已对齐这条口径）。
  */
-export function searchNotes(keyword: string, page = 1, size = 20) {
-  return get<PageVO<NoteListItemVO>>('/search/note', { keyword, page, size })
+export function searchNotes(
+  keyword: string,
+  page = 1,
+  size = 20,
+  type: 0 | 1 | 2 = 0,
+  sort: 'synthesis' | 'latest' = 'synthesis',
+) {
+  return get<PageVO<NoteListItemVO>>('/search/note', {
+    keyword,
+    page,
+    size,
+    ...(type ? { type } : {}),
+    ...(sort === 'latest' ? { sort } : {}),
+  })
 }
 
 /**

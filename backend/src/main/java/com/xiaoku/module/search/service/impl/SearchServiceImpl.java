@@ -61,6 +61,15 @@ public class SearchServiceImpl implements SearchService {
     /** 1 正常发布，只有这个状态入索引 */
     private static final int STATUS_PUBLISHED = 1;
 
+    /** P50 类型筛选：0 全部（不加 type 过滤），1 图文，2 视频 —— 与 note.type 的取值一致 */
+    private static final int TYPE_ALL = 0;
+    private static final int TYPE_GRAPHICAL = 1;
+    private static final int TYPE_VIDEO = 2;
+
+    /** P50 排序口径：综合 = 相关度优先（原行为）；最新 = 只按发布时间倒序 */
+    private static final String SORT_SYNTHESIS = "synthesis";
+    private static final String SORT_LATEST = "latest";
+
     private static final int REINDEX_BATCH_SIZE = 1000;
 
     /** 重建是「删旧索引 + 从库回灌」的重操作，两点并发会互相拆台，用锁串行化 */
@@ -75,53 +84,77 @@ public class SearchServiceImpl implements SearchService {
     private final LockTemplate lockTemplate;
 
     @Override
-    public PageVO<NoteListItemVO> searchNote(String keyword, int page, int size) {
+    public PageVO<NoteListItemVO> searchNote(String keyword, int page, int size, int type, String sort) {
         Long currentUserId = UserContextHolder.requireUserId();
         if (keyword == null || keyword.isBlank()) {
             throw new BizException(ErrorCodeEnum.SEARCH_KEYWORD_EMPTY);
+        }
+        // P50 筛选参数：越界值不静默归一 —— 前端只该发 0/1/2 与两个排序键，
+        // 传了别的值说明是调用方写错了，报错比悄悄返回全部更早暴露问题
+        if (type != TYPE_ALL && type != TYPE_GRAPHICAL && type != TYPE_VIDEO) {
+            throw new BizException(ErrorCodeEnum.PARAM_VALIDATION_ERROR, "type 只能是 0（全部）1（图文）或 2（视频）");
+        }
+        boolean byLatest = SORT_LATEST.equals(sort);
+        if (!byLatest && !SORT_SYNTHESIS.equals(sort)) {
+            throw new BizException(ErrorCodeEnum.PARAM_VALIDATION_ERROR, "sort 只能是 synthesis（综合）或 latest（最新）");
         }
         int safePage = Math.max(page, 1);
         int safeSize = (int) Math.min(Math.max(size, 1L), 100L);
 
         Query query = new Query.Builder()
-                .bool(b -> b
-                        .must(m -> m.multiMatch(mm -> mm
-                                .query(keyword.trim())
-                                .fields(List.of("title^2", "content"))
-                                /*
-                                 * OR（ES 默认）在这里是**误召来源**：ik_smart 会把中文
-                                 * 拆成单字，于是搜「绝对不存在的词zzq998」会因为命中
-                                 * 「在」「的」而返回 28 篇（库里 163 篇时实测）。
-                                 *
-                                 * 但直接改 {@code operator: AND} 更糟 —— 它要求**全部**
-                                 * token 都命中，而 ik_smart 切出的 token 数与命中数经常
-                                 * 对不上：实测「毛球喵社」OR=2 / AND=**0**，好词被杀掉。
-                                 *
-                                 * 所以用 minimumShouldMatch：一半 token 命中即可。
-                                 * 同一份数据实测（OR → AND → 本方案）：
-                                 *   绝对不存在的词zzq998  28 → 0  → 1
-                                 *   书桌上的三盏灯        31 → 1  → 9
-                                 *   通勤穿搭               3 → 1  → 1
-                                 *   点赞                  33 → 27 → 27
-                                 *   毛球喵社               2 → 0  → 2   ← AND 在这里翻车
-                                 *   TCC 典型应用场景/折叠/发现  三档一致
-                                 *
-                                 * 用 "50%" 而不是固定整数 2：token 数少（单字词）时
-                                 * 50% 会向下取整到 0，等于放行全部，短词不会被误杀。
-                                 */
-                                .minimumShouldMatch("50%")))
-                        .filter(f -> f.term(t -> t.field("status").value(FieldValue.of(1L)))))
+                .bool(b -> {
+                    b.must(m -> m.multiMatch(mm -> mm
+                            .query(keyword.trim())
+                            .fields(List.of("title^2", "content"))
+                            /*
+                              * OR（ES 默认）在这里是**误召来源**：ik_smart 会把中文
+                              * 拆成单字，于是搜「绝对不存在的词zzq998」会因为命中
+                              * 「在」「的」而返回 28 篇（库里 163 篇时实测）。
+                              *
+                              * 但直接改 {@code operator: AND} 更糟 —— 它要求**全部**
+                              * token 都命中，而 ik_smart 切出的 token 数与命中数经常
+                              * 对不上：实测「毛球喵社」OR=2 / AND=**0**，好词被杀掉。
+                              *
+                              * 所以用 minimumShouldMatch：一半 token 命中即可。
+                              * 同一份数据实测（OR → AND → 本方案）：
+                              *   绝对不存在的词zzq998  28 → 0  → 1
+                              *   书桌上的三盏灯        31 → 1  → 9
+                              *   通勤穿搭               3 → 1  → 1
+                              *   点赞                  33 → 27 → 27
+                              *   毛球喵社               2 → 0  → 2   ← AND 在这里翻车
+                              *   TCC 典型应用场景/折叠/发现  三档一致
+                              *
+                              * 用 "50%" 而不是固定整数 2：token 数少（单字词）时
+                              * 50% 会向下取整到 0，等于放行全部，短词不会被误杀。
+                              */
+                            .minimumShouldMatch("50%")))
+                            // 只回已发布（这条 filter 与 P7 一致，草稿/下架永不入索引）
+                            .filter(f -> f.term(t -> t.field("status").value(FieldValue.of(1L))));
+                    // P50：类型筛选追加到同一个 filter 子句桶（filter context 不算分，
+                    // 多一个子句不改变相关度语义）。type 索引字段在 NoteSearchDoc 里
+                    // 一直就有（发布/编辑事件都带），所以这里零结构变更。
+                    if (type != TYPE_ALL) {
+                        b.filter(f -> f.term(t -> t.field("type").value(FieldValue.of((long) type))));
+                    }
+                    return b;
+                })
                 .build();
 
-        // 相关性（_score）为主排序，同分值再按发布时间新→旧。
-        // SortOptions.of(...) 各建一个排序列，再一并传给 withSort（两列按顺序生效）
-        NativeQuery nativeQuery = NativeQuery.builder()
-                .withQuery(query)
-                .withSort(
-                        co.elastic.clients.elasticsearch._types.SortOptions.of(
-                                s -> s.score(sc -> sc.order(SortOrder.Desc))),
-                        co.elastic.clients.elasticsearch._types.SortOptions.of(
-                                s -> s.field(f -> f.field("createTime").order(SortOrder.Desc))))
+        var builder = NativeQuery.builder().withQuery(query);
+        if (byLatest) {
+            // 最新：单一排序键，相关度完全让位 —— 用户明确说「按时间看」，
+            // 同分值再按相关度排反而是干扰
+            builder.withSort(co.elastic.clients.elasticsearch._types.SortOptions.of(
+                    s -> s.field(f -> f.field("createTime").order(SortOrder.Desc))));
+        } else {
+            // 综合：相关性（_score）为主排序，同分值再按发布时间新→旧（原行为）
+            builder.withSort(
+                    co.elastic.clients.elasticsearch._types.SortOptions.of(
+                            s -> s.score(sc -> sc.order(SortOrder.Desc))),
+                    co.elastic.clients.elasticsearch._types.SortOptions.of(
+                            s -> s.field(f -> f.field("createTime").order(SortOrder.Desc))));
+        }
+        NativeQuery nativeQuery = builder
                 .withPageable(PageRequest.of(Math.max(safePage - 1, 0), safeSize))
                 .build();
 

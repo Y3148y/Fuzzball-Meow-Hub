@@ -17,8 +17,10 @@ public interface SearchService {
      * @param keyword 搜索关键词，blank 时抛 50002
      * @param page    页码，从 1 开始
      * @param size    每页条数
+     * @param type    P50 类型筛选：0 全部 / 1 图文 / 2 视频；其它值抛 100001
+     * @param sort    P50 排序："synthesis" 综合（相关度优先）/ "latest" 最新；其它值抛 100001
      */
-    PageVO<NoteListItemVO> searchNote(String keyword, int page, int size);
+    PageVO<NoteListItemVO> searchNote(String keyword, int page, int size, int type, String sort);
 
     /**
      * 重建笔记索引：删掉旧索引 + 按 mapping 新建 + MySQL 全量回灌 status=1 的笔记。

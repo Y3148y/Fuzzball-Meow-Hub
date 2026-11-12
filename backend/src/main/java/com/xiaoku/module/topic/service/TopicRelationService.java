@@ -33,8 +33,14 @@ public interface TopicRelationService {
      *
      * @param note 已落库的笔记（需要 userId 做自提及过滤）
      * @param mentionUserIds 前端选人时确定的 @ 对象；null 视为「没 @ 任何人」
+     * @param notifyMentions P50 草稿：草稿不发给被 @ 的人通知 ——
+     *        「被 @」的通知若在存草稿时就发，用户会收到一条指向**未发布**笔记的
+     *        通知（点进去 20001）。关系行照写（作者自己的草稿详情页仍渲染 @ 链接），
+     *        通知只推迟到草稿真正发布那一刻（0→1 时以 notify=true 再跑一次本方法，
+     *        行会幂等地重写一遍）。
      */
-    void replaceRelations(NoteEntity note, String title, String content, java.util.List<Long> mentionUserIds);
+    void replaceRelations(NoteEntity note, String title, String content,
+                          java.util.List<Long> mentionUserIds, boolean notifyMentions);
 
     /** 笔记的话题（id + name），给 NoteVO 用 */
     List<TopicVO> listTopics(Long noteId);
@@ -68,6 +74,16 @@ public interface TopicRelationService {
 
     /** 删评论时清掉它的提及关系行（无外键不级联） */
     void removeCommentRelations(Long commentId);
+
+    /**
+     * 草稿里 @ 了谁（P50 草稿链路用）。
+     *
+     * <p>草稿创建/编辑时通知**不发**（{@code notifyMentions=false}），
+     * 0→1 发布那一刻要补发 —— 但那时手里只有 DB 行，没有当初的 DTO。
+     * 这个方法把「存草稿那一刻 @ 的人」读出来，再交给
+     * {@link #replaceRelations}（notify=true）重写行 + 补通知。
+     */
+    java.util.List<Long> noteMentionUserIds(Long noteId);
 
     /** 批量取一批评论的提及，供评论列表渲染 @ 链接（避免 N+1） */
     java.util.Map<Long, List<MentionVO>> commentMentionMap(java.util.Collection<Long> commentIds);

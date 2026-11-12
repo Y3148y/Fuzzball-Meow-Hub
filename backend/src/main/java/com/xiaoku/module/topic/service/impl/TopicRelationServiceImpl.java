@@ -109,7 +109,7 @@ public class TopicRelationServiceImpl implements TopicRelationService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void replaceRelations(NoteEntity note, String title, String content,
-                                 List<Long> mentionUserIds) {
+                                 List<Long> mentionUserIds, boolean notifyMentions) {
         Long noteId = note.getId();
         if (noteId == null) {
             return;
@@ -142,8 +142,13 @@ List<Long> mentionIds = sanitizeMentionIds(mentionUserIds, note.getUserId());
         }
         // 被@的人发「提我」通知。发在关系行之后：通知是 afterCommit + 吞异常的
         // （见 NotificationServiceImpl.push），所以失败不会影响发布。
-        for (Long uid : mentionUserIds) {
-            notificationService.notifyMention(uid, note.getUserId(), noteId, content);
+        // ⚠️ P50 草稿：notifyMentions=false 时不发 —— 「被 @」的通知若在存草稿
+        // 时就发，用户会收到一条指向未发布笔记的通知（点进去 20001）。
+        // 通知推迟到草稿真正发布那一刻（0→1 时以 notify=true 再调用一次）。
+        if (notifyMentions) {
+            for (Long uid : mentionUserIds) {
+                notificationService.notifyMention(uid, note.getUserId(), noteId, content);
+            }
         }
 
         log.info("笔记关系行已写入 noteId={} topics={} mentions={}",
@@ -182,6 +187,17 @@ List<Long> mentionIds = sanitizeMentionIds(mentionUserIds, note.getUserId());
         }
         noteMentionMapper.delete(Wrappers.<NoteMentionEntity>lambdaQuery()
                 .eq(NoteMentionEntity::getCommentId, commentId));
+    }
+
+    @Override
+    public List<Long> noteMentionUserIds(Long noteId) {
+        if (noteId == null) {
+            return List.of();
+        }
+        return noteMentionMapper.selectList(Wrappers.<NoteMentionEntity>lambdaQuery()
+                        .eq(NoteMentionEntity::getNoteId, noteId)
+                        .eq(NoteMentionEntity::getCommentId, COMMENT_ID_FOR_NOTE))
+                .stream().map(NoteMentionEntity::getUserId).toList();
     }
 
     @Override

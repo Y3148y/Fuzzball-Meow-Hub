@@ -1,6 +1,8 @@
 /**
  * P7 搜索域（CDP）：首页搜索框 → 搜索页命中 → 卡片回 MySQL 组卡 → 进详情
  * → 无结果空态 → 空关键词不发请求 → 带 ?keyword= 直链刷新。
+ * P50 追加：筛选器（类型 全部/图文/视频 + 排序 综合/最新）—— 默认态、
+ * 切视频出空态（素材是图文）、切回全部/图文素材仍在、最新排序素材仍在。
  *
  * <p>和后端契约测试的分工：契约只验 HTTP 报文，验不到前端封装层
  * （比如把 query 塞进 { params } 这种错，报文测试照样全绿）。这里真机点一遍。
@@ -153,6 +155,38 @@ try {
   s.check('搜到了素材笔记', (await titles('search-item')).includes(FIX_TITLE))
   s.check('卡片标题就是素材笔记', (await text('search-title')) === FIX_TITLE)
   s.check('卡片作者昵称来自 MySQL 回填', (await text('search-author')) === PEER.nickname)
+
+  /* ============ P50 筛选器：类型（全部/图文/视频）+ 排序（综合/最新） ============ */
+
+  const hasOn = (test) =>
+    s.evaluate(`document.querySelector('[data-test=${test}]')?.classList.contains('on')`)
+
+  s.check('有关键词时筛选器出现', (await exists('search-filters')) === true)
+  s.check('默认「全部」选中', (await hasOn('search-type-0')) === true)
+  s.check('默认「综合」选中', (await hasOn('search-sort-synthesis')) === true)
+
+  // 素材笔记是图文（P6 时代发布，type=1）：切「视频」必须空态，
+  // 如果还能看到卡片说明 type 参数根本没发出去（假绿最常见的形状）
+  await click('search-type-2')
+  await s.waitFor("document.querySelector('[data-test=search-empty]')", '视频筛选空态', 20000)
+  s.check('切「视频」后出空态而不是残留图文卡', (await exists('search-item')) === false)
+
+  await click('search-type-1')
+  await s.waitFor("document.querySelector('[data-test=search-item]')", '图文筛选结果', 20000)
+  s.check('切「图文」素材笔记仍在', (await titles('search-item')).includes(FIX_TITLE))
+
+  await click('search-type-0')
+  await s.waitFor("document.querySelector('[data-test=search-item]')", '全部筛选结果', 20000)
+  s.check('切回「全部」素材笔记仍在', (await titles('search-item')).includes(FIX_TITLE))
+
+  await click('search-sort-latest')
+  await s.waitFor("document.querySelector('[data-test=search-item]')", '最新排序结果', 20000)
+  s.check('「最新」排序下素材仍在（sort 没把结果打空）', (await titles('search-item')).includes(FIX_TITLE))
+  s.check('「最新」按钮处于选中态', (await hasOn('search-sort-latest')) === true)
+
+  await click('search-sort-synthesis')
+  await s.waitFor("document.querySelector('[data-test=search-item]')", '综合排序结果', 20000)
+  s.check('切回「综合」素材仍在', (await titles('search-item')).includes(FIX_TITLE))
 
   /* ============ 卡片进详情 ============ */
 

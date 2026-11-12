@@ -64,6 +64,7 @@ public class NoteServiceImpl implements NoteService {
     private static final int TYPE_GRAPHICAL = 1;
     private static final int TYPE_VIDEO = 2;
 
+    private static final int STATUS_DRAFT = 0;
     private static final int STATUS_PUBLISHED = 1;
     private static final int STATUS_TAKEN_DOWN = 2;
 
@@ -93,7 +94,25 @@ public class NoteServiceImpl implements NoteService {
     @Transactional(rollbackFor = Exception.class)
     public NoteVO publish(NotePublishDTO dto) {
         Long userId = UserContextHolder.requireUserId();
-        PublishParams params = validatePublishParams(dto, true);
+        // P50 草稿：status=0 走草稿路径。只有 0 是特殊取值，其它（null/1）都按发布处理，
+        // 2/99 这类值不静默归一 —— 传了明确不认识的值就报错，别猜用户想要什么。
+        boolean asDraft = Integer.valueOf(STATUS_DRAFT).equals(dto.getStatus());
+        if (dto.getStatus() != null && !asDraft && !Integer.valueOf(STATUS_PUBLISHED).equals(dto.getStatus())) {
+            throw new BizException(ErrorCodeEnum.PARAM_VALIDATION_ERROR, "status 只能是 0（存草稿）或 1（发布）");
+        }
+        // P50：草稿允许正文为空（只写标题也存得住）；发布必须带正文。
+        // 校验挪进 service 的理由同 status —— 注解是无条件生效的，两条路径没法区分。
+        if (!asDraft && (dto.getContent() == null || dto.getContent().isBlank())) {
+            throw new BizException(ErrorCodeEnum.PARAM_VALIDATION_ERROR, "正文不能为空");
+        }
+        // 归一 null → ""：下游 note.setContent(.trim()) / 关系行解析都按非 null 写，
+        // 草稿落空串比落 null 少一条「判空分支」—— 而少一条分支就少一个漏。
+        if (dto.getContent() == null) {
+            dto.setContent("");
+        }
+        // 草稿允许无图（用户存的是没做完的东西）；发布时（0→1）才强制补图。
+        // 注意 type=2 的 videoUrl 校验与这个开关无关（validatePublishParams 里独立判）。
+        PublishParams params = validatePublishParams(dto, !asDraft);
         NoteEntity note = new NoteEntity();
         note.setUserId(userId);
         note.setType(params.type());
@@ -121,7 +140,9 @@ public class NoteServiceImpl implements NoteService {
         String cover = !params.images().isEmpty() ? params.images().get(0)
                 : videoStorage.coverOf(dto.getVideoUrl());
         note.setCover(cover);
-        note.setStatus(1);
+        // P50：草稿落 status=0。下游全是现成的 —— 详情门禁已有「非作者看草稿 20001」，
+        // 各流与搜索都按 status=1 过滤，pageUserNotes 本人已返回全状态。
+        note.setStatus(asDraft ? STATUS_DRAFT : STATUS_PUBLISHED);
         noteMapper.insert(note);
         // 提前置位（事务提交前）：假阳性只多查一次库，「漏置位 = 详情 404」才是要命的。
         // 详见 NoteIdBloomFilter 的类注释
@@ -135,7 +156,7 @@ public class NoteServiceImpl implements NoteService {
             noteImageMapper.insert(image);
         }
 
-log.info("笔记发布成功 noteId={} userId={} images={}", note.getId(), userId, params.images().size());
+log.info("笔记{}成功 noteId={} userId={} images={}", asDraft ? "存草稿" : "发布", note.getId(), userId, params.images().size());
 
         // 稀缺：规划 ES 索引的异步同步。必须在 afterCommit 发送而不是在事务内直接发，
         // 否则「消息进了 Kafka、事务却回滚」会产生索引里有、库里没有的幽灵文档。
@@ -145,12 +166,20 @@ log.info("笔记发布成功 noteId={} userId={} images={}", note.getId(), userI
         // 上一段注释的延续，一起删掉了。结果是发布不再发 ES 事件，而
         // **接口照常返回 200**，契约里的「发布后经 Kafka 异步入搜索索引」
         // 才红 —— 一条与话题毫无关系的断言替你抓到的话题改动出的问题。
-        registerAfterCommit(NoteEventDTO.ACTION_PUBLISH, ofEventNote(note, params, dto, STATUS_PUBLISHED));
+        //
+        // ⚠️ P50 草稿：**草稿不发事件** —— 它从未进过索引，发 PUBLISH 会造出
+        // 「库里 status=0、索引里能搜到」的幽灵文档（门禁挡得住详情，挡不住搜索列表）。
+        // 草稿真正发布（0→1）那一刻由 applyStatusChange 发 PUBLISH，路径唯一。
+        if (!asDraft) {
+            registerAfterCommit(NoteEventDTO.ACTION_PUBLISH, ofEventNote(note, params, dto, STATUS_PUBLISHED));
+        }
 
         // 话题/提及关系行：正文是唯一事实来源，后端自己从 title+content 解析。
         // 放在写完 note/note_image 之后 —— 关系行需要 noteId，而 noteId 到这里才有。
+        // P50 草稿：关系行照写（作者自己的草稿详情页仍渲染话题/提及），
+        // 但 @ 通知不发 —— notifyMentions=false。
         topicRelationService.replaceRelations(note, note.getTitle(), note.getContent(),
-                IdListUtil.parse(dto.getMentionUserIds()));
+                IdListUtil.parse(dto.getMentionUserIds()), !asDraft);
         // 刚发布的笔记必然没有点赞/收藏/关注作者（自己不能关注自己），三者都是 false。
         // 档位直接回填入参（比从库里的 JSON 再 parse 一遍更省，且此刻两者必然一致）
         NoteVO vo = NoteConverter.toVO(note, userQueryService.getUserVO(userId), params.images(), false, false, false);
@@ -175,7 +204,19 @@ log.info("笔记发布成功 noteId={} userId={} images={}", note.getId(), userI
         // 这两条 2026-10-08 手测都撞到了（5 篇 P6 遗留的无图笔记）。
         // 小红书发帖与编辑都要求至少一张图，这里对齐它 ——
         // 让「无图笔记」这个形态压根不存在，比事后给前端加兜底分支更省事。
-        PublishParams params = validatePublishParams(dto, true);
+        //
+        // ⚠️ P50 例外：**草稿编辑保持无图合法** —— 用户存草稿时就可以没图，
+        // 编辑没写完的草稿却被「必须带图」拦住，等于草稿功能形同虚设。
+        // P21 那条规则管的是「成为对外可见的笔记」；草稿不是。
+        int curStatus = note.getStatus() == null ? STATUS_PUBLISHED : note.getStatus();
+        // P50：草稿编辑允许正文为空（同 publish 的草稿分支）；已发布/已下架的编辑必须带正文。
+        if (curStatus != STATUS_DRAFT && (dto.getContent() == null || dto.getContent().isBlank())) {
+            throw new BizException(ErrorCodeEnum.PARAM_VALIDATION_ERROR, "正文不能为空");
+        }
+        if (dto.getContent() == null) {
+            dto.setContent("");
+        }
+        PublishParams params = validatePublishParams(dto, curStatus != STATUS_DRAFT);
 
         // 用 LambdaUpdateWrapper 显式 set 而不是 updateById：全项目配了
         // update-strategy not_null，updateById 会把「清空的字段」（cover / videoUrl）
@@ -213,16 +254,19 @@ log.info("笔记发布成功 noteId={} userId={} images={}", note.getId(), userI
         log.info("笔记更新成功 noteId={} userId={}", noteId, userId);
         // 话题/提及全量替换：编辑本来就是全量覆盖语义，关系行跟着换。
         // 不做增量 diff —— 一篇最多 5 话题 10 提及，删了重插很便宜，
-        // 而增量留下的「改了正文还挂着旧话题」残留更难查
+        // 而增量留下的「改了正文还挂着旧话题」残留更难查。
+        // P50：草稿编辑照写关系行但不发 @ 通知（理由同 publish）。
         topicRelationService.replaceRelations(note, dto.getTitle().trim(), dto.getContent().trim(),
-                IdListUtil.parse(dto.getMentionUserIds()));
+                IdListUtil.parse(dto.getMentionUserIds()), curStatus != STATUS_DRAFT);
         // 编辑不会让一篇笔记「重新上热搜」：已下架的继续发 UNPUBLISH（确保索引里没有），
-        // 正常的才带新标题/正文 re-upsert
-        int curStatus = note.getStatus() == null ? STATUS_PUBLISHED : note.getStatus();
-        String action = curStatus == STATUS_PUBLISHED
-                ? NoteEventDTO.ACTION_PUBLISH
-                : NoteEventDTO.ACTION_UNPUBLISH;
-        registerAfterCommit(action, ofEventNote(note, params, dto, curStatus));
+        // 正常的才带新标题/正文 re-upsert。
+        // ⚠️ P50：草稿**不发任何事件** —— 它从未进过索引，UNPUBLISH 是给
+        // 不存在的文档发 deleteById，白占一次消费；发布时由 0→1 那条路发 PUBLISH。
+        if (curStatus == STATUS_PUBLISHED) {
+            registerAfterCommit(NoteEventDTO.ACTION_PUBLISH, ofEventNote(note, params, dto, curStatus));
+        } else if (curStatus == STATUS_TAKEN_DOWN) {
+            registerAfterCommit(NoteEventDTO.ACTION_UNPUBLISH, ofEventNote(note, params, dto, curStatus));
+        }
         return noteQueryService.getDetail(noteId);
     }
 
@@ -234,6 +278,16 @@ log.info("笔记发布成功 noteId={} userId={} images={}", note.getId(), userI
         NoteEntity note = noteMapper.selectById(noteId);
         if (note == null || !userId.equals(note.getUserId())) {
             throw new BizException(ErrorCodeEnum.NOTE_NOT_FOUND);
+        }
+        assertDraftTransitionAllowed(note, status);
+        // P50：草稿发布（0→1）要走「发布」的完整语义 ——
+        // 存草稿时 @ 的通知没发（notifyMentions=false），在这里补发，
+        // 并把关系行幂等地重写一遍（sanitise 重新过滤已注销/拉黑的用户）。
+        // 放在 applyStatusChange 之前：通知走 afterCommit + 吞异常，先失败先报。
+        if (Objects.equals(note.getStatus(), STATUS_DRAFT) && Objects.equals(status, STATUS_PUBLISHED)) {
+            requirePublishReady(note);
+            topicRelationService.replaceRelations(note, note.getTitle(), note.getContent(),
+                    topicRelationService.noteMentionUserIds(noteId), true);
         }
         applyStatusChange(note, status);
         return noteQueryService.getDetail(noteId);
@@ -249,14 +303,66 @@ log.info("笔记发布成功 noteId={} userId={} images={}", note.getId(), userI
         if (note == null) {
             throw new BizException(ErrorCodeEnum.NOTE_NOT_FOUND);
         }
+        // P50：草稿是作者的私有中间态（P21 已定），运营不参与它的生命周期 ——
+        // 运营发布别人的草稿等于替作者做「内容已完成」的判断；下架一篇
+        // 从未发布的笔记更是无意义。作者侧 changeStatus 的转移规则对草稿
+        // 只放行 0→1，这条守卫把运营路径整个挡在外面。
+        if (Objects.equals(note.getStatus(), STATUS_DRAFT)) {
+            throw new BizException(ErrorCodeEnum.PARAM_VALIDATION_ERROR, "草稿只能由作者发布");
+        }
         applyStatusChange(note, status);
         log.info("运营强制变更笔记状态 noteId={} status={}", noteId, status);
     }
 
     private void requireValidStatus(Integer status) {
-        if (status == null || (status != STATUS_PUBLISHED && status != STATUS_TAKEN_DOWN)) {
-            throw new BizException(ErrorCodeEnum.PARAM_VALIDATION_ERROR, "状态只能是 1（发布）或 2（下架）");
+        // P50：目标值扩到 0|1|2（0 只在「草稿发布」链路里合法，转移规则在调用处判）
+        if (status == null || (status != STATUS_PUBLISHED && status != STATUS_TAKEN_DOWN
+                && status != STATUS_DRAFT)) {
+            throw new BizException(ErrorCodeEnum.PARAM_VALIDATION_ERROR, "状态只能是 0（草稿）1（发布）或 2（下架）");
         }
+    }
+
+    /**
+     * 作者侧状态变更：草稿的转移规则在这里，不在 requireValidStatus 里 ——
+     * 运营那条路径（forceChangeStatus）对草稿的处理不同（只能拒绝）。
+     *
+     * <p>P50 草稿规则：
+     * <ul>
+     *   <li>0→1：唯一放行的「草稿离开草稿态」方向，且发布前要补上
+     *       「图文必带图」的完整校验（存草稿时可以没图）</li>
+     *   <li>x→0（含 1→0、2→0）：一律拒绝 —— 已发布/已下架的笔记「转回草稿」
+     *       会让它的对外可见性在两种语义间漂移，而下架本身已经承担了
+     *       「暂时不可见」的职责，不需要第二个隐藏态</li>
+     *   <li>0→2：拒绝 —— 下架一篇从未发布的笔记没有意义</li>
+     * </ul>
+     */
+    private void assertDraftTransitionAllowed(NoteEntity note, Integer status) {
+        boolean fromDraft = Objects.equals(note.getStatus(), STATUS_DRAFT);
+        if (fromDraft && !Objects.equals(status, STATUS_PUBLISHED)) {
+            throw new BizException(ErrorCodeEnum.PARAM_VALIDATION_ERROR, "草稿只能被发布");
+        }
+        if (!fromDraft && Objects.equals(status, STATUS_DRAFT)) {
+            throw new BizException(ErrorCodeEnum.PARAM_VALIDATION_ERROR, "已发布的笔记不能转回草稿");
+        }
+    }
+
+    /** 草稿发布前的完整校验：图文必须已经补上图、正文必须已补（存草稿时两者都允许空） */
+    private void requirePublishReady(NoteEntity note) {
+        if (note.getType() != null && note.getType() == TYPE_GRAPHICAL) {
+            Long count = noteImageMapper.selectCount(Wrappers.<NoteImageEntity>lambdaQuery()
+                    .eq(NoteImageEntity::getNoteId, note.getId()));
+            if (count == null || count == 0) {
+                throw new BizException(ErrorCodeEnum.PARAM_VALIDATION_ERROR, "图文笔记必须至少上传一张图片");
+            }
+        }
+        // P50：正文与图是同一组「发布态不变量」—— 存草稿时允许空，0→1 时必须补齐。
+        // 漏了这条，「无正文+有图」的草稿会被发布成正文为空的笔记，
+        // 与 P11「图文必带图」堵住的形态完全对称。
+        if (note.getContent() == null || note.getContent().isBlank()) {
+            throw new BizException(ErrorCodeEnum.PARAM_VALIDATION_ERROR, "正文不能为空");
+        }
+        // type=2 的 videoUrl 在存草稿与编辑草稿时都已被 validatePublishParams 强制过，
+        // 这里不再重复查 —— DB 是唯一事实来源，它不可能为空
     }
 
     /**

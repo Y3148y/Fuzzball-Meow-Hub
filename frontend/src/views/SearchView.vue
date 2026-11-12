@@ -39,6 +39,27 @@ const userResults = ref<UserPickVO[]>([])
 const userLoading = ref(false)
 const userError = ref('')
 
+/*
+ * P50 筛选器：类型（0 全部 / 1 图文 / 2 视频）+ 排序（综合 / 最新）。
+ * 刻意放在组件 state 而不是 URL query —— 关键词走 URL 是「可分享的结果页」，
+ * 筛选器是浏览行为，会话内有效即可；进 URL 的话每次切筛选都要 replace 一次路由。
+ * 切换立即重搜（reset=true 回第一页）。
+ */
+const typeFilter = ref<0 | 1 | 2>(0)
+const sortFilter = ref<'synthesis' | 'latest'>('synthesis')
+
+function setType(v: 0 | 1 | 2) {
+  if (typeFilter.value === v) return
+  typeFilter.value = v
+  void load(true)
+}
+
+function setSort(v: 'synthesis' | 'latest') {
+  if (sortFilter.value === v) return
+  sortFilter.value = v
+  void load(true)
+}
+
 async function load(reset = true) {
   const kw = keyword.value.trim()
   if (!kw) return
@@ -46,7 +67,7 @@ async function load(reset = true) {
   if (reset) page.value = 1
   else page.value += 1
   try {
-    const data = await searchNotes(kw, page.value, 20)
+    const data = await searchNotes(kw, page.value, 20, typeFilter.value, sortFilter.value)
     results.value = reset ? data.list : [...results.value, ...data.list]
     total.value = data.total
   } catch (e) {
@@ -116,6 +137,57 @@ onMounted(() => {
       />
       <button class="xk-btn go" type="submit" data-test="search-submit">搜索</button>
     </form>
+
+    <!--
+      P50 筛选器：只在有关键词时出现 —— 没搜东西谈不上筛选。
+      类型（全部/图文/视频）+ 排序（综合/最新），切了立即重搜。
+    -->
+    <div v-if="keyword.trim()" class="filters" data-test="search-filters">
+      <div class="seg" role="group" aria-label="笔记类型" data-test="search-type">
+        <button
+          type="button"
+          :class="{ on: typeFilter === 0 }"
+          data-test="search-type-0"
+          @click="setType(0)"
+        >
+          全部
+        </button>
+        <button
+          type="button"
+          :class="{ on: typeFilter === 1 }"
+          data-test="search-type-1"
+          @click="setType(1)"
+        >
+          图文
+        </button>
+        <button
+          type="button"
+          :class="{ on: typeFilter === 2 }"
+          data-test="search-type-2"
+          @click="setType(2)"
+        >
+          视频
+        </button>
+      </div>
+      <div class="seg" role="group" aria-label="排序方式" data-test="search-sort">
+        <button
+          type="button"
+          :class="{ on: sortFilter === 'synthesis' }"
+          data-test="search-sort-synthesis"
+          @click="setSort('synthesis')"
+        >
+          综合
+        </button>
+        <button
+          type="button"
+          :class="{ on: sortFilter === 'latest' }"
+          data-test="search-sort-latest"
+          @click="setSort('latest')"
+        >
+          最新
+        </button>
+      </div>
+    </div>
 
     <!--
       热门话题。放在搜索页而不是单独开一个入口，是因为「搜索」本身就是
@@ -297,6 +369,43 @@ onMounted(() => {
   flex-shrink: 0;
   height: 42px;
   padding: 0 20px;
+}
+
+/* ==================== P50 筛选器（分段控件） ==================== */
+/* 与 AdminView 页签/筛选同款语言：带边框容器 + active 实心琥珀 */
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.seg {
+  display: inline-flex;
+  border: var(--xk-stroke-w) solid var(--xk-border);
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--xk-surface-2);
+}
+
+.seg button {
+  min-height: 40px; /* P13 热区下限 */
+  padding: 0 16px;
+  border: 0;
+  background: none;
+  color: var(--xk-text-2);
+  font-size: var(--xk-fs-13);
+  cursor: pointer;
+}
+
+.seg button + button {
+  border-left: 1px solid var(--xk-border);
+}
+
+.seg button.on {
+  background: var(--xk-amber);
+  color: var(--xk-amber-ink);
+  font-weight: 600;
 }
 
 .results {

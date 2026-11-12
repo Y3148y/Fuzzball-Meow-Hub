@@ -271,6 +271,14 @@ export interface NotePublishDTO {
   videoQualities?: VideoQualityVO[]
   /** 正文 @ 了谁（P30）—— 服务端不从文本解析，昵称允许重复 */
   mentionUserIds?: SnowflakeId[]
+  /**
+   * 0=存草稿（P50），不传或 1=直接发布。
+   *
+   * <p>草稿允许无图（「图文必带图」只管成为对外可见的笔记）；
+   * PUT /note/{id} 编辑时<b>忽略</b>这个字段 —— 编辑不改变状态，
+   * 状态变更走 PUT /note/{id}/status。其它值（含 99）后端 100001 拒绝。
+   */
+  status?: 0 | 1
 }
 
 /** 上传单张图片的返回体 */
@@ -419,6 +427,12 @@ export interface NoteListItemVO {
   type: number
   title: string
   cover: string | null
+  /**
+   * P50：作者本人列表是管理视图（pageUserNotes 返回全状态），
+   * 0 = 草稿（个人主页笔记 tab 里显示「草稿」角标 + 继续编辑/删除）。
+   * 关注流/发现流只会回 1，前端按真值判断渲染即可。
+   */
+  status?: 0 | 1 | 2
   likeCount: number
   collectCount: number
   commentCount: number

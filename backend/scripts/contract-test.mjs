@@ -3765,6 +3765,270 @@ const lastTwo = (hist?.list ?? []).slice(-2)
     }
   }
 
+  /* ================================================================
+   * 28. P50 草稿箱 + 搜索筛选器
+   *
+   * 草稿链路三件事：
+   *   ① 创建草稿（status=0）允许无图 —— P21「图文必带图」只管成为对外可见的笔记；
+   *   ② 草稿不发 ES 事件、不发 @ 通知 —— 索引里不该有 status=0 的幽灵文档，
+   *      被 @ 的人不该收到指向未发布笔记的通知（点进去 20001）；
+   *   ③ 发布（0→1）走 PUT /api/note/{id}/status，发布前补「图文必带图」的
+   *      完整校验，并补发 @ 通知（notifyMentions=true 再跑一次关系行）。
+   *
+   * 搜索筛选器：type（0全部/1图文/2视频）+ sort（synthesis/latest）。
+   *
+   * ⚠️ 本段不注册新账号（register 10/min/IP，文件末尾的桶早见底）：
+   *    复用 P20 段注册的 `ct_p20r<stamp>`（P44/P45 段已两度复用）。
+   *    管理员用常驻 fixture xk_ui_admin。
+   * ================================================================ */
+  {
+    const p50Name = `ct_p20r${stamp}`
+    const p50Login = await post('/api/user/login', { body: { username: p50Name, password: P } })
+    check('P50 专用账号能登录', p50Login.json?.code === 0, `code=${p50Login.json?.code}`)
+    if (p50Login.json?.code === 0) {
+      const p50Auth = `Bearer ${p50Login.json.data.accessToken}`
+      const p50Id = (await get('/api/user/me', { token: p50Auth })).json?.data?.id
+      const authId = (await get('/api/user/me', { token: auth })).json?.data?.id
+      const kw50 = `p50${stamp}`
+
+      /* ---------- ① 创建草稿：允许无图 ---------- */
+      const draftNoImg = await post('/api/note/publish', {
+        token: p50Auth,
+        body: { title: `P50 无图草稿 ${kw50}`, content: `还没写完 ${kw50}`, imageUrls: [], status: 0 },
+      })
+      codeIs('P50 无图草稿创建成功（status=0 放宽带图）', draftNoImg.json, 0)
+      const draftId = draftNoImg.json?.data?.id
+      createdNoteIds.push(draftId)
+      eq('P50 草稿详情 status=0（作者自己可见）',
+        (await get(`/api/note/${draftId}`, { token: p50Auth })).json?.data?.status, 0)
+      codeIs('P50 非作者看草稿 → 20001（按不存在处理，不暴露存在性）',
+        (await get(`/api/note/${draftId}`, { token: auth })).json, 20001)
+
+      // 作者的笔记列表是管理视图（本人返回全状态）；陌生人只看 status=1
+      const ownList = (await get(`/api/note/user/${p50Id}?page=1&size=50`, { token: p50Auth })).json?.data?.list ?? []
+      check('P50 草稿出现在作者的笔记列表（本人管理视图）',
+        ownList.some((n) => n.id === draftId && n.status === 0),
+        `本人第一页 ${ownList.length} 条`)
+      const otherList = (await get(`/api/note/user/${p50Id}?page=1&size=50`, { token: auth })).json?.data?.list ?? []
+      check('P50 陌生人的列表视图看不到草稿',
+        !otherList.some((n) => n.id === draftId),
+        `陌生人第一页 ${otherList.length} 条`)
+
+      /* ---------- ② 草稿不发 ES 事件：发布前搜不到 ---------- */
+      // 负向轮询单独不构成强证明（超时≠不存在），它与⑤「发布后同一关键词能搜到」
+      // 成对成立才钉住事件语义：若草稿被错误入索引，这里会提前命中。
+      let preHits = -1
+      for (let i = 0; i < 6 && preHits !== 0; i++) {
+        await new Promise((r) => setTimeout(r, 700))
+        const sr = await get(`/api/search/note?keyword=${encodeURIComponent(kw50)}&page=1&size=20`, { token: p50Auth })
+        preHits = (sr.json?.data?.list ?? []).length
+      }
+      eq('P50 草稿不进搜索索引（发布前一直 0 命中）', preHits, 0)
+
+      /* ---------- ③ 草稿编辑：保持草稿态、允许仍无图 ---------- */
+      const updDraft = await put(`/api/note/${draftId}`, {
+        token: p50Auth,
+        body: { title: `P50 无图草稿改 ${kw50}`, content: `改了还没写完 ${kw50}`, imageUrls: [] },
+      })
+      codeIs('P50 编辑无图草稿成功（草稿编辑保持无图合法）', updDraft.json, 0)
+      eq('P50 编辑后仍是草稿（编辑不改变状态）',
+        (await get(`/api/note/${draftId}`, { token: p50Auth })).json?.data?.status, 0)
+
+      /* ---------- ④ 草稿的 @ 提及：存草稿时不通知 ---------- */
+      // 先把 @ 带进草稿（mentionUserIds 是 P30 的「id 才是事实」字段）
+      await put(`/api/note/${draftId}`, {
+        token: p50Auth,
+        body: {
+          title: `P50 提及草稿 ${kw50}`,
+          content: `还没写完，@ 了 ${kw50}`,
+          imageUrls: [],
+          mentionUserIds: [String(authId)],
+        },
+      })
+      const notifBefore = (await get('/api/notification/list?page=1&size=50', { token: auth })).json?.data?.list ?? []
+      check('P50 存草稿时被 @ 的人没收到通知（不发指向未发布笔记的通知）',
+        !notifBefore.some((n) => n.type === 6 && String(n.targetId) === String(draftId)),
+        `通知 ${notifBefore.length} 条`)
+
+      /* ---------- ⑤ 发布校验与补发通知 ---------- */
+      codeIs('P50 无图草稿直接发布 → 100001（发布时必须补图）',
+        (await put(`/api/note/${draftId}/status`, { token: p50Auth, body: { status: 1 } })).json, 100001)
+
+      const draftImg = (await uploadImage(p50Auth)).json?.data?.url
+      await put(`/api/note/${draftId}`, {
+        token: p50Auth,
+        body: {
+          title: `P50 发布锚点 ${kw50}`,
+          content: `补图发布 ${kw50}`,
+          imageUrls: [draftImg],
+          mentionUserIds: [String(authId)],
+        },
+      })
+      const pubDraft = await put(`/api/note/${draftId}/status`, { token: p50Auth, body: { status: 1 } })
+      codeIs('P50 补图后草稿发布成功（0→1）', pubDraft.json, 0)
+      eq('P50 发布后 status=1',
+        (await get(`/api/note/${draftId}`, { token: p50Auth })).json?.data?.status, 1)
+
+      // @ 通知在发布那一刻补发（afterCommit，给一点余量轮询）
+      let gotMention = false
+      for (let i = 0; i < 8 && !gotMention; i++) {
+        await new Promise((r) => setTimeout(r, 500))
+        const nl = (await get('/api/notification/list?page=1&size=50', { token: auth })).json?.data?.list ?? []
+        gotMention = nl.some((n) => n.type === 6 && String(n.targetId) === String(draftId))
+      }
+      check('P50 草稿发布后被 @ 的人收到通知（0→1 补发）', gotMention)
+
+      /* ---------- ⑥ 非法转移：草稿态的两条边界 ---------- */
+      codeIs('P50 已发布笔记不能转回草稿（1→0 拒绝）',
+        (await put(`/api/note/${draftId}/status`, { token: p50Auth, body: { status: 0 } })).json, 100001)
+
+      const draft2Resp = await post('/api/note/publish', {
+        token: p50Auth,
+        body: { title: `P50 二号草稿 ${kw50}`, content: 'x', imageUrls: [], status: 0 },
+      })
+      codeIs('P50 二号草稿创建成功', draft2Resp.json, 0)
+      const draft2 = draft2Resp.json?.data?.id
+      createdNoteIds.push(draft2)
+      codeIs('P50 草稿不能下架（0→2 拒绝）',
+        (await put(`/api/note/${draft2}/status`, { token: p50Auth, body: { status: 2 } })).json, 100001)
+
+      // 运营不参与草稿生命周期（P21：草稿是作者的私有中间态）
+      const admLogin50 = await post('/api/user/login', { body: { username: 'xk_ui_admin', password: 'Xk@2026peer' } })
+      const adm50 = `Bearer ${admLogin50.json?.data?.accessToken}`
+      codeIs('P50 运营强制变更草稿 → 100001（草稿只能由作者发布）',
+        (await put(`/api/admin/note/${draft2}/status`, { token: adm50, body: { status: 2 } })).json, 100001)
+      check('P50 运营拒绝草稿的 message 指向草稿语义（不是参数错误蒙混）',
+        ((await put(`/api/admin/note/${draft2}/status`, { token: adm50, body: { status: 2 } })).json?.message ?? '').includes('草稿'))
+
+      /* ---------- ⑦ status 取值白名单 ---------- */
+      codeIs('P50 status=99 直接拒绝（只认 0/1，不静默归一）',
+        (await post('/api/note/publish', {
+          token: p50Auth,
+          body: { title: `P50 非法状态 ${kw50}`, content: 'x', imageUrls: [], status: 99 },
+        })).json, 100001)
+
+      /* ---------- ⑦b 无正文草稿（P50 追加口径）---------- */
+      // 草稿允许只写标题：@NotBlank 从 content 上摘掉，校验按状态分支进 service。
+      const blankDraft = await post('/api/note/publish', {
+        token: p50Auth,
+        body: { title: `P50 无正文草稿 ${kw50}`, content: '', imageUrls: [], status: 0 },
+      })
+      codeIs('P50 无正文草稿创建成功（只写标题也存得住）', blankDraft.json, 0)
+      const blankId = blankDraft.json?.data?.id
+      createdNoteIds.push(blankId)
+      eq('P50 无正文草稿的 content 是空串（不是 undefined）',
+        (await get(`/api/note/${blankId}`, { token: p50Auth })).json?.data?.content, '')
+      // 发布态的两条门禁都指向「正文不能为空」：
+      // 直接发布在 validatePublishParams 之前拦（content 校验先于缺图），
+      // 补了图没补正文的草稿 0→1 由 requirePublishReady 拦 —— 同一组不变量。
+      const directBlank = await post('/api/note/publish', {
+        token: p50Auth,
+        body: { title: `P50 无正文直发 ${kw50}`, content: '', imageUrls: [], status: 1 },
+      })
+      codeIs('P50 无正文直接发布 → 100001', directBlank.json, 100001)
+      check('P50 无正文直接发布的 message 指向正文（不是缺图）',
+        (directBlank.json?.message ?? '').includes('正文不能为空'))
+      const blankWithImg = (await uploadImage(p50Auth)).json?.data?.url
+      const blankImgResp = await post('/api/note/publish', {
+        token: p50Auth,
+        body: { title: `P50 有图无正文 ${kw50}`, content: '', imageUrls: [blankWithImg], status: 0 },
+      })
+      codeIs('P50 有图无正文的草稿创建成功', blankImgResp.json, 0)
+      const blankImgId = blankImgResp.json?.data?.id
+      createdNoteIds.push(blankImgId)
+      const blankImgPub = await put(`/api/note/${blankImgId}/status`, { token: p50Auth, body: { status: 1 } })
+      codeIs('P50 有图无正文草稿 0→1 → 100001（requirePublishReady 挡正文空）',
+        blankImgPub.json, 100001)
+      check('P50 有图无正文 0→1 的 message 指向正文',
+        (blankImgPub.json?.message ?? '').includes('正文不能为空'))
+
+      /* ---------- ⑧ 搜索筛选器：type + sort ---------- */
+      // 造一篇图文 + 一篇视频，都带独立锚点。create_time 是秒级 DATETIME，
+      // 两篇之间睡 1.1s，latest 排序断言才不会撞同秒平手。
+      const gImg = (await uploadImage(p50Auth)).json?.data?.url
+      const gNoteResp = await post('/api/note/publish', {
+        token: p50Auth,
+        body: { title: `P50 图文筛选 ${kw50}`, content: kw50, imageUrls: [gImg] },
+      })
+      codeIs('P50 图文筛选笔记发布成功', gNoteResp.json, 0)
+      const gNote = gNoteResp.json?.data?.id
+      createdNoteIds.push(gNote)
+      await new Promise((r) => setTimeout(r, 1100))
+
+      const up50 = async () => {
+        const fd = new FormData()
+        fd.append('file', new Blob([new Uint8Array(64 * 1024)], { type: 'video/mp4' }), 'p50.mp4')
+        const r = await fetch(`${BASE}/api/note/video`, {
+          method: 'POST',
+          headers: { Authorization: p50Auth },
+          body: fd,
+        })
+        return r.json()
+      }
+      const vd50 = await up50()
+      codeIs('P50 视频上传成功（筛选素材）', vd50, 0)
+      const vNoteResp = await post('/api/note/publish', {
+        token: p50Auth,
+        body: { type: 2, title: `P50 视频筛选 ${kw50}`, content: kw50, videoUrl: vd50?.data?.url },
+      })
+      codeIs('P50 视频筛选笔记发布成功', vNoteResp.json, 0)
+      const vNote = vNoteResp.json?.data?.id
+      createdNoteIds.push(vNote)
+
+      // 等两篇都进索引（Kafka 异步，锚点唯一）
+      let bothIn = false
+      for (let i = 0; i < 16 && !bothIn; i++) {
+        await new Promise((r) => setTimeout(r, 700))
+        const sr = await get(`/api/search/note?keyword=${encodeURIComponent(kw50)}&page=1&size=50`, { token: p50Auth })
+        const ids = (sr.json?.data?.list ?? []).map((n) => n.id)
+        bothIn = ids.includes(gNote) && ids.includes(vNote) && ids.includes(draftId)
+      }
+      check('P50 三篇锚点笔记都已进索引（等到了异步索引）', bothIn)
+
+      const sAll = await get(`/api/search/note?keyword=${encodeURIComponent(kw50)}&page=1&size=50`, { token: p50Auth })
+      const allIds = (sAll.json?.data?.list ?? []).map((n) => n.id)
+      check('P50 不带筛选时三篇都能搜到',
+        allIds.includes(gNote) && allIds.includes(vNote) && allIds.includes(draftId),
+        JSON.stringify(allIds))
+
+      const s1 = await get(`/api/search/note?keyword=${encodeURIComponent(kw50)}&page=1&size=50&type=1`, { token: p50Auth })
+      const s1list = s1.json?.data?.list ?? []
+      check('P50 type=1 只回图文（含两篇图文、不含视频）',
+        s1list.every((n) => n.type === 1) && s1list.some((n) => n.id === gNote)
+          && s1list.some((n) => n.id === draftId) && !s1list.some((n) => n.id === vNote),
+        `${s1list.length} 条`)
+      const s2 = await get(`/api/search/note?keyword=${encodeURIComponent(kw50)}&page=1&size=50&type=2`, { token: p50Auth })
+      const s2list = s2.json?.data?.list ?? []
+      check('P50 type=2 只回视频',
+        s2list.every((n) => n.type === 2) && s2list.some((n) => n.id === vNote) && !s2list.some((n) => n.id === gNote),
+        `${s2list.length} 条`)
+      codeIs('P50 type=3 → 100001',
+        (await get(`/api/search/note?keyword=${encodeURIComponent(kw50)}&type=3`, { token: p50Auth })).json, 100001)
+
+      const sLatest = await get(`/api/search/note?keyword=${encodeURIComponent(kw50)}&page=1&size=50&sort=latest`, { token: p50Auth })
+      const lList = sLatest.json?.data?.list ?? []
+      // 整体非升序（字符串比较 ISO LocalDateTime；同秒平手两个方向都成立）
+      check('P50 sort=latest 结果按 createTime 非升序',
+        lList.every((n, i) => i === 0 || String(lList[i - 1].createTime) >= String(n.createTime)),
+        JSON.stringify(lList.map((n) => n.createTime)))
+      // 视频比图文晚 ≥1.1s 发出，latest 里它必须排在前面
+      check('P50 sort=latest 把新发的视频排在图文前面',
+        lList.findIndex((n) => n.id === vNote) !== -1
+          && lList.findIndex((n) => n.id === vNote) < lList.findIndex((n) => n.id === gNote),
+        JSON.stringify(lList.map((n) => n.id)))
+      codeIs('P50 sort=bad → 100001',
+        (await get(`/api/search/note?keyword=${encodeURIComponent(kw50)}&sort=bad`, { token: p50Auth })).json, 100001)
+
+      /* ---------- 清理 ---------- */
+      await del(`/api/note/${draftId}`, { token: p50Auth })
+      await del(`/api/note/${draft2}`, { token: p50Auth })
+      await del(`/api/note/${blankId}`, { token: p50Auth })
+      await del(`/api/note/${blankImgId}`, { token: p50Auth })
+      await del(`/api/note/${gNote}`, { token: p50Auth })
+      await del(`/api/note/${vNote}`, { token: p50Auth })
+    }
+  }
+
   const total = passed + failed
   console.log(`\n===== ${passed}/${total} 通过 =====`)
   if (failed > 0) {

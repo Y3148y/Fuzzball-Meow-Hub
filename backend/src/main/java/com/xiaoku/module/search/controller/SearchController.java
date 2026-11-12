@@ -38,7 +38,8 @@ public class SearchController {
     private final UserQueryService userQueryService;
 
     @Operation(summary = "搜索笔记",
-            description = "对标题（权重2）与正文做 multi_match 全文搜索，只返回已发布笔记，按相关性与时间倒序分页")
+            description = "对标题（权重2）与正文做 multi_match 全文搜索，只返回已发布笔记，按相关性与时间倒序分页。"
+                    + "P50：type 筛选（0全部/1图文/2视频）与 sort 排序（synthesis综合/latest最新）")
     // 搜索是最容易被爬的读接口（不需要登录态也能猜到 URL），阈值给到 60/分钟
     @RateLimit(count = 60, seconds = 60, dimension = RateLimit.Dimension.USER,
             message = "搜索太频繁啦，1 分钟内最多 60 次")
@@ -46,10 +47,12 @@ public class SearchController {
     public Result<PageVO<NoteListItemVO>> search(
             @Parameter(description = "搜索关键词，不能为空") @RequestParam String keyword,
             @Parameter(description = "页码，从 1 开始") @RequestParam(defaultValue = "1") long page,
-            @Parameter(description = "每页条数") @RequestParam(defaultValue = "20") long size) {
+            @Parameter(description = "每页条数") @RequestParam(defaultValue = "20") long size,
+            @Parameter(description = "类型：0 全部 / 1 图文 / 2 视频") @RequestParam(defaultValue = "0") int type,
+            @Parameter(description = "排序：synthesis 综合 / latest 最新") @RequestParam(defaultValue = "synthesis") String sort) {
         int safeSize = (int) Math.min(Math.max(size, 1L), 100L);
         int safePage = (int) Math.max(page, 1L);
-        return Result.success(searchService.searchNote(keyword, safePage, safeSize));
+        return Result.success(searchService.searchNote(keyword, safePage, safeSize, type, sort));
     }
 
     @Operation(summary = "搜索可被 @ 提及的用户",

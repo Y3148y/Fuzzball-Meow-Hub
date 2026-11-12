@@ -59,7 +59,7 @@ import { showSuccessToast, showToast } from 'vant'
 import { uploadVideo } from '@/api/note'
 import { publishNote, uploadImage } from '@/api/note'
 import { BizError } from '@/api/request'
-import { ErrorCode, NOTE_IMAGE_LIMIT } from '@/api/types'
+import { NOTE_IMAGE_LIMIT } from '@/api/types'
 import { useUnsavedChanges } from '@/composables/useUnsavedChanges'
 import ImageCropper from '@/components/ImageCropper.vue'
 import {
@@ -255,8 +255,43 @@ function onCropApply(payload: { blob: Blob }) {
   errorMsg.value = ''
 }
 
+/*
+ * P50 存草稿：只要求标题。正文/图/视频都可以空着 —— 草稿是没做完的东西，
+ * 后端对 status=0 放宽了「图文必带图」与「正文非空」，这里对齐同一口径。
+ * 与 canSubmit 的差别只有 content 那一项（发布仍要求正文非空）。
+ */
+const canDraft = computed(
+  () =>
+    !submitting.value &&
+    title.value.trim().length > 0 &&
+    titleLen.value <= 64 &&
+    contentLen.value <= 2000,
+)
+
 async function submit() {
   if (!canSubmit.value) return
+  await sendNote(false)
+}
+
+async function saveDraft() {
+  if (!canDraft.value) return
+  // 视频模式切了却没选文件：存成草稿会撞「视频笔记必须填写视频地址」。
+  // 与其让用户看到报错，这里就把话说清楚。
+  if (isVideo.value && !videoFile.value) {
+    showToast('先选一个视频，或切回图文模式再存草稿')
+    return
+  }
+  await sendNote(true)
+}
+
+/*
+ * 发布与存草稿的公共路径：先上传产物再 publishNote，两者只差
+ *   - status（草稿 0 / 发布不带）；
+ *   - 纯文字模式是否生成文字卡 —— 草稿刻意**不**生成：草稿保留原始正文，
+ *     发布那一刻才把文字固化成卡片，模板与正文在草稿期都还改得动；
+ *   - 成功后的去向（草稿 → 个人主页草稿区，发布 → 详情页）。
+ */
+async function sendNote(asDraft: boolean) {
   submitting.value = true
   errorMsg.value = ''
 
@@ -276,10 +311,12 @@ async function submit() {
         type: 2,
         videoUrl: up.url,
         videoQualities: up.qualities,
+        mentionUserIds: mention.mentionUserIds(),
+        status: asDraft ? 0 : undefined,
       })
-      showSuccessToast('发布成功')
+      showSuccessToast(asDraft ? '已存草稿' : '发布成功')
       markClean()
-      await router.push(`/note/${note.id}`)
+      await router.push(asDraft ? '/profile' : `/note/${note.id}`)
       return
     }
     if (files.value.length) {
@@ -287,7 +324,7 @@ async function submit() {
         const { url } = await uploadImage(f)
         urls.push(url)
       }
-    } else {
+    } else if (!asDraft) {
       // 纯文字模式：标题+正文渲成 3:4 文字卡片（最多几张）再走同一上传链。
       // 卡片 PNG 的 content-type 是 image/png，过得了后端的白名单检查，
       // 后端「图文必须带图」的规则在这里自然被满足。
@@ -299,32 +336,32 @@ async function submit() {
       }
     }
 
-      const created = await publishNote({
-        title: title.value.trim(),
-        content: content.value.trim(),
-        imageUrls: urls,
-        mentionUserIds: mention.mentionUserIds(),
-      })
+    const created = await publishNote({
+      title: title.value.trim(),
+      content: content.value.trim(),
+      imageUrls: urls,
+      mentionUserIds: mention.mentionUserIds(),
+      status: asDraft ? 0 : undefined,
+    })
+    if (asDraft) {
+      showSuccessToast('已存草稿')
+    } else {
       // P30：把「打了 @ 但没生效」变成一句明确的话（后端返回的 mentions 是权威答案）
       const missed = mention.unresolvedMentions(created.mentions ?? [])
       showSuccessToast('发布成功')
       if (missed.length) {
         showToast(`${missed.map((t) => '@' + t).join('、')} 没 @ 到人，请从候选里选`)
       }
+    }
     // 已经存进库了，跳转前先清 dirty —— 否则这次跳转自己会把自己拦下
     markClean()
     // 详情页要用笔记 ID 跳转，id 是 string（雪花 ID 不能转 Number）
-    await router.push(`/note/${created.id}`)
+    await router.push(asDraft ? '/profile' : `/note/${created.id}`)
   } catch (e) {
     if (e instanceof BizError) {
-      // 20004 已经在文案里说清了，单独提示更贴近用户预期
-      if (e.code === ErrorCode.NOTE_IMAGE_LIMIT_EXCEED) {
-        errorMsg.value = e.message
-      } else {
-        errorMsg.value = e.message
-      }
+      errorMsg.value = e.message
     } else {
-      errorMsg.value = '发布失败，请稍后重试'
+      errorMsg.value = asDraft ? '存草稿失败，请稍后重试' : '发布失败，请稍后重试'
     }
   } finally {
     submitting.value = false
@@ -345,9 +382,20 @@ const { markClean } = useUnsavedChanges(
     <header class="top">
       <button class="back" type="button" aria-label="返回" @click="router.back()">‹</button>
       <span class="brand">发布笔记</span>
-      <button class="submit" type="button" :disabled="!canSubmit" @click="submit">
-        {{ submitting ? '发布中…' : '发布' }}
-      </button>
+      <span class="ops">
+        <button
+          class="draft"
+          type="button"
+          data-test="publish-draft"
+          :disabled="!canDraft"
+          @click="saveDraft"
+        >
+          {{ submitting ? '…' : '存草稿' }}
+        </button>
+        <button class="submit" type="button" :disabled="!canSubmit" @click="submit">
+          {{ submitting ? '发布中…' : '发布' }}
+        </button>
+      </span>
     </header>
 
     <section class="card xk-card">
@@ -674,6 +722,28 @@ const { markClean } = useUnsavedChanges(
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+/* 存草稿 + 发布 并排：主行动保持琥珀实心，存草稿用描边降一级视觉权重 */
+.ops {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.draft {
+  padding: 6px 14px;
+  border: var(--xk-stroke-w) solid var(--xk-border);
+  border-radius: 999px;
+  background: var(--xk-surface-2);
+  color: var(--xk-text-2);
+  font-size: var(--xk-fs-14);
+  cursor: pointer;
+}
+
+.draft:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .brand {

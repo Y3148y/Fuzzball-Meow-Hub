@@ -91,10 +91,11 @@ export function updateNote(id: string, data: NotePublishDTO) {
 }
 
 /**
- * 上架 / 下架笔记（作者本人，P10）。
- * status 只接受 1（发布）或 2（下架）；重复设置同一状态幂等。
+ * 变更笔记状态（作者本人，P10；P50 起草稿也算）。
+ * status 只接受 0（转草稿，仅未发布可转）/ 1（发布）/ 2（下架）；
+ * 重复设置同一状态幂等。草稿 0→1 发布时后端会补「图文必带图」校验与 @ 通知。
  */
-export function changeNoteStatus(id: string, status: 1 | 2) {
+export function changeNoteStatus(id: string, status: 0 | 1 | 2) {
   return put<NoteVO>(`/note/${id}/status`, { status })
 }
 

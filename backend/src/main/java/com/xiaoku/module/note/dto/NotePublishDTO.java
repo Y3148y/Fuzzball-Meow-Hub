@@ -24,7 +24,12 @@ public class NotePublishDTO {
     @Size(max = 64, message = "标题不能超过 64 字")
     private String title;
 
-    @NotBlank(message = "正文不能为空")
+    /**
+     * P50 起不再 {@code @NotBlank}：草稿允许只写标题（正文空着）。
+     * 「正文非空」改由 Service 按状态分支校验 —— 直接发布、编辑已发布/已下架的
+     * 笔记必须带正文；存草稿、编辑草稿允许为空。放 DTO 注解的话两条路径
+     * 没法区分，注解是无条件生效的。
+     */
     @Size(max = 2000, message = "正文不能超过 2000 字")
     private String content;
 
@@ -63,4 +68,19 @@ public class NotePublishDTO {
     @Schema(description = "正文 @ 了谁（用户ID列表；正文里的 @ 只是外观，这里才是事实）")
     @Size(max = 10, message = "一篇笔记最多 @ 10 个人")
     private List<String> mentionUserIds;
+
+    /**
+     * P50 草稿：0 = 存草稿。null / 1 = 直接发布（既有行为不变）。
+     *
+     * <p><b>只在 POST /api/note 上有意义；PUT /api/note/{id}（编辑）忽略此字段</b>
+     * —— 编辑不改变状态：草稿编辑后仍是草稿，已发布的编辑后仍是已发布，
+     * 状态变更只有 PUT /api/note/{id}/status 一条路。同一个字段在两个端点上
+     * 语义不同是陷阱，所以编辑端点对它**显式忽略**而不是顺手生效，
+     * 避免出现「编辑草稿时误传 status=1 就悄悄发布了」这种静默行为。
+     *
+     * <p>其它取值一律 100001。草稿允许无图（type=1 时 imageUrls 可空），
+     * 发布（0→1 或直接 1）时才要求图文必带图 —— P21 那条规则只管「成为发布的笔记」。
+     */
+    @Schema(description = "0=存草稿；null/1=发布。仅创建接口有效，编辑接口忽略")
+    private Integer status;
 }

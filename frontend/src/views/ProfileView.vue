@@ -5,8 +5,10 @@
 //    留着会让 typecheck 报 TS6133，而且它们暗示「这页还能编辑」，
 //    下一个人会照着找错地方。
 import { computed, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
+import { showConfirmDialog, showSuccessToast, showToast } from 'vant'
 import { getMyCollections, getMyLiked, getUserNotes } from '@/api/feed'
+import { deleteNote } from '@/api/note'
 import type { NoteListItemVO } from '@/api/types'
 import { useUserStore } from '@/stores/user'
 import ThemeToggle from '@/components/ThemeToggle.vue'
@@ -16,6 +18,7 @@ import { useMessageUnread } from '@/composables/useMessageUnread'
 import { useCoverRatio } from '@/composables/useCoverRatio'
 
 const router = useRouter()
+const route = useRoute()
 const userStore = useUserStore()
 const { unread: messageUnread } = useMessageUnread()
 
@@ -99,6 +102,39 @@ function switchTab(key: TabKey) {
 watch(() => userStore.userInfo?.id, (id) => {
   if (id) void loadTab('notes', true)
 }, { immediate: true })
+
+/*
+ * P50：从编辑页/详情页回到主页时，笔记 tab 若已缓存就强制重拉一次。
+ * 缓存是为了「切 tab 不闪」，但草稿在编辑页被发布/删除后，
+ * 回主页看到的角标不能是旧的 —— 状态变化比一次请求更值得刷新。
+ * 首次挂载时 loaded.notes 还是 false，这条 watcher 自动跳过（由上面的
+ * userInfo watcher 完成首拉），不会双请求。
+ */
+watch(() => route.path, (p) => {
+  if (p === '/profile' && loaded.value.notes) void loadTab('notes', true)
+})
+
+/** 草稿删除按钮在请求在飞时禁用（防连点发两次 DELETE） */
+const deleting = ref<string>('')
+
+async function removeNote(item: NoteListItemVO) {
+  if (deleting.value) return
+  try {
+    await showConfirmDialog({ title: '删除草稿', message: '草稿删除后不可恢复，确定删除？' })
+  } catch {
+    return // 用户点了取消
+  }
+  deleting.value = item.id
+  try {
+    await deleteNote(item.id)
+    lists.value.notes = lists.value.notes.filter((n) => n.id !== item.id)
+    showSuccessToast('草稿已删除')
+  } catch {
+    showToast('删除失败，请稍后重试')
+  } finally {
+    deleting.value = ''
+  }
+}
 
 async function logout() {
   userStore.logout()
@@ -302,7 +338,13 @@ async function logout() {
       </p>
 
       <ul v-else class="items" :data-test="'me-' + tab + '-list'">
-        <li v-for="item in list" :key="item.id" class="item" data-test="profile-note">
+        <li
+          v-for="item in list"
+          :key="item.id"
+          class="item"
+          data-test="profile-note"
+          :data-status="item.status ?? 1"
+        >
           <RouterLink class="main" :to="`/note/${item.id}`">
             <img
               class="cover"
@@ -313,10 +355,31 @@ async function logout() {
               @load="onCoverLoad(item, $event)"
             >
             <div class="body">
-              <p class="title">{{ item.title }}</p>
-              <p class="meta">♥ {{ item.likeCount }} · ★ {{ item.collectCount }}</p>
+              <p class="title">
+                {{ item.title }}
+                <span v-if="item.status === 0" class="draft-mark" data-test="note-draft-mark">草稿</span>
+              </p>
+              <p v-if="item.status !== 0" class="meta">♥ {{ item.likeCount }} · ★ {{ item.collectCount }}</p>
             </div>
           </RouterLink>
+          <!--
+            P50 草稿操作：与 .main 保持**兄弟节点** —— a 里嵌 a/button 非法，
+            且点操作不能触发卡片跳转。仅草稿渲染；已发布/已下架不带操作行。
+          -->
+          <div v-if="item.status === 0" class="draft-ops" data-test="note-draft-ops">
+            <RouterLink class="draft-btn edit" :to="`/edit/${item.id}`" data-test="note-draft-edit">
+              继续编辑
+            </RouterLink>
+            <button
+              class="draft-btn del"
+              type="button"
+              data-test="note-draft-del"
+              :disabled="deleting === item.id"
+              @click="removeNote(item)"
+            >
+              删除
+            </button>
+          </div>
         </li>
       </ul>
     </section>
@@ -398,6 +461,51 @@ async function logout() {
 
 .item:hover {
   transform: translate(-2px, -2px);
+}
+
+/* ---------- P50 草稿角标与操作行 ---------- */
+.draft-mark {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 8px;
+  border: var(--xk-stroke-w) solid var(--xk-amber);
+  border-radius: 999px;
+  color: var(--xk-amber-text);
+  font-size: var(--xk-fs-12);
+  vertical-align: middle;
+}
+
+.draft-ops {
+  display: flex;
+  border-top: 1px solid var(--xk-border);
+}
+
+.draft-btn {
+  flex: 1;
+  min-height: 40px;          /* P13 热区下限 */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: none;
+  color: var(--xk-text-2);
+  font-size: var(--xk-fs-13);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.draft-btn + .draft-btn {
+  border-left: 1px solid var(--xk-border);
+}
+
+.draft-btn.edit {
+  color: var(--xk-amber-text);
+  font-weight: 600;
+}
+
+.draft-btn.del:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .main {

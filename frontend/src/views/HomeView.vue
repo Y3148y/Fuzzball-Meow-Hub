@@ -599,24 +599,29 @@ type="search"
   color: var(--xk-text);
 }
 
-/* P34 沉浸入口：小一号的次要按钮，紧贴 tab 行右侧。
-   热区 ≥40px（P13 下限）；不用 padding 撑，改 min-height。 */
+/* P34 沉浸入口，P53 前置：从「小一号的次要药丸」升成显眼胶囊 ——
+   琥珀描边 + 淡琥珀底 + 15px 加粗字，热区 44px（P13 下限之上）。
+   位置不变（tab 行右侧、tablist 外，理由见模板注释）。 */
 .immerse-entry {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   margin-top: var(--xk-space-2);
-  min-height: 40px;
-  padding: 0 var(--xk-space-3);
-  border: 1px solid var(--xk-stroke);
+  min-height: 44px;
+  padding: 0 var(--xk-space-4);
+  border: 1.5px solid var(--xk-amber);
   border-radius: 999px;
-  background: none;
-  color: var(--xk-text-2);
-  font-size: var(--xk-fs-13);
+  background: color-mix(in srgb, var(--xk-amber) 12%, transparent);
+  color: var(--xk-amber-text);
+  font-size: var(--xk-fs-15);
+  font-weight: 600;
   -webkit-tap-highlight-color: transparent;
 }
+.immerse-entry .van-icon {
+  font-size: 18px;
+}
 .immerse-entry:hover {
-  border-color: var(--xk-amber);
+  background: color-mix(in srgb, var(--xk-amber) 20%, transparent);
   color: var(--xk-amber-text);
 }
 

@@ -18,14 +18,20 @@
  *    而这两样是自实现手势最容易丢的（P14 那些可访问性整改的延续）。
  * 代价是<b>没法做「快速连滑」</b> —— 原生滚动会等动画结束才处理下一次，
  * 而这不是一个值得付代价去换的能力。
+ *
+ * <p>P53 三件事：① 深链 {@code /immerse?note=<id>} 定位到那张卡（详情页入口跳来）；
+ * ② 卡上点赞/收藏（与详情页同接口，只合并自己那一维）；③ 键盘 ↑↓ / PageUp/PageDown 切卡。
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { immerseFeed } from '@/api/feed'
+import { collectNote, likeNote, uncollectNote, unlikeNote } from '@/api/note'
+import { BizError } from '@/api/request'
 import type { ImmerseCardVO } from '@/api/types'
 import UserAvatar from '@/components/UserAvatar.vue'
 import VideoPlayer from '@/components/VideoPlayer.vue'
 
+const route = useRoute()
 const router = useRouter()
 
 const cards = ref<ImmerseCardVO[]>([])
@@ -113,13 +119,136 @@ function back() {
   void router.back()
 }
 
+// ==================== P53：深链起点定位 ====================
+
+/**
+ * /immerse?note=<id>：进来直接停在那张卡上（从详情页「沉浸浏览」入口跳来）。
+ *
+ * <p>定位是有界的：最多再翻 {@link DEEP_LINK_MAX_PAGES} 页（× 6/页 = 120 张），
+ * 还没找到就停第一张、不报错 —— 目标可能是私密/被拉黑的笔记（接口里本来就没有），
+ * 「找不到」不是故障，悄悄从头开始即可。已加载页里查找是 O(n)，翻页查找避免
+ * 「为定位一张卡拉全量」。
+ */
+const DEEP_LINK_MAX_PAGES = 20
+
+function deepLinkTarget(): string | null {
+  const raw = route.query.note
+  const s = typeof raw === 'string' ? raw : Array.isArray(raw) ? String(raw[0] ?? '') : ''
+  return /^\d+$/.test(s) ? s : null
+}
+
+async function locateDeepLink() {
+  const target = deepLinkTarget()
+  if (!target) return
+  for (let guard = 0; guard < DEEP_LINK_MAX_PAGES; guard++) {
+    const idx = cards.value.findIndex((c) => String(c.id) === target)
+    if (idx >= 0) {
+      const el = scroller.value
+      active.value = idx
+      if (el) {
+        el.scrollTo({
+          top: idx * el.clientHeight,
+          behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+        })
+      }
+      return
+    }
+    if (!hasMore.value || loading.value || loadingMore.value) return
+    await loadMore()
+    if (error.value) return
+  }
+}
+
+// ==================== P53：卡上点赞 / 收藏 ====================
+
+/**
+ * 卡上互动。与详情页同一套接口、同一个 P8 纪律：**只合并自己那一维** ——
+ * 点赞接口返回的 VO 里 collected 是它自己事务快照的旧值，整包覆盖会把
+ * 刚点的收藏随机回退。所以这里只 patch liked/likeCount（收藏同理）。
+ *
+ * <p>30001（已点赞）/30002（未点赞）：双击竞态的正常结局，把本地状态对齐
+ * 服务端即可（全局拦截器已经 toast 过了）；其余错误同样交给全局提示。
+ */
+const busy = new Set<string>()
+
+async function toggleLike(c: ImmerseCardVO) {
+  const key = `l${c.id}`
+  if (busy.has(key)) return
+  busy.add(key)
+  try {
+    const res = c.liked ? await unlikeNote(String(c.id)) : await likeNote(String(c.id))
+    c.liked = res.liked
+    c.likeCount = res.likeCount
+  } catch (e) {
+    const code = e instanceof BizError ? e.code : 0
+    if (code === 30001) { c.liked = true }
+    else if (code === 30002) { c.liked = false }
+  } finally {
+    busy.delete(key)
+  }
+}
+
+async function toggleCollect(c: ImmerseCardVO) {
+  const key = `c${c.id}`
+  if (busy.has(key)) return
+  busy.add(key)
+  try {
+    const res = c.collected ? await uncollectNote(String(c.id)) : await collectNote(String(c.id))
+    c.collected = res.collected
+    c.collectCount = res.collectCount
+  } catch (e) {
+    const code = e instanceof BizError ? e.code : 0
+    if (code === 30003) { c.collected = true }
+    else if (code === 30004) { c.collected = false }
+  } finally {
+    busy.delete(key)
+  }
+}
+
+// ==================== P53：键盘 ↑↓ / PageUp / PageDown ====================
+
+/**
+ * 键盘切卡。原生 scroll-snap 在容器获得焦点时其实自带方向键滚动，
+ * 但Chrome 会把滚动停在 snap 点之间的中间态且不保证逐卡 —— 显式处理
+ * 才能保证「一按键一整卡」+ 计数器跟着走。
+ */
+function onKeydown(e: KeyboardEvent) {
+  const el = scroller.value
+  if (!el || !cards.value.length) return
+  const vh = el.clientHeight
+  const idx = Math.round(el.scrollTop / vh)
+  let to: number | null = null
+  if (e.key === 'ArrowDown' || e.key === 'PageDown') {
+    to = Math.min(idx + 1, cards.value.length - 1)
+  } else if (e.key === 'ArrowUp' || e.key === 'PageUp') {
+    to = Math.max(idx - 1, 0)
+  } else if (e.key === 'Home') {
+    to = 0
+  } else if (e.key === 'End') {
+    to = cards.value.length - 1
+  }
+  if (to === null) return
+  e.preventDefault()
+  if (to >= cards.value.length - 3) void loadMore()
+  active.value = to
+  el.scrollTo({
+    top: to * vh,
+    behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+  })
+}
+
+
 // 切卡片时把该卡的图轮播索引复位：否则从 3/5 滑走再滑回来还停在 3/5，
 // 而用户滑回来通常是想从头看
 watch(active, () => { imgIdx.value = { ...imgIdx.value } })
 
 onMounted(() => {
-  void load(true)
   scroller.value?.addEventListener('scroll', onScroll, { passive: true })
+  void (async () => {
+    await load(true)
+    // P53：深链定位在首屏数据回来之后做（找不到才继续翻页）
+    await locateDeepLink()
+  })()
 })
 
 onBeforeUnmount(() => {
@@ -138,7 +267,14 @@ onBeforeUnmount(() => {
       </span>
     </header>
 
-    <div ref="scroller" class="track" data-test="immerse-track">
+    <div
+      ref="scroller"
+      class="track"
+      data-test="immerse-track"
+      tabindex="0"
+      aria-label="沉浸流列表，可用上下方向键或 PageUp/PageDown 切换"
+      @keydown="onKeydown"
+    >
       <p v-if="loading" class="hint" data-test="immerse-loading">加载中…</p>
       <p v-else-if="error" class="hint err" role="alert" data-test="immerse-error">
         {{ error }}
@@ -202,10 +338,47 @@ onBeforeUnmount(() => {
             <RouterLink class="nick" :to="'/user/' + c.authorId" data-test="immerse-author">
               {{ c.authorNickname }}
             </RouterLink>
-            <span class="counts">
-              <span class="num">{{ c.likeCount }}</span> 赞
-              <span class="num">{{ c.commentCount }}</span> 评
-            </span>
+          </div>
+
+          <!--
+            P53 卡上互动：赞 / 评 / 藏，对齐小红书沉浸页的动作位。
+            赞与藏是**动作**（打接口）→ button + aria-pressed；
+            评是**导航**（去详情页看评论列表）→ RouterLink。三者互不嵌套。
+          -->
+          <div class="acts">
+            <button
+              class="act"
+              type="button"
+              :class="{ on: c.liked }"
+              :aria-pressed="c.liked ? 'true' : 'false'"
+              :aria-label="c.liked ? '取消点赞' : '点赞'"
+              data-test="immerse-like"
+              @click="toggleLike(c)"
+            >
+              <van-icon :name="c.liked ? 'like' : 'like-o'" aria-hidden="true" />
+              <span class="num">{{ c.likeCount }}</span>
+            </button>
+            <RouterLink
+              class="act"
+              :to="'/note/' + c.id"
+              data-test="immerse-comment"
+              aria-label="查看评论"
+            >
+              <van-icon name="chat-o" aria-hidden="true" />
+              <span class="num">{{ c.commentCount }}</span>
+            </RouterLink>
+            <button
+              class="act"
+              type="button"
+              :class="{ on: c.collected }"
+              :aria-pressed="c.collected ? 'true' : 'false'"
+              :aria-label="c.collected ? '取消收藏' : '收藏'"
+              data-test="immerse-collect"
+              @click="toggleCollect(c)"
+            >
+              <van-icon :name="c.collected ? 'star' : 'star-o'" aria-hidden="true" />
+              <span class="num">{{ c.collectCount }}</span>
+            </button>
           </div>
 
           <button class="open" type="button" data-test="immerse-open" @click="goDetail">
@@ -358,13 +531,35 @@ onBeforeUnmount(() => {
    是「无头像时渲染灰色空圆」的配套样式。模板改成 UserAvatar 后已无宿主，
    留着就是死规则 —— 与 AGENTS 记的 P35 死 CSS 是同一个病。 */
 .nick { color: #fff; font-size: var(--xk-fs-15); font-weight: 600; }
-.counts {
-  margin-left: auto;
+
+/* P53 卡上互动行：赞 / 评 / 藏。激活态用琥珀（暗底上 --xk-amber-text
+   是浅金 #f5cd7a，对黑底 4.9:1，不只靠颜色 —— aria-pressed 同步给了读屏） */
+.acts {
+  display: flex;
+  align-items: center;
+  gap: var(--xk-space-4);
+  margin-bottom: var(--xk-space-3);
+}
+.act {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  min-width: 44px;
+  border: 0;
+  background: none;
+  color: #fff;
+  font-size: var(--xk-fs-15);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.act .van-icon { font-size: 22px; }
+.act.on { color: var(--xk-amber-text); }
+.act:active { opacity: 0.72; }
+.num {
   font-size: var(--xk-fs-13);
-  opacity: 0.78;
   font-variant-numeric: tabular-nums;
 }
-.num { margin: 0 2px 0 0; }
 
 /* 「查看全文」是**导航动作** → 用 RouterLink 更贴切，但这里套在卡片上，
    整卡可点会与卡内轮播冲突，所以只留一个显式入口 */

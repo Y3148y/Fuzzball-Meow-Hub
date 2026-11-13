@@ -68,6 +68,17 @@ public class ImmerseCardVO implements Serializable {
     @Schema(description = "评论数")
     private Integer commentCount;
 
+    /**
+     * 我是否已点赞 / 已收藏（P53 卡上互动）。
+     * <p>与详情页同一口径：Redis 权威（ZSCORE），key 缺失或 Redis 不可用时
+     * 回退 DB 关系行 —— 「缓存丢了」绝不等于「没点过」。
+     */
+    @Schema(description = "我是否已点赞")
+    private Boolean liked;
+
+    @Schema(description = "我是否已收藏")
+    private Boolean collected;
+
     @Schema(description = "作者 userId")
     private Long authorId;
 

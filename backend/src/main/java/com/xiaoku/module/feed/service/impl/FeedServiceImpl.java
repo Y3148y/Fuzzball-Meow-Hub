@@ -14,6 +14,8 @@ import com.xiaoku.module.note.vo.NoteListItemVO;
 import com.xiaoku.module.user.service.UserQueryService;
 import com.xiaoku.module.user.vo.UserVO;
 import com.xiaoku.module.note.entity.NoteImageEntity;
+import com.xiaoku.module.note.mapper.NoteCollectMapper;
+import com.xiaoku.module.note.mapper.NoteLikeMapper;
 import com.xiaoku.module.note.mapper.NoteImageMapper;
 import com.xiaoku.module.note.vo.ImmerseCardVO;
 import com.xiaoku.module.note.vo.VideoQualityVO;
@@ -23,6 +25,7 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -41,6 +44,8 @@ public class FeedServiceImpl implements FeedService {
     private final UserFollowQueryService userFollowQueryService;
     private final UserBlockService userBlockService;
     private final NoteImageMapper noteImageMapper;
+    private final NoteLikeMapper noteLikeMapper;
+    private final NoteCollectMapper noteCollectMapper;
     /** 仅供 {@code VideoQualityVO.parse} 读 note.video_qualities（P48，沉浸流卡内切清晰度用） */
     private final ObjectMapper objectMapper;
 
@@ -107,6 +112,19 @@ public class FeedServiceImpl implements FeedService {
             images.computeIfAbsent(img.getNoteId(), k -> new ArrayList<>()).add(img.getUrl());
         }
 
+        // P53：卡上互动。整页一批判断「我是否已点赞/已收藏」，Redis 权威
+        // （ZSCORE，与详情页同一口径）；key 缺失或 Redis 不可用的回退 DB 关系行，
+        // 绝不把「缓存丢了」当成「没点过」。
+        NoteCounterStore.ViewerFlags flags = counterStore.viewerFlags(noteIds, userId);
+        Set<Long> likedIds = new HashSet<>(flags.liked());
+        Set<Long> collectedIds = new HashSet<>(flags.collected());
+        if (!flags.unknownLiked().isEmpty()) {
+            likedIds.addAll(noteLikeMapper.selectLikedIds(userId, List.copyOf(flags.unknownLiked())));
+        }
+        if (!flags.unknownCollected().isEmpty()) {
+            collectedIds.addAll(noteCollectMapper.selectCollectedIds(userId, List.copyOf(flags.unknownCollected())));
+        }
+
         List<ImmerseCardVO> out = new ArrayList<>(notes.size());
         for (NoteEntity note : notes) {
             UserVO author = users.get(note.getUserId());
@@ -128,6 +146,8 @@ public class FeedServiceImpl implements FeedService {
                     .likeCount(note.getLikeCount())
                     .collectCount(note.getCollectCount())
                     .commentCount(note.getCommentCount())
+                    .liked(likedIds.contains(note.getId()))
+                    .collected(collectedIds.contains(note.getId()))
                     .authorId(note.getUserId())
                     .authorNickname(author == null ? "已注销用户" : author.getNickname())
                     .authorAvatar(author == null ? null : author.getAvatar())

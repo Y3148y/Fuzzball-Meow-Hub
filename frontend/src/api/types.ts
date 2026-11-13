@@ -468,6 +468,10 @@ export interface ImmerseCardVO {
   likeCount: number
   collectCount: number
   commentCount: number
+  /** 我是否已点赞（P53 卡上互动）；与详情页同口径，Redis 权威 */
+  liked: boolean
+  /** 我是否已收藏（P53） */
+  collected: boolean
   createTime: string
   authorId: SnowflakeId
   authorNickname: string

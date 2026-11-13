@@ -3414,6 +3414,36 @@ const lastTwo = (hist?.list ?? []).slice(-2)
         iCards[0]?.contentBrief === undefined || String(iCards[0].contentBrief).length <= 121,
         `len=${String(iCards[0]?.contentBrief ?? '').length}`)
 
+      /* ---------- P53：卡上点赞/收藏（liked/collected，与详情页同口径） ---------- */
+      check('P53 liked/collected 是布尔（卡上互动的开关位）',
+        iCards.every((c) => typeof c.liked === 'boolean' && typeof c.collected === 'boolean'),
+        JSON.stringify(iCards.slice(0, 3).map((c) => [c.liked, c.collected])))
+
+      // 实测切换链路（P15 记过的纪律：复位在前、断言 code===0，别把 30001 当通过）：
+      // 取第一张卡 → 取消收藏复位 → 收藏 → 再拉沉浸流，那张卡 collected=true 且计数 +1。
+      // 计数走 Redis ZCARD，是即时的（落库列才有 30s 滞后），所以这里敢断 +1。
+      const c0 = iCards[0]
+      if (c0) {
+        const nid = String(c0.id)
+        await del(`/api/note/${nid}/collect`, { token: t34 })
+        eq('P53 收藏成功 code=0', (await put(`/api/note/${nid}/collect`, { token: t34 })).json?.code, 0)
+        const iA = await get(`/api/feed/immerse?page=1&size=6`, { token: t34 })
+        const cA = (iA.json?.data?.list ?? []).find((x) => String(x.id) === nid)
+        check('P53 收藏后沉浸卡 collected=true 且收藏数 +1（Redis 权威立即可见）',
+          !!cA && cA.collected === true && cA.collectCount === c0.collectCount + 1,
+          `before=${c0.collected}/${c0.collectCount} after=${cA?.collected}/${cA?.collectCount}`)
+        await del(`/api/note/${nid}/like`, { token: t34 })
+        eq('P53 点赞成功 code=0', (await put(`/api/note/${nid}/like`, { token: t34 })).json?.code, 0)
+        const iA2 = await get(`/api/feed/immerse?page=1&size=6`, { token: t34 })
+        const cA2 = (iA2.json?.data?.list ?? []).find((x) => String(x.id) === nid)
+        check('P53 点赞后沉浸卡 liked=true 且点赞数 +1',
+          !!cA2 && cA2.liked === true && cA2.likeCount === c0.likeCount + 1,
+          `before=${c0.liked}/${c0.likeCount} after=${cA2?.liked}/${cA2?.likeCount}`)
+        // 收尾：取消本次造的互动（幂等），不把 fixture 留在已赞/已藏状态
+        await del(`/api/note/${nid}/like`, { token: t34 })
+        await del(`/api/note/${nid}/collect`, { token: t34 })
+      }
+
       /* ---------- 分页不重不漏 ---------- */
       const p1 = await get(`/api/feed/immerse?page=1&size=6`, { token: t34 })
       const p2 = await get(`/api/feed/immerse?page=2&size=6`, { token: t34 })

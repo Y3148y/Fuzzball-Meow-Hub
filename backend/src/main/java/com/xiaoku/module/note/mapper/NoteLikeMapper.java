@@ -51,4 +51,22 @@ public interface NoteLikeMapper extends BaseMapper<NoteLikeEntity> {
             WHERE l.user_id = #{userId} AND n.status = 1
             """)
     long countLikedNotes(@Param("userId") Long userId);
+
+    /**
+     * P53：一批笔记里「我已点赞」的 id 集合 —— Redis key 缺失时的 DB 兜底
+     * （与 {@code NoteCounterStore.viewerFlags} 配套，详情页单条版是
+     * isLiked==null 时 selectCount 那条路径的批量版）。
+     *
+     * <p>⚠️ 注解里写动态 SQL 必须用 {@code <script>} 包裹，且 SQL 文本按 XML 解析、
+     * 不能出现裸 {@code <>}（AGENTS P18 段两个坑的既有结论，这里是第三个调用点）。
+     */
+    @Select("""
+            <script>
+            SELECT note_id FROM note_like
+            WHERE user_id = #{userId}
+              AND note_id IN
+              <foreach collection="noteIds" item="nid" open="(" separator="," close=")">#{nid}</foreach>
+            </script>
+            """)
+    List<Long> selectLikedIds(@Param("userId") Long userId, @Param("noteIds") List<Long> noteIds);
 }

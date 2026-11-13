@@ -7,12 +7,12 @@
 
 | | |
 |---|---|
-| 阶段 | **P0 → P52 已完成**（详见第 7 节各阶段小节） |
-| 测试 | 契约 **845** 条（P50 段 38 条，含无正文草稿 7 条）· CDP **845** 条（ui-note 202，P52 扩 +9），全部绿 |
-| prod | `18080`，跑的是 **P50 全链**（2026-11-12 部署：后端 jar 重建 + 前端镜像重建 + nginx 重启；prod 库已 ALTER `note.content` 可空）。**P51/P52 未部署 prod**（纯前端，要重建前端镜像 + 重启 nginx） |
+| 阶段 | **P0 → P53 已完成**（详见第 7 节各阶段小节） |
+| 测试 | 契约 **850** 条（P53 段 5：沉浸卡带 liked/collected + 互动即时反映）· CDP **872** 条（ui-immerse 27→54，P53 扩 +27），全部绿 |
+| prod | `18080`，跑的是 **P50 全链**（2026-11-12 部署：后端 jar 重建 + 前端镜像重建 + nginx 重启；prod 库已 ALTER `note.content` 可空）。**P51/P52/P53 未部署 prod**（P51/P52 纯前端；P53 **后端+前端都改了**，要全链重建） |
 | 重建 prod 的坑 | 见第 8 节：8.2 镜像构建三道墙 / 8.5 nginx 缓存旧 IP / 8.6 `--no-deps` |
 | 上一次部署 | P50（**后端+前端**）· prod 真调用：接口 **24/24** + UI **12/12**（草稿全链 + 搜索筛选 + 自清）|
-| 待做 | **P53 沉浸入口前置 + ImmerseView 打磨**（用户三项全拍板，P51/P52 已落地） |
+| 待做 | **P51/P52/P53 部署 prod**（P51/P52 照 8.6 重建前端镜像；P53 还要按 8.2 重建后端 jar——liked/collected 是后端字段） |
 | 重启后 | **跑 `tools\dev-up.cmd`**（见 2.0 节，引擎没起它会自己拉起，33s）· 手工清单留在 2.0 的折叠块里兜底 |
 
 **最近几个阶段做了什么**：P37 长视频实测（172MiB 端到端 43.5s，抓出 nginx 只允许 100m 的三层不一致）·
@@ -31,6 +31,7 @@ P49 视频体验三档改造（纯前端：桌面两栏恢复 + 播放器 chrome
 P50 草稿箱 + 搜索筛选器（后端+前端：草稿是一条状态不是「缺校验的发布」+ 搜索 type/sort）。
 P51 PC 弹出面板（纯前端：详情页左瀑布 + 右面板 + ←→ 上下篇，对齐小红书 explore）。
 P52 移动端详情上滑切下一条（纯前端：复用 P51 rail 数据做手势切换 + 提示药丸，ui-note +9）。
+P53 沉浸入口前置 + ImmerseView 打磨（后端+前端：沉浸卡带 liked/collected + 深链/键盘/卡上互动 + 三处入口前置，ui-immerse +27）。
 
 ---
 
@@ -5375,5 +5376,98 @@ immerse **27/27** · search **28/28**（它会点卡片进详情页）· typeche
   transition 全部 none，切换只表现为内容替换。
 - **边缘笔记（rail 头/尾）**：没有 prev/next 时不挂手势方向（与 P51 按钮
   同语义，不装作有）。
+
+### P53 沉浸入口前置 + ImmerseView 打磨（本 commit）
+
+契约 **850** 条（845 + 5），CDP **872** 条（845 + 27，**全部在 ui-immerse 27→54**，
+ui-note 仍 202）。**后端 + 前端都改了**。这是用户手测后三项全拍板的一轮：
+
+1. **首页入口加大**：位置不变（tab 行右侧、tablist 外，不加 TabBar 项），
+   形态从「小一号的次要药丸」升成琥珀显眼胶囊（44px 热区 + 1.5px 琥珀描边 +
+   `color-mix` 12% 淡底 + fs-15 加粗）。
+2. **ImmerseView 三件**：深链 `?note=<id>` 定位 + 卡上点赞/收藏 + 键盘 ↑↓/PageUp/PageDown。
+3. **详情页加入口**：移动顶栏小图标（≥1024 隐藏）+ 桌面 P51 pane-nav 行尾文字链接
+   （<1024 由父级 display:none 挡住），链接 `/immerse?note=<id>`。
+
+#### 后端：批量口径严格镜像详情页那条单条口径
+
+- `ImmerseCardVO` 加 `liked/collected`（Boolean）。**口径来源不是新发明**：
+  详情页单条早就是「Redis 权威、key 缺失回退 DB」
+  （`NoteQueryServiceImpl` 里 `counterStore.isLiked` 返 null 才 `selectCount`），
+  批量版逐条照抄这个语义，两处不一致的症状是「详情页说没赞、沉浸卡说赞了」。
+- `NoteCounterStore.viewerFlags(List<Long>, Long)` 返回新 record
+  `ViewerFlags(liked, collected, unknownLiked, unknownCollected)`：
+  两趟 pipeline —— 第一趟 **EXISTS**（把「key 缺失」与「没点过」分开，
+  这正是单条口径里 EXISTS→COUNT 的批量版），第二趟只对 **alive** 的 key 发 ZSCORE。
+  Redis 异常 → 全部标 unknown（回退 DB），fail-open 与 P8 同款。
+- `NoteLikeMapper.selectLikedIds` / `NoteCollectMapper.selectCollectedIds`：
+  `<script>` + `<foreach>` 动态 IN。AGENTS P18 那两条规矩都适用且都守住了：
+  动态标签必须 `<script>` 包裹；SQL 里不能有裸 `<>` 和 `--` 注释
+  （Druid wall filter 会拒），注释一律写 Java 侧。
+- `FeedServiceImpl` 注入两 mapper，`immerseFeed` 在 applyCounts/images 之后算 flags，
+  **unknown 部分用 DB 兜底查询合并**（`LIKE `IN` 列表），builder 设
+  `.liked(likedIds.contains(id)).collected(collectedIds.contains(id))`。
+
+#### 前端三件
+
+- **深链**：`onMounted` 先 `await load(true)` 再 `locateDeepLink()` ——
+  `route.query.note`（`/^\d+$/` 校验），已加载页里 `findIndex`；未找到且
+  hasMore 则 `loadMore()` 续查，**上限 20 页**（×6/页=120 张）。
+  找不到就停第一张、不报错：目标可能是私密/被拉黑的笔记（接口里本来就没有），
+  「找不到」不是故障，悄悄从头开始。
+- **卡上互动**：`.who` 行的 `.counts`（纯文本赞/评）替换为 `.acts` 行 ——
+  赞/藏是**动作**（button + aria-pressed + `data-test=immerse-like/collect`），
+  评是**导航**（RouterLink 去 `/note/<id>`）。P8 单维合并纪律照抄详情页：
+  只 patch 自己那一维（响应 VO 里另一维是它事务快照的旧值，整包覆盖会随机回退）；
+  30001→置 true、30002→置 false、30003/30004 同型（状态对齐服务端，
+  全局拦截器已 toast，catch 里**不再二次 toast**）。
+- **键盘**：`@keydown` 挂 track（`tabindex="0"` + aria-label），
+  `idx = Math.round(scrollTop/clientHeight)`，方向键/PageUp/PageDown/Home/End，
+  `e.preventDefault()`，`to >= cards.length-3` 预 `loadMore()`。
+  显式处理而不靠容器原生焦点滚动：Chrome 对 snap 容器的键盘滚动停在
+  中间态且不保证逐卡。
+
+#### 测试自坑（三个都是「绿得不对」或「红得冤」）
+
+1. **Chrome 对 `color-mix` 返回 `color(srgb … / 0.12)` 新格式**——
+   `rgba?\(...\)` 正则取不到 alpha，断言「有琥珀淡底」假红。两种格式都要解析；
+   顺带 **border-width 返回的是 used value**（dpr=1 时 1.5px 取整成 1px），
+   只断 `parseFloat >= 1`。
+2. **默认 CDP 窗口 innerWidth=512 是移动宽度**（实测）——详情页 desktop
+   断言在移动视口里量到的全是隐藏态。desktop 检查必须
+   `Emulation.setDeviceMetricsOverride` 显式 1280（P52 同一条教训，
+   这轮在 ui-immerse 里第一次踩）。
+3. **RouterLink 的 href 带 `#` 前缀**（hash 路由），期望值别写裸路径。
+
+另有一个**流程级坑**：互动用例的复位（unlike/uncollect）会改热度分（P23 公式），
+**复位前的「第一张」不可信** —— 先复位、再重新拉发现流确定第一张是谁，
+然后才 goto 断言（复位后的点赞只会加分，第一张不会在用例中途被换掉）。
+fixture 清理照 P28/P15 纪律放 `finally`（`reset53()` 幂等），
+变量声明在 try 外（TDZ 教训：`typeof` 也救不了 TDZ 的 const）。
+
+#### 验收
+
+契约 **850/850**（P53 段 5 条：VO 布尔 + 收藏/点赞各 code=0 且沉浸卡
+`collected/liked=true` 计数 +1 —— **Redis ZCARD 即时可见，敢直接断 +1**，
+落库列才有 30s 滞后；结尾 unlike/uncollect 复位不留状态）。
+结构自检 net=0 / twoToOne 217→217。
+CDP：immerse **54/54**（入口几何 2 · 互动结构 7 · 切换 6 · 键盘 2 ·
+深链 2 · 详情入口 8）· note **202/202** · layout **157/157** ·
+interaction **78/78** · typecheck ✓。
+
+**P53 未部署 prod**：后端 jar（liked/collected）+ 前端都要重建，
+按 8.2 → backend `--no-deps --force-recreate` → 前端 build → 8.5 重启 nginx；
+无表结构变更，prod 库不用 ALTER。
+
+#### 已知取舍
+
+- **深链定位只向后翻 20 页**：120 张之外进不了「直接落位」——
+  事实的量级是发现流前 50 条（P51 rail 同款弹药库），足够。
+- **键盘切卡在 `prefers-reduced-motion` 下瞬移**（behavior:auto），
+  与 P52 手势的 reduced-motion 语义一致。
+- **卡上互动不给通知撤回以外的额外状态**：与详情页完全同一套接口与
+  错误码语义，不在沉浸页发明第二套。
+- **详情页入口在「自己的笔记」上不显示桌面链接**（railIdx=-1 时整条
+  pane-nav 不渲染）：沉浸流不回显自己的笔记，跳过去起点对不上，不装作有。
 
 

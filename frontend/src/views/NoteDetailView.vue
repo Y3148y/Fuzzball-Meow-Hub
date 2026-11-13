@@ -728,6 +728,30 @@ watch(
     startObserving()
     window.scrollTo({ top: 0 })
     void scrollRailToCurrent()
+    /*
+     * P52：入场收尾。swipeEnter 是 replace 前设好的 pre 态（新 card 挂载时
+     * 已带着 56px/opacity:0），这里双 rAF 先让初始态完成一帧绘制，
+     * 再切成 run 态让基础 transition 把它滑回原位；transition 完成后
+     * 撤掉类 —— transform 回到 none，吸底操作栏的包含块还给视口。
+     */
+    if (swipeEnter.value) {
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => {
+          swipeEnter.value =
+            swipeEnter.value === 'pre-next' ? 'run-next'
+            : swipeEnter.value === 'pre-prev' ? 'run-prev'
+            : ''
+        }),
+      )
+      setTimeout(() => {
+        if (swipeEnter.value === 'run-next' || swipeEnter.value === 'run-prev') {
+          swipeEnter.value = ''
+        }
+        swipeSwitching = false
+      }, 320)
+    } else {
+      swipeSwitching = false
+    }
   },
 )
 
@@ -742,6 +766,121 @@ function onRailKey(e: KeyboardEvent) {
     e.preventDefault()
     goRailNote(nextRail.value.id)
   }
+}
+
+/* ==================== P52：移动端上滑切下一条 / 下滑切上一篇 ====================
+ *
+ * 手感对齐小红书 app：在详情页滚到底继续上拉 → 下一条；在顶部继续下拉 → 上一篇。
+ * 数据**完全复用 P51 的 rail**（railNotes/prevRail/nextRail 与视口无关），
+ * 只是桌面用瀑布+按钮表达、移动端用手势表达同一份数据。
+ *
+ * ⚠️ 不能 transform article.card 本体做 peek：吸底操作栏（action-bar）是 card
+ * 的**子元素**且 position:fixed —— card 上只要出现非 none 的 transform，
+ * 它的 fixed 包含块就从视口变成 card，吸底当场失效（P21 的核心修复被破坏）。
+ * 所以三个阶段分开处理：
+ *   peek（未松手）：card 只做 opacity 微降（opacity 不创建 fixed 包含块），
+ *     方向感交给提示药丸（swipe-hint）跟手升起；
+ *   出场：transform 滑走 —— 此时底栏以 card 为包含块**跟着滑走**，
+ *     恰好是小红书「整页滑走」的观感；
+ *   入场：三态类（enter-pre 无过渡落位 → enter-run 过渡滑入 → 撤类回 none，
+ *     底栏回吸底）。transform: none 与值之间的过渡按 identity 插值。
+ */
+const swipePeek = ref(0)
+const swipeDragging = ref(false)
+const swipeDir = ref<'' | 'next' | 'prev'>('')
+const swipeLeave = ref<'' | 'next' | 'prev'>('')
+const swipeEnter = ref<'' | 'pre-next' | 'pre-prev' | 'run-next' | 'run-prev'>('')
+let swipeStartY = 0
+let swipeStartX = 0
+let swipeLock: '' | 'none' | 'x' | 'next' | 'prev' = ''
+let swipeSwitching = false
+
+const swipeHintText = computed(() => {
+  if (swipeDir.value === 'next' && nextRail.value) return `下一条：${nextRail.value.title}`
+  if (swipeDir.value === 'prev' && prevRail.value) return `上一篇：${prevRail.value.title}`
+  return ''
+})
+
+const SWIPE_LOCK = 24 // 先锁方向：横向滚轮播、纵向滚页面，24px 内不表态
+const SWIPE_MAX = 140 // peek 上限（阻尼后）
+const SWIPE_COMMIT = 90 // 松手触发阈值
+const SWIPE_DAMP = 0.4 // 阻尼：手指走 1px、peek 走 0.4px，模拟「拉不动」的手感
+
+function onSwipeStart(e: TouchEvent) {
+  if (!window.matchMedia('(max-width: 1023px)').matches) return
+  if (swipeSwitching || loading.value || !note.value) return
+  const t = e.touches[0]
+  if (!t) return
+  const target = e.target as HTMLElement | null
+  // 输入/视频/吸底栏的触摸是它们自己的事（打字滚动、拖进度条、点按钮）
+  if (target?.closest('input, textarea, [contenteditable="true"], video, [data-test="action-bar"]')) {
+    return
+  }
+  swipeStartY = t.clientY
+  swipeStartX = t.clientX
+  swipeLock = ''
+  swipePeek.value = 0 // 上一轮手势的残余清掉（hint 的 rise 别带旧值出现）
+  swipeDragging.value = true
+}
+
+function onSwipeMove(e: TouchEvent) {
+  if (!swipeDragging.value) return
+  const t = e.touches[0]
+  if (!t) return
+  const dy = t.clientY - swipeStartY
+  const dx = t.clientX - swipeStartX
+  if (!swipeLock) {
+    if (Math.abs(dy) < SWIPE_LOCK && Math.abs(dx) < SWIPE_LOCK) return
+    if (Math.abs(dx) > Math.abs(dy)) {
+      swipeLock = 'x' // 横向：轮播/别的手势，不参与
+    } else {
+      const doc = document.documentElement
+      const atBottom = window.innerHeight + window.scrollY >= doc.scrollHeight - 4
+      const atTop = window.scrollY <= 0
+      if (dy < 0 && atBottom && nextRail.value) swipeLock = 'next'
+      else if (dy > 0 && atTop && prevRail.value) swipeLock = 'prev'
+      else swipeLock = 'none' // 中段滑动就是普通滚动
+    }
+    if (swipeLock === 'x' || swipeLock === 'none') {
+      swipeDragging.value = false
+      return
+    }
+    swipeDir.value = swipeLock
+  }
+  // 已锁定为边缘切换手势：拦住浏览器滚动/回弹（P27 的 overscroll-behavior 只压回弹）
+  e.preventDefault()
+  const over = swipeLock === 'next' ? Math.max(0, -dy) : Math.max(0, dy)
+  const peek = Math.min(SWIPE_MAX, over * SWIPE_DAMP)
+  swipePeek.value = peek
+}
+
+function onSwipeEnd() {
+  if (!swipeDragging.value) return
+  swipeDragging.value = false
+  if ((swipeLock === 'next' || swipeLock === 'prev') && swipePeek.value >= SWIPE_COMMIT) {
+    void commitSwipe(swipeLock)
+  } else {
+    swipePeek.value = 0 // 回弹（card 的 opacity 过渡 + hint 淡出）
+  }
+  swipeLock = ''
+  swipeDir.value = ''
+}
+
+async function commitSwipe(dir: 'next' | 'prev') {
+  const target = dir === 'next' ? nextRail.value : prevRail.value
+  if (!target || swipeSwitching) return
+  swipeSwitching = true
+  // 出场：transform 滑走（底栏以 card 为包含块，跟着一起滑走 = 整页滑观感）
+  swipeLeave.value = dir
+  await new Promise((r) => setTimeout(r, 240))
+  // 先置 loading：让旧 card 在撤 leave 类的**同一帧**卸载（v-if 分支切换），
+  // 否则 transform 归零会有 1 帧旧内容弹回原位的回闪
+  loading.value = true
+  swipeLeave.value = ''
+  // 入场初始态在 replace **前**设好：新 card 挂载的第一帧就带着 pre 类，
+  // 不闪「原位 → 56px」的一帧
+  swipeEnter.value = dir === 'next' ? 'pre-next' : 'pre-prev'
+  goRailNote(target.id) // watch(params) 会 load + 入场 + 收尾
 }
 
 async function load() {
@@ -829,6 +968,11 @@ onMounted(async () => {
   startObserving()
   void loadRail()
   window.addEventListener('keydown', onRailKey)
+  // P52：手势绑在 main 上（冒泡），passive:false 只在 move 上（要 preventDefault）
+  pageEl.value?.addEventListener('touchstart', onSwipeStart, { passive: true })
+  pageEl.value?.addEventListener('touchmove', onSwipeMove, { passive: false })
+  pageEl.value?.addEventListener('touchend', onSwipeEnd, { passive: true })
+  pageEl.value?.addEventListener('touchcancel', onSwipeEnd, { passive: true })
 })
 
 /*
@@ -875,6 +1019,11 @@ onBeforeUnmount(() => {
   contentObserver?.disconnect()
   window.removeEventListener('resize', onWinResize)
   window.removeEventListener('keydown', onRailKey)
+  const page = pageEl.value
+  page?.removeEventListener('touchstart', onSwipeStart)
+  page?.removeEventListener('touchmove', onSwipeMove)
+  page?.removeEventListener('touchend', onSwipeEnd)
+  page?.removeEventListener('touchcancel', onSwipeEnd)
 })
 </script>
 
@@ -951,10 +1100,19 @@ onBeforeUnmount(() => {
     <article
       v-else-if="note"
       class="card xk-card"
-      :class="{ 'has-video': hasVideo }"
+      :class="{
+        'has-video': hasVideo,
+        dim: swipeDragging && swipePeek > 8,
+        'leave-next': swipeLeave === 'next',
+        'leave-prev': swipeLeave === 'prev',
+        'enter-pre': swipeEnter === 'pre-next' || swipeEnter === 'pre-prev',
+        'enter-run': swipeEnter === 'run-next' || swipeEnter === 'run-prev',
+        'from-below': swipeEnter === 'pre-next',
+        'from-above': swipeEnter === 'pre-prev',
+      }"
       data-test="note-detail"
-    :style="{ '--img-ratio': String(activeRatio) }"
-  >
+      :style="{ '--img-ratio': String(activeRatio) }"
+    >
     <!--
       P42：管理员只读视角的提示条。
       ⚠️ 必须**明说**「你是以管理员身份看到的、这是已下架的内容」——
@@ -1470,6 +1628,23 @@ ref="contentEl"
         下篇 ›
       </button>
     </nav>
+
+    <!--
+      P52：移动端上滑/下滑的提示药丸。跟手 peek 时淡入并升起，
+      松手回弹淡出。pointer-events:none —— 只是提示，不拦任何点击；
+      它自身有 transform（水平居中+升起），fixed 元素自身带 transform 无害
+      （包含块问题是祖先链的事）。
+    -->
+    <div
+      v-if="swipeDir && swipeHintText"
+      class="swipe-hint"
+      data-test="swipe-hint"
+      :style="{ '--hint-rise': `${swipePeek * 0.4}px` }"
+      aria-hidden="true"
+    >
+      <span class="swipe-hint-arrow">{{ swipeDir === 'prev' ? '↓' : '↑' }}</span>
+      <span class="swipe-hint-t">{{ swipeHintText }}</span>
+    </div>
   </main>
 </template>
 
@@ -2666,6 +2841,93 @@ ref="contentEl"
     font-size: var(--xk-fs-13);
     color: var(--xk-text-3);
     font-variant-numeric: tabular-nums;
+  }
+}
+
+/* ==================== P52：移动端上滑切下一条 / 下滑切上一篇 ==================== */
+
+@media (max-width: 1023px) {
+  /*
+   * ⚠️ card 的基础规则**只**过渡 opacity —— transform 绝不能常驻：
+   * 吸底操作栏（action-bar）是 card 的子元素且 position:fixed，
+   * card 一旦有非 none 的 transform，它的 fixed 包含块就从视口变成
+   * card，吸底当场失效。transform 只在 leave 与 enter 类存在的
+   * 动画窗口里出现，撤类即还给视口。
+   */
+  .card {
+    transition: opacity 200ms ease;
+  }
+  .card.dim {
+    opacity: 0.92;
+  }
+
+  /* 出场：滑走。底栏以 card 为包含块，跟着一起滑走 = 整页滑的观感 */
+  .card.leave-next {
+    transform: translateY(-45vh);
+    opacity: 0.35;
+    transition: transform 200ms cubic-bezier(0.32, 0.72, 0.34, 1), opacity 200ms ease;
+  }
+  .card.leave-prev {
+    transform: translateY(45vh);
+    opacity: 0.35;
+    transition: transform 200ms cubic-bezier(0.32, 0.72, 0.34, 1), opacity 200ms ease;
+  }
+
+  /* 入场：pre 态无过渡直接落位（挂在 replace 前，首帧就位不闪） */
+  .card.enter-pre {
+    transform: translateY(0);
+    opacity: 0;
+    transition: none;
+  }
+  .card.enter-pre.from-below {
+    transform: translateY(56px);
+  }
+  .card.enter-pre.from-above {
+    transform: translateY(-56px);
+  }
+  /* run 态：从 pre 的 56px/0 过渡回 0/1 */
+  .card.enter-run {
+    transform: translateY(0);
+    transition: transform 220ms cubic-bezier(0.22, 0.9, 0.36, 1), opacity 220ms ease;
+  }
+}
+
+/* 提示药丸：自身 transform（居中 + 跟手升起）——fixed 元素自身带 transform 无害 */
+.swipe-hint {
+  position: fixed;
+  left: 50%;
+  bottom: calc(var(--bar-h, 112px) + 20px);
+  transform: translate(-50%, calc(var(--hint-rise, 0px) * -1));
+  z-index: 58;
+  pointer-events: none;
+  max-width: calc(100% - 48px);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border: 1px solid var(--xk-border);
+  border-radius: 999px;
+  background: var(--xk-surface-2);
+  color: var(--xk-text-2);
+  font-size: var(--xk-fs-13);
+  white-space: nowrap;
+}
+.swipe-hint-arrow {
+  color: var(--xk-amber-text);
+  font-weight: 700;
+}
+.swipe-hint-t {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card,
+  .card.leave-next,
+  .card.leave-prev,
+  .card.enter-pre,
+  .card.enter-run {
+    transition: none !important;
   }
 }
 </style>

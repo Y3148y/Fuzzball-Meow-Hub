@@ -2156,6 +2156,136 @@ await s.evaluate("document.querySelector('[data-test=img-next]').click()")
     mr.railDisplay === 'none' && mr.railBox === 0 && mr.navShown === false, JSON.stringify(mr))
   await s.send('Emulation.clearDeviceMetricsOverride')
   await s.goto(`${BASE}/#/`)
+
+  // ---- 20. P52 移动端上滑切下一条 / 下滑切上一篇 ----
+  //
+  // 手势与桌面面板共用同一份 rail 数据（prevRail/nextRail），本段只验手势层：
+  // 合成 TouchEvent（Chrome 原生支持 Touch/TouchEvent 构造器）驱动，纯浏览
+  // 不造数据、无需自清。⚠️ 显式切 430 视口：浏览器窗口尺寸 ≠ 视口（P47 教训），
+  // 手势守卫按 max-width:1023 判断，量错视口整段假红/假绿。
+  // 横向用例（|dx|>|dy| 锁定轮播）特意替代「中段纵向不触发」—— 后者的
+  // atBottom 判定依赖页面总高，短笔记会误锁 next（数据相关的 flake）。
+  await s.send('Emulation.setDeviceMetricsOverride', { width: 430, height: 900, deviceScaleFactor: 1, mobile: true })
+  await s.goto(`${BASE}/#/note/${railA.id}`)
+  await s.waitFor("!!document.querySelector('[data-test=note-detail-content]')", '移动端详情正文', 20000)
+  const flush2 = 'new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))'
+  // 合成手势 dispatch 到 article.card：不是 input/video/action-bar，
+  // onSwipeStart 的目标过滤不会拦掉它；子元素（轮播）收不到卡片上冒泡的事件
+  const touchStart = (x, y) => `(() => {
+    const el = document.querySelector('article.card');
+    if (!el) return 'no-el';
+    el.dispatchEvent(new TouchEvent('touchstart', { touches: [new Touch({ identifier: 1, target: el, clientX: ${x}, clientY: ${y} })], bubbles: true, cancelable: true }));
+    return 'ok';
+  })()`
+  const touchMove = (x, y) => `(() => {
+    const el = document.querySelector('article.card');
+    if (!el) return 'no-el';
+    el.dispatchEvent(new TouchEvent('touchmove', { touches: [new Touch({ identifier: 1, target: el, clientX: ${x}, clientY: ${y} })], bubbles: true, cancelable: true }));
+    return 'ok';
+  })()`
+  const touchEnd = () => `(() => {
+    const el = document.querySelector('article.card');
+    if (!el) return 'no-el';
+    el.dispatchEvent(new TouchEvent('touchend', { touches: [], bubbles: true, cancelable: true }));
+    return 'ok';
+  })()`
+  const nextTitleOfA = dList[railPosOf(railA.id) + 1]?.title ?? ''
+
+  s.check('上滑提示药丸初始不存在',
+    !(await s.evaluate("!!document.querySelector('[data-test=swipe-hint]')")))
+
+  // peek：滚到底 → 上拉 → 锁定切换手势 → 药丸出现 + card 微暗
+  await s.evaluate('window.scrollTo(0, document.documentElement.scrollHeight)')
+  await s.evaluate(touchStart(200, 700))
+  await s.evaluate(touchMove(200, 650))
+  await s.evaluate(touchMove(200, 600))
+  await s.evaluate(flush2)
+  const peekNext = JSON.parse(await s.evaluate(`JSON.stringify({
+    hint: !!document.querySelector('[data-test=swipe-hint]')
+      && document.querySelector('[data-test=swipe-hint]').getBoundingClientRect().width > 0,
+    text: document.querySelector('[data-test=swipe-hint]')?.textContent?.trim() ?? '',
+    dim: document.querySelector('article.card')?.classList.contains('dim') ?? false,
+  })`))
+  s.check('滚到底上拉 → 提示药丸出现且指向下一条',
+    peekNext.hint && peekNext.text.includes(nextTitleOfA),
+    JSON.stringify({ hint: peekNext.hint, text: peekNext.text.slice(0, 30), want: nextTitleOfA.slice(0, 16) }))
+  s.check('peek 阶段 card 有 dim 微暗反馈', peekNext.dim)
+
+  // 未达阈值松手 → 回弹
+  await s.evaluate(touchEnd())
+  await s.evaluate(flush2)
+  const bounced = JSON.parse(await s.evaluate(`JSON.stringify({
+    hint: !!document.querySelector('[data-test=swipe-hint]'),
+    hash: location.hash,
+  })`))
+  s.check('未达阈值松手 → 回弹：药丸消失、URL 不变',
+    !bounced.hint && bounced.hash === `#/note/${railA.id}`, JSON.stringify(bounced))
+
+  // 过阈值（peek = 320*0.4 = 128 ≥ 90）→ 切下一条
+  await s.evaluate(touchStart(200, 700))
+  await s.evaluate(touchMove(200, 380))
+  await s.evaluate(touchEnd())
+  await s.waitFor(`location.hash === '#/note/${railB.id}'`, '上滑过阈值 → 切下一条', 20000)
+  await s.waitFor("!!document.querySelector('[data-test=note-detail-content]')", '下一条正文', 20000)
+  await s.waitFor('window.scrollY < 50', '切换后回到顶部', 20000)
+  const afterSwipeNext = JSON.parse(await s.evaluate(`JSON.stringify({
+    hint: !!document.querySelector('[data-test=swipe-hint]'),
+    scrollY: Math.round(window.scrollY),
+  })`))
+  s.check('切下一条后药丸消失（松手即撤，不陪出场动画）',
+    !afterSwipeNext.hint, JSON.stringify(afterSwipeNext))
+  await new Promise((r) => setTimeout(r, 600))
+  const enterClean = JSON.parse(await s.evaluate(`JSON.stringify({
+    enterPre: !!document.querySelector('article.card.enter-pre'),
+    enterRun: !!document.querySelector('article.card.enter-run'),
+    hash: location.hash,
+  })`))
+  s.check('入场结束后 enter 类撤干净（transform 归 none、吸底还给视口）',
+    !enterClean.enterPre && !enterClean.enterRun && enterClean.hash === `#/note/${railB.id}`,
+    JSON.stringify(enterClean))
+
+  // 顶部下拉 → 上一篇（railB 的 prevRail 就是 railA）
+  await s.evaluate(touchStart(200, 300))
+  await s.evaluate(touchMove(200, 350))
+  await s.evaluate(flush2)
+  const peekPrev = JSON.parse(await s.evaluate(`JSON.stringify({
+    hint: !!document.querySelector('[data-test=swipe-hint]')
+      && document.querySelector('[data-test=swipe-hint]').getBoundingClientRect().width > 0,
+    text: document.querySelector('[data-test=swipe-hint]')?.textContent?.trim() ?? '',
+  })`))
+  s.check('顶部下拉 → 提示药丸出现且指向上一篇',
+    peekPrev.hint && peekPrev.text.includes(railA.title),
+    JSON.stringify({ hint: peekPrev.hint, text: peekPrev.text.slice(0, 30) }))
+  await s.evaluate(touchMove(200, 540))
+  await s.evaluate(touchEnd())
+  await s.waitFor(`location.hash === '#/note/${railA.id}'`, '下拉过阈值 → 切回上一篇', 20000)
+  await new Promise((r) => setTimeout(r, 600))
+
+  // 横向滑动锁定为轮播手势（|dx|>|dy|）：任何滚动位置都不该触发切换
+  await s.evaluate(touchStart(100, 400))
+  await s.evaluate(touchMove(220, 405))
+  await s.evaluate(touchEnd())
+  const horiz = JSON.parse(await s.evaluate(`JSON.stringify({
+    hint: !!document.querySelector('[data-test=swipe-hint]'),
+    hash: location.hash,
+  })`))
+  s.check('横向滑动（|dx|>|dy|）锁定为轮播手势，URL 不变',
+    !horiz.hint && horiz.hash === `#/note/${railA.id}`, JSON.stringify(horiz))
+
+  // 桌面视口：手势层整体不响应（P51 的 rail/←→ 才是桌面路径）
+  await s.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
+  await s.evaluate(touchStart(200, 400))
+  await s.evaluate(touchMove(200, 300))
+  await s.evaluate(touchEnd())
+  const deskSwipe = JSON.parse(await s.evaluate(`JSON.stringify({
+    hint: !!document.querySelector('[data-test=swipe-hint]'),
+    hash: location.hash,
+  })`))
+  s.check('桌面视口合成触摸不触发切换（守卫按视口宽判）',
+    !deskSwipe.hint && deskSwipe.hash === `#/note/${railA.id}`, JSON.stringify(deskSwipe))
+
+  await s.send('Emulation.clearDeviceMetricsOverride')
+  await s.goto(`${BASE}/#/`)
 } catch (e) {
   s.check('用例执行到底', false, String(e.message));
 } finally {

@@ -7,12 +7,12 @@
 
 | | |
 |---|---|
-| 阶段 | **P0 → P51 已完成**（详见第 7 节各阶段小节） |
-| 测试 | 契约 **845** 条（P50 段 38 条，含无正文草稿 7 条）· CDP **836** 条（ui-note 193，P51 扩 +11），全部绿 |
-| prod | `18080`，跑的是 **P50 全链**（2026-11-12 部署：后端 jar 重建 + 前端镜像重建 + nginx 重启；prod 库已 ALTER `note.content` 可空）。**P51 未部署 prod**（纯前端，要重建前端镜像 + 重启 nginx） |
+| 阶段 | **P0 → P52 已完成**（详见第 7 节各阶段小节） |
+| 测试 | 契约 **845** 条（P50 段 38 条，含无正文草稿 7 条）· CDP **845** 条（ui-note 202，P52 扩 +9），全部绿 |
+| prod | `18080`，跑的是 **P50 全链**（2026-11-12 部署：后端 jar 重建 + 前端镜像重建 + nginx 重启；prod 库已 ALTER `note.content` 可空）。**P51/P52 未部署 prod**（纯前端，要重建前端镜像 + 重启 nginx） |
 | 重建 prod 的坑 | 见第 8 节：8.2 镜像构建三道墙 / 8.5 nginx 缓存旧 IP / 8.6 `--no-deps` |
 | 上一次部署 | P50（**后端+前端**）· prod 真调用：接口 **24/24** + UI **12/12**（草稿全链 + 搜索筛选 + 自清）|
-| 待做 | **P52 移动端详情上滑切下一条** · **P53 沉浸入口前置 + ImmerseView 打磨**（用户三项全拍板，P51 先落地） |
+| 待做 | **P53 沉浸入口前置 + ImmerseView 打磨**（用户三项全拍板，P51/P52 已落地） |
 | 重启后 | **跑 `tools\dev-up.cmd`**（见 2.0 节，引擎没起它会自己拉起，33s）· 手工清单留在 2.0 的折叠块里兜底 |
 
 **最近几个阶段做了什么**：P37 长视频实测（172MiB 端到端 43.5s，抓出 nginx 只允许 100m 的三层不一致）·
@@ -30,6 +30,7 @@ P48 视频多码率 + 自绘播放器（720p/480p 两级变体 + 降级保 `vide
 P49 视频体验三档改造（纯前端：桌面两栏恢复 + 播放器 chrome + 移动沉浸 + ui-note 6 条永久钉）。
 P50 草稿箱 + 搜索筛选器（后端+前端：草稿是一条状态不是「缺校验的发布」+ 搜索 type/sort）。
 P51 PC 弹出面板（纯前端：详情页左瀑布 + 右面板 + ←→ 上下篇，对齐小红书 explore）。
+P52 移动端详情上滑切下一条（纯前端：复用 P51 rail 数据做手势切换 + 提示药丸，ui-note +9）。
 
 ---
 
@@ -5276,4 +5277,103 @@ frontend` + `--no-deps --force-recreate frontend`）+ **重启 nginx**（8.5）�
 - **rail 卡不带计数/作者**：纯封面 + 两行标题，瀑布 170px 列宽装不下更多；
   点卡片本来就要进面板看全。
 - **键盘 ←→ 在输入框聚焦时不响应**：textarea 里按方向键是移动光标。
+
+### P52 移动端详情上滑切下一条（本 commit）
+
+CDP **836 → 845**（ui-note 193 → 202，第 20 段 +9）。**纯前端**，契约仍 845。
+
+P51 落地 PC 弹出面板后，用户三项拍板的第二项：移动端详情页**上滑切下一条、
+下滑切上一篇**——对齐小红书手机端的核心手势。数据层零新增：rail 列表
+（`dList`，`GET /api/feed/discover?page=1&size=50`）与 `prevRail/nextRail`
+推导在桌面/移动**共用**，手势只是另一个消费端。
+
+#### 手势规格（与阈值一起钉在 ui-note 第 20 段）
+
+- **事件**：`touchstart/move/end` 挂 `pageEl`（touchmove `passive:false` 才能
+  `preventDefault`），target closest 过滤 `input/textarea/[contenteditable]/video/`
+  `[data-test=action-bar]`（别抢视频滑动与吸底栏内滚动）。
+- **方向锁**：位移 < `SWIPE_LOCK(24px)` 不表态；`|dx|>|dy|` 锁成轮播手势
+  （`'x'`，直接放弃）——横滑是轮播的，竖滑才是切笔记。
+- **边缘条件**：`atBottom`（scrollY+innerH ≥ docH-4）才允许上拉=next；
+  `atTop`（scrollY ≤ 4）才允许下拉=prev。**页面没滚到底时上拉是滚动，
+  不是切换**——这是手势成立的根。
+- **阻尼/阈值**：`peek = min(|dy|*0.4, 140)`；`SWIPE_COMMIT = 90`。
+  40px（<90）松手回弹、128px（≥90）切下一条——两条用例一头一尾钉死阈值。
+- **锚点**：手势只认 `article.card` 的子元素（dispatch 到它，
+  `pageEl` 上的 passive listener 才能收到）；断言计时用**双 rAF** flush。
+
+#### ⚠️ 本轮最大的坑：吸底操作栏与 transform 的包含块战争
+
+`action-bar` 是 `card` 的**子元素**且移动端 `position:fixed` 吸底。
+**祖先上一旦出现非 none 的 transform，fixed 元素的包含块就从视口变成那个
+祖先**——底栏会被钉在卡片上而不是视口底。三个结论：
+
+1. **peek（未松手）绝不能用 transform**：card 跟手位移一个像素，
+   吸底栏当场跟着飞。所以 peek 只做 **opacity 微降**（`dim` 类，0.92；
+   opacity 不创建包含块）+ 提示药丸跟手升起——方向感全部交给药丸。
+2. **出场可以 transform**：`leave-next` = `translateY(-45vh)` 200ms，
+   底栏以 card 为包含块**跟着一起滑走**——恰好就是小红书「整页滑走」的
+   观感（这反而是利用了那个「陷阱」）。下滑出场同理 +45vh。
+3. **入场必须三态类**：`enter-pre`（56px/opacity 0，`transition:none`，
+   在 replace 前挂上）→ `enter-run`（过渡 220ms 回 0/1）→ 撤类回 none。
+   `transform:none↔值` 按 identity 插值；撤类后底栏回到视口吸底。
+   ⚠️ **`transform: translateY(var(--swipe-ty, 0px))` 这种「常驻变量」写法
+   一样是 transform 值（解析成 `translateY(0px)` ≠ `none`）**，包含块照样被
+   抢走——基础规则必须**完全没有 transform 声明**，transform 只存在于
+   leave/enter 类里。commit 时先把 `loading.value=true` 再清 `swipeLeave`，
+   让旧 card（带着出场 transform）与撤类**同帧卸载**，避免回闪。
+
+#### 注释里的 `*/` 炸掉整个页面（排查路径记全）
+
+写 CSS 注释时顺手写了「`transform 只在 leave-*/enter-* 类存在的动画窗口里
+出现`」——注释正文里的 **`*/` 把注释提前闭合**，`enter-*` 之后的那半段变成
+裸 CSS，选择器解析撞上 `Unexpected '/'`。后果链条：
+
+- style 子模块 500 → `NoteDetailView.vue` 动态导入整体失败 →
+  浏览器报 `Failed to fetch dynamically imported module`——**报错指向根模块
+  网络层，真因在一行注释里**。
+- ui-note 两次跑同败（13/14，挂在第一次进详情页），且**两次时间戳相同**
+  → 排除 HMR 竞态；服务器侧根模块与全部子模块裸拉均 200、MIME 均为
+  `text/javascript` → 排除网络与 MIME。
+- 用探针在全新浏览器会话复现（缩小到模块图）→ 逐个子模块探测 →
+  **style 子模块 500**；用项目自己的 `@vue/compiler-sfc` 本地 `compileStyle`
+  复现（无行号）→ 按顶层规则块二分 → 定位到 P52 的 `@media` 块 →
+  肉眼看注释。**`/* */` 注释正文里永远不要写 `*/` 序列**（包括
+  `leave-*/enter-*` 这种顺手写法）。
+
+#### 测试基建
+
+- **合成 TouchEvent**：`new Touch({identifier, target, clientX, clientY})`
+  + `new TouchEvent(type, {touches, bubbles, cancelable})` dispatch 到
+  `article.card`——不能用 CDP 的 Input.dispatchTouchEvent（这里走的是
+  组件级 passive listener，直接派发最可控）。
+- **「中段纵向不触发」被替换成「横向锁定」**：原用例想钉「页面没滚到底时
+  上拉无效」，但 `atBottom` 依赖页面总高——素材笔记短时手一拉就到底，
+  用例恒真/恒红随数据漂。横向锁定的判据（`|dx|>|dy|` → URL 不变）与数据
+  无关，且同样钉住「竖直方向才触发」的语义。
+- **判别力注入**：stub `window.matchMedia` 恒 false（守卫永不命中）→
+  手势失效 → 「药丸出现/URL 切换」必红 ✓（`_inject52.mjs` 用完即删）。
+  阈值两端（40 回弹 / 128 提交）本身就是成对判别。
+- 视口必须 `Emulation.setDeviceMetricsOverride` 显式 430×900（守卫按
+  视口宽判，赌默认窗口宽度必翻车）；用完 clear + `goto '#/'` 还原。
+
+#### 回归与验收
+
+ui-note **202/202** · layout **157/157** · interaction **78/78** ·
+immerse **27/27** · search **28/28**（它会点卡片进详情页）· typecheck ✓。
+结构自检 net=0 / twoToOne 增至 270。
+
+**P52 未部署 prod**：纯前端，照 8.6 重建前端镜像 + 重启 nginx。
+
+#### 已知取舍
+
+- **提示药丸松手即撤**，不陪出场动画：出场已经足够表达「离开」，药丸再
+  留着会跟卡片一起飞走。
+- **下滑出场时吸底栏 200ms 缺席**：底栏跟着 card 向下滑走、入场后回位；
+  上滑（页面已滚到底、底栏在视口内）无跳变。小红书手机端同样是整页滑。
+- **reduced-motion 全部瞬变**：`prefers-reduced-motion` 下三段动画的
+  transition 全部 none，切换只表现为内容替换。
+- **边缘笔记（rail 头/尾）**：没有 prev/next 时不挂手势方向（与 P51 按钮
+  同语义，不装作有）。
+
 

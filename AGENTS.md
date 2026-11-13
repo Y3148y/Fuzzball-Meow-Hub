@@ -3,16 +3,16 @@
 给后续接手的人（和 AI 助手）看。这里只写**不看就会踩坑**的东西；
 设计意图和阶段规划在 `README.md`。
 
-## 0. 进度速查（2026-11-12）
+## 0. 进度速查（2026-11-13）
 
 | | |
 |---|---|
-| 阶段 | **P0 → P50 已完成**（详见第 7 节各阶段小节） |
-| 测试 | 契约 **845** 条（P50 段 38 条，含无正文草稿 7 条）· CDP **825** 条（ui-note 182 + ui-search 28 为 P50 扩的两组），全部绿 |
-| prod | `18080`，跑的是 **P50 全链**（2026-11-12 部署：后端 jar 重建 + 前端镜像重建 + nginx 重启；prod 库已 ALTER `note.content` 可空） |
+| 阶段 | **P0 → P51 已完成**（详见第 7 节各阶段小节） |
+| 测试 | 契约 **845** 条（P50 段 38 条，含无正文草稿 7 条）· CDP **836** 条（ui-note 193，P51 扩 +11），全部绿 |
+| prod | `18080`，跑的是 **P50 全链**（2026-11-12 部署：后端 jar 重建 + 前端镜像重建 + nginx 重启；prod 库已 ALTER `note.content` 可空）。**P51 未部署 prod**（纯前端，要重建前端镜像 + 重启 nginx） |
 | 重建 prod 的坑 | 见第 8 节：8.2 镜像构建三道墙 / 8.5 nginx 缓存旧 IP / 8.6 `--no-deps` |
 | 上一次部署 | P50（**后端+前端**）· prod 真调用：接口 **24/24** + UI **12/12**（草稿全链 + 搜索筛选 + 自清）|
-| 待做 | （无）|
+| 待做 | **P52 移动端详情上滑切下一条** · **P53 沉浸入口前置 + ImmerseView 打磨**（用户三项全拍板，P51 先落地） |
 | 重启后 | **跑 `tools\dev-up.cmd`**（见 2.0 节，引擎没起它会自己拉起，33s）· 手工清单留在 2.0 的折叠块里兜底 |
 
 **最近几个阶段做了什么**：P37 长视频实测（172MiB 端到端 43.5s，抓出 nginx 只允许 100m 的三层不一致）·
@@ -28,6 +28,8 @@ P46 举报处置闭环（通知类型 8 + 驳回必填理由）·
 P47 搜索页「相关用户」+ 私信页 TabBar 遮挡修复（token 56→58px）。
 P48 视频多码率 + 自绘播放器（720p/480p 两级变体 + 降级保 `videoUrl` 兼容，`VideoPlayer.vue` 接详情/沉浸两处）。
 P49 视频体验三档改造（纯前端：桌面两栏恢复 + 播放器 chrome + 移动沉浸 + ui-note 6 条永久钉）。
+P50 草稿箱 + 搜索筛选器（后端+前端：草稿是一条状态不是「缺校验的发布」+ 搜索 type/sort）。
+P51 PC 弹出面板（纯前端：详情页左瀑布 + 右面板 + ←→ 上下篇，对齐小红书 explore）。
 
 ---
 
@@ -5179,4 +5181,99 @@ sort=latest 命中 / type=99 与 sort 非法都 100001（钉新后端真在跑�
   分文案，收益低 —— 记录在案，不当缺陷追。
 - **探针基建小坑**：`createSession` 是 **async**，忘了 `await` 时 `s.goto` 直接
   `is not a function` —— 与 P20 记的「助手返回形态不一致」同源，抄 API 前先看签名。
+
+### P51 PC 弹出面板（本 commit）
+
+CDP **836** 条（825 + 11，ui-note 175→186……不对，ui-note 182→193）。**纯前端**，契约仍 845。
+
+**起因是用户手测 prod 后的反馈**：「PC 版和手机端差别都还和小红书很远，
+你是不是没有做沉浸式」。排查结论：`/immerse` 沉浸页**存在**（P34，scroll-snap
+一屏一卡），但入口只有首页 tab 行右侧一个小药丸——用户根本没看见；而**真正
+最大的差距**是 PC 详情：`#/note/:id` 是整页跳转，不是小红书 explore 的
+「左瀑布保持 + 右侧滑出面板 + ←→ 切上下篇」。用户三项全拍板：
+P51 PC 弹出面板 · P52 移动上滑切下一条 · P53 沉浸入口前置 + ImmerseView 打磨。
+
+#### 外壳：一次 grid 摆位，现有选择器一个不动
+
+`NoteDetailView.vue` 模板在 `<main>` 里加 `<aside class="rail">` 作为**第一个
+子元素**，桌面 ≥1024 外壳改 grid：
+
+```css
+.note-detail-page { max-width: none; display: grid;
+  grid-template-columns: minmax(220px, 340px) minmax(0, 1fr); }
+.note-detail-page > :not(.rail) { grid-column: 2; }
+.rail { grid-column: 1; grid-row: 1 / span 40; position: sticky; ... }
+```
+
+- ⚠️ **scoped 的 `.note-detail-page[data-v]`（0,2,0）压过 main.css 的
+  `.page`（0,1,0）**——`max-width: none` 才真正放开。这是 P12-C 记过的
+  「scoped 压全局」机制的**主动利用**（那次是它挡住断点，这次是靠它放开宽度）。
+- `.page > .top` 等既有选择器全部不变——只有 grid-column 重新分配。
+- 列宽单一来源：`--xk-col1: 440px` 仍定义在**桌面 `.card` 上**（卡内 token），
+  外壳变宽不影响它 → P49 的 `vbH=72vh` / `vbW=min(72vh×ratio, --xk-col1)`
+  与 P12 的「图列 440±8」断言原样成立（回归 157/157 证实）。
+- rail 列 `columns: 2`（瀑布），卡 `break-inside: avoid`；sticky 内滚
+  `top: calc(var(--xk-sitenav-h) + 12px)`、`max-height` 扣同一 token。
+- **移动端 `<1024` 两个新元素都 `display:none`**——上滑切换是 P52 的事，
+  别提前抢活。
+
+#### 三个必改的 script 点（少一个就是坏体验/坏布局）
+
+1. **`watch(() => route.params.id, ...)` 重拉**：vue-router 对同组件不同参数
+   **复用实例**，`load()` 原本只在 onMounted 跑——←→ 切换 URL 变了内容还是旧的。
+   watch 里 `await load()` → `nextTick` → `startObserving()` → 滚回顶部 →
+   `scrollRailToCurrent()`。
+2. **`startObserving()` 重入化**：切换时 `loading=true` 把 actionbar/正文 DOM
+   **销毁重建**，ResizeObserver 若一直攥着旧元素，新元素的 `--bar-h` 与折叠
+   测量没人更新。修法是 disconnect 旧绑 + watch 重拉后重新调用。
+3. **键盘 ←→**：window keydown，`matchMedia('(min-width:1024px)')` 门 +
+   target 非 INPUT/TEXTAREA/contentEditable；全走 `router.replace`
+   （不塞历史栈，浏览器后退键回到来源列表页）。
+
+#### 上下篇的语义：发现流不含自己的笔记
+
+rail 数据 = `GET /api/feed/discover?page=1&size=50`（与首页同接口同排序）。
+发现流 SQL 有 `n.user_id != ?`——从「我的」主页点进**自己**的笔记时当前卡
+不在 rail 里：`railIdx = -1`，此时**无高亮、上下篇按钮整条不渲染**
+（「上篇」指向谁没有定义，不装作有）。切到别人的笔记后 rail 照常出现。
+
+#### 判别力验证（注入 display:none 抓出的断言缺陷）
+
+第一版断言只查 DOM 存在性（`querySelector` + `getAttribute`）——注入
+`.rail { display: none }` 后 **9 条全过**，与 P30 的「浮层不能只查
+querySelector，必须量 getBoundingClientRect」同坑。修强后：
+waitFor 条件量 rail `width > 100`；每条断言带 rect 面积
+（railW/railH/curW/curH/navW）。再注入 → waitFor 超时 + 「用例执行到底」红；
+还原 → 193/193 全绿。**判别力成立**。
+
+#### 两个测试自坑（一个第二次踩）
+
+1. ⚠️ **`s.check()` 是无返回值的**（ui-cdp.mjs L225：push + console.log，
+   没有 return）——写 `if (!s.check('前置', cond))` 会让失败分支**恒被选中**
+   （!undefined === true）。P30 已记过一次，这次在 P51 段**第二次踩**。
+   判断用局部布尔，`s.check` 只负责打印。
+2. **ui-note 素材锚定**：P51 段的素材是**别人的笔记**（discover 第一条），
+   demo 自己的笔记 railIdx=-1 —— 前置断言必须等 discover 返回 ≥3 条。
+
+#### 11 条新断言（ui-note 第 19 段）
+
+rail 可见（rect 面积）· rail 占左列（右缘 < 卡片左缘）· 当前卡高亮
+（可见 + aria-current + href）· 上下篇条可见 · 计数与 discover 位置对齐
+（`N / 50`）· 点下篇后高亮/计数跟随（不重载 rail）· 切换后回顶部 ·
+键盘 ←/→ 与按钮同路径 · 点 rail 任意卡直接跳 · 移动端(430) rail 与
+pane-nav 都不可见。纯浏览**不造数据、无需自清**。
+
+**验收**：typecheck ✓ · ui-note **193/193** · ui-layout **157/157** ·
+ui-immerse **27/27** · ui-interaction **78/78** · ui-smoke **44/44**。
+**P51 未部署 prod**：要按 8.6 重建前端镜像（`docker build -t xiaoku-frontend:latest
+frontend` + `--no-deps --force-recreate frontend`）+ **重启 nginx**（8.5）。
+
+#### 已知取舍
+
+- **rail 只拉 50 条不翻页**：上下篇的弹药库一次取够；50 条之外的笔记
+  进不了 ←→ 流（小红书也是这个量级）。
+- **当前笔记不在 rail 里时不显示「1 / 50」计数**：不装作有。
+- **rail 卡不带计数/作者**：纯封面 + 两行标题，瀑布 170px 列宽装不下更多；
+  点卡片本来就要进面板看全。
+- **键盘 ←→ 在输入框聚焦时不响应**：textarea 里按方向键是移动光标。
 

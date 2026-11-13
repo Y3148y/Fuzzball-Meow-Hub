@@ -65,7 +65,8 @@ function mentionNodes(content: string, mentions?: MentionVO[]) {
 }
 import { BizError } from '@/api/request'
 import { ErrorCode } from '@/api/types'
-import type { CommentVO, NoteVO, PageVO } from '@/api/types'
+import type { CommentVO, NoteListItemVO, NoteVO, PageVO } from '@/api/types'
+import { getDiscoverFeed } from '@/api/feed'
 import { useKeyboardInset } from '@/composables/useKeyboardInset'
 import { useUserStore } from '@/stores/user'
 import { formatDateTime } from '@/utils/datetime'
@@ -656,6 +657,93 @@ function onVideoRatio(w: number, h: number) {
   if (w > 0 && h > 0) videoRatio.value = w / h
 }
 
+/* ==================== P51：PC 弹出面板（左瀑布 + 右面板 + ←→ 上下篇） ====================
+ *
+ * 小红书 web（explore/{id}）点卡片**不跳页**：左瀑布保持，右侧滑出详情面板，
+ * ←→ 直接切上/下篇。这里做成同一路由的**外壳**：≥1024 时页面变成
+ * 「左瀑布（发现流，sticky 内滚）+ 右面板（现有详情内容）」两列，
+ * 列表与面板互不重载 —— 左瀑布只加载一次，面板随路由参数切换重拉。
+ *
+ * ⚠️ 刻意**不改路由表**：#/note/:id 的链接、分享、契约全部依赖它，
+ * 换成 /explore/:id 的收益是名字像，代价是一整圈链接与测试。
+ *
+ * ⚠️ 发现流**不含自己发的**（后端 `n.user_id != ?`）——
+ * 从「我的」主页点进自己笔记时当前卡不在 rail 里：无高亮、上下篇按钮隐藏，
+ * 不装作有上/下篇。切到别人的笔记后 rail 照常出现。
+ */
+const railNotes = ref<NoteListItemVO[]>([])
+const railLoading = ref(false)
+
+async function loadRail() {
+  railLoading.value = true
+  try {
+    // size=50 一次取够上下篇的弹药库；排序与首页发现流一致
+    const r = await getDiscoverFeed(1, 50)
+    railNotes.value = r.list
+  } catch {
+    railNotes.value = [] // rail 挂了不影响右侧面板
+  } finally {
+    railLoading.value = false
+  }
+}
+
+/** 当前笔记在 rail 列表里的位置；-1 = 不在（自己的笔记 / 私密内容等） */
+const railIdx = computed(() =>
+  railNotes.value.findIndex((n) => n.id === String(route.params.id)),
+)
+const prevRail = computed(() =>
+  railIdx.value > 0 ? railNotes.value[railIdx.value - 1] : undefined,
+)
+const nextRail = computed(() =>
+  railIdx.value >= 0 && railIdx.value < railNotes.value.length - 1
+    ? railNotes.value[railIdx.value + 1]
+    : undefined,
+)
+
+function goRailNote(id: string) {
+  if (id === String(route.params.id)) return
+  // replace 不塞历史栈：←→ 是「换一篇看」，浏览器后退键应该回到来源列表页
+  router.replace('/note/' + id)
+}
+
+const railEl = ref<HTMLElement | null>(null)
+
+async function scrollRailToCurrent() {
+  await nextTick()
+  const el = railEl.value?.querySelector('[data-rail-cur]') as HTMLElement | null
+  el?.scrollIntoView({ block: 'nearest' })
+}
+
+/*
+ * 同路由参数切换（←→ / 点 rail 卡）时重拉：vue-router 对同组件不同参数
+ * **复用实例**，onMounted 的 load 只在首次进页面跑 —— 没有 watch 的话
+ * 切上下篇 URL 变了、内容还是旧的。
+ */
+watch(
+  () => route.params.id,
+  async (id, old) => {
+    if (!id || id === old) return
+    await load()
+    await nextTick()
+    startObserving()
+    window.scrollTo({ top: 0 })
+    void scrollRailToCurrent()
+  },
+)
+
+function onRailKey(e: KeyboardEvent) {
+  if (!window.matchMedia('(min-width: 1024px)').matches) return
+  const t = e.target as HTMLElement | null
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
+  if (e.key === 'ArrowLeft' && prevRail.value) {
+    e.preventDefault()
+    goRailNote(prevRail.value.id)
+  } else if (e.key === 'ArrowRight' && nextRail.value) {
+    e.preventDefault()
+    goRailNote(nextRail.value.id)
+  }
+}
+
 async function load() {
   loading.value = true
   errorMsg.value = ''
@@ -739,6 +827,8 @@ onMounted(async () => {
   await load()
   await nextTick()
   startObserving()
+  void loadRail()
+  window.addEventListener('keydown', onRailKey)
 })
 
 /*
@@ -751,6 +841,15 @@ let barObserver: ResizeObserver | null = null
 let contentObserver: ResizeObserver | null = null
 
 function startObserving() {
+  /*
+   * P51：先断旧再绑新 —— ←→ 切换时 loading 会把 actionbar/正文 DOM 销毁重建，
+   * ResizeObserver 若一直攥着旧元素，新元素的 --bar-h / 折叠测量就没人更新了。
+   * 这也是为什么 watch(params) 重拉后必须再调一次 startObserving。
+   */
+  barObserver?.disconnect()
+  contentObserver?.disconnect()
+  barObserver = null
+  contentObserver = null
   if (barEl.value) {
     const el = barEl.value
     const write = () => pageEl.value?.style.setProperty('--bar-h', `${el.offsetHeight}px`)
@@ -775,11 +874,47 @@ onBeforeUnmount(() => {
   barObserver?.disconnect()
   contentObserver?.disconnect()
   window.removeEventListener('resize', onWinResize)
+  window.removeEventListener('keydown', onRailKey)
 })
 </script>
 
 <template>
   <main ref="pageEl" class="page note-detail-page" :class="{ immerse: hasVideo }">
+    <!--
+      P51：PC 弹出面板（小红书 explore/{id} 的形状）——左瀑布 + 右详情面板。
+      ⚠️ aside 必须是 main 的**第一个子元素**：桌面外壳用 grid 摆位
+      （.rail 占 col1 跨全部行、其余直接子元素全部进 col2），现有的
+      `.page > .top` 等选择器一个都不用动。
+      移动端 <1024 整块 display:none（50 张图用了 loading=lazy，
+      不可见的懒图不会真的发起请求）——上滑切换是 P52，别提前抢活。
+    -->
+    <aside ref="railEl" class="rail" data-test="detail-rail" aria-label="更多笔记">
+      <p v-if="railLoading" class="rail-hint" data-test="detail-rail-loading">加载中…</p>
+      <p v-else-if="!railNotes.length" class="rail-hint" data-test="detail-rail-empty">暂无更多笔记</p>
+      <div v-else class="rail-cols">
+        <RouterLink
+          v-for="rn in railNotes"
+          :key="rn.id"
+          class="rail-item"
+          :class="{ cur: rn.id === String(route.params.id) }"
+          :data-rail-cur="rn.id === String(route.params.id) ? '' : undefined"
+          :aria-current="rn.id === String(route.params.id) ? 'true' : undefined"
+          :to="'/note/' + rn.id"
+          data-test="detail-rail-item"
+        >
+          <img
+            v-if="rn.cover"
+            class="rail-cover"
+            :src="rn.cover"
+            :alt="rn.title"
+            loading="lazy"
+          />
+          <span v-else class="rail-cover" aria-hidden="true"></span>
+          <strong class="rail-title">{{ rn.title }}</strong>
+        </RouterLink>
+      </div>
+    </aside>
+
     <header class="top">
       <button class="back" type="button" aria-label="返回" @click="router.back()">‹</button>
       <span class="brand">笔记详情</span>
@@ -1302,6 +1437,39 @@ ref="contentEl"
         </div>
         <!-- /.col-text -->
     </article>
+
+    <!--
+      P51：面板底部的上/下篇切换（小红书 explore 面板的 ← → 的可见形态）。
+      当前不在推荐流里（自己发的 / 私密）时整条不渲染 —— railIdx=-1 时
+      「上篇」指向谁没有定义，不装作有。
+      移动端 <1024 同样隐藏（手机的上滑切换是 P52）。
+    -->
+    <nav
+      v-if="railIdx >= 0 && (prevRail || nextRail)"
+      class="pane-nav"
+      data-test="detail-pane-nav"
+      aria-label="上下篇"
+    >
+      <button
+        type="button"
+        :disabled="!prevRail"
+        data-test="detail-pane-prev"
+        @click="prevRail && goRailNote(prevRail.id)"
+      >
+        ‹ 上篇
+      </button>
+      <span class="pane-count" data-test="detail-pane-count">
+        {{ railIdx + 1 }} / {{ railNotes.length }}
+      </span>
+      <button
+        type="button"
+        :disabled="!nextRail"
+        data-test="detail-pane-next"
+        @click="nextRail && goRailNote(nextRail.id)"
+      >
+        下篇 ›
+      </button>
+    </nav>
   </main>
 </template>
 
@@ -2366,5 +2534,138 @@ ref="contentEl"
   font-size: var(--xk-fs-12);
   color: var(--xk-text-3);
   text-align: center;
+}
+
+/* ==================== P51：PC 弹出面板（左瀑布 + 右面板 + ←→ 上下篇） ==================== */
+
+/* 移动端（<1024）两个新元素都不存在 —— 上滑切换是 P52 的事 */
+.rail,
+.pane-nav {
+  display: none;
+}
+
+.rail-hint {
+  margin: 0;
+  padding: 24px 0;
+  text-align: center;
+  font-size: var(--xk-fs-13);
+  color: var(--xk-text-3);
+}
+
+@media (min-width: 1024px) {
+  /*
+   * 外壳：左瀑布 sticky 内滚 + 右面板随页面滚。
+   * ⚠️ 特异性是**主动利用** P12-C 记过的那条规则：scoped 的
+   * .note-detail-page[data-v]（0,2,0）压过 main.css 的 .page（0,1,0），
+   * max-width 才真正放开 —— 全宽是小红书 explore 的形状，同时
+   * rail 才装得下两列瀑布。
+   */
+  .note-detail-page {
+    max-width: none;
+    display: grid;
+    grid-template-columns: minmax(220px, 340px) minmax(0, 1fr);
+    column-gap: var(--xk-space-5);
+    align-items: start;
+  }
+
+  /* 顶栏/错误提示/卡片/上下篇 —— 全部进右列，现有选择器一个不动 */
+  .note-detail-page > :not(.rail) {
+    grid-column: 2;
+  }
+
+  .rail {
+    display: block;
+    grid-column: 1;
+    grid-row: 1 / span 40;
+    position: sticky;
+    top: calc(var(--xk-sitenav-h, 0px) + 12px);
+    align-self: start;
+    max-height: calc(100vh - var(--xk-sitenav-h, 0px) - 24px);
+    overflow-y: auto;
+  }
+
+  .rail-cols {
+    columns: 2;
+    column-gap: 10px;
+  }
+
+  .rail-item {
+    display: block;
+    break-inside: avoid;
+    margin: 0 0 10px;
+    border-radius: var(--xk-radius-blob-sm);
+    overflow: hidden;
+    background: var(--xk-surface-2);
+    color: var(--xk-text);
+    text-decoration: none;
+    border: 1px solid transparent;
+  }
+
+  .rail-item:hover {
+    border-color: var(--xk-border);
+  }
+
+  /* 当前卡：描边 + 不只靠颜色（aria-current 同步给了读屏） */
+  .rail-item.cur {
+    border-color: var(--xk-amber);
+    box-shadow: inset 0 0 0 1px var(--xk-amber);
+  }
+
+  .rail-cover {
+    display: block;
+    width: 100%;
+    aspect-ratio: 3 / 4;
+    object-fit: cover;
+    background: var(--xk-surface-2);
+  }
+
+  .rail-title {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    padding: 6px 8px;
+    font-size: var(--xk-fs-12);
+    font-weight: 600;
+    line-height: 1.4;
+    word-break: break-word;
+  }
+
+  .pane-nav {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--xk-space-3);
+    margin: var(--xk-space-4) 0 0;
+  }
+
+  .pane-nav button {
+    min-height: 40px;
+    padding: 0 var(--xk-space-4);
+    border: var(--xk-stroke-w) solid var(--xk-border);
+    border-radius: 999px;
+    background: var(--xk-surface-2);
+    color: var(--xk-text);
+    font-size: var(--xk-fs-13);
+    cursor: pointer;
+  }
+
+  .pane-nav button:hover:not(:disabled) {
+    border-color: var(--xk-amber);
+    color: var(--xk-amber-text);
+  }
+
+  .pane-nav button:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .pane-count {
+    min-width: 56px;
+    text-align: center;
+    font-size: var(--xk-fs-13);
+    color: var(--xk-text-3);
+    font-variant-numeric: tabular-nums;
+  }
 }
 </style>

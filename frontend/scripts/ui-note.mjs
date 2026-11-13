@@ -2024,6 +2024,138 @@ await s.evaluate("document.querySelector('[data-test=img-next]').click()")
     headers: { Authorization: `Bearer ${await s.evaluate("localStorage.getItem('xk_token')")}` },
   })).json()
   s.check('草稿发布笔记清理后详情返回 20001', draftGone.code === 20001, `code=${draftGone.code}`)
+
+  // ---- 19. P51 PC 弹出面板：左瀑布 + 右面板 + ←→ 上下篇 ----
+  //
+  // 素材用**别人的笔记**：发现流不含自己发的（n.user_id != ?），demo 自己的
+  // 笔记 railIdx=-1 —— 那条路径（无高亮、无上下篇）是刻意行为，不是本段要验的。
+  // 纯浏览不造数据，无需自清。
+  const disc = await (await fetch(`${API}/api/feed/discover?page=1&size=50`, {
+    headers: { Authorization: `Bearer ${await s.evaluate("localStorage.getItem('xk_token')")}` },
+  })).json()
+  const dList = disc?.data?.list ?? []
+  // ⚠️ s.check() 是无返回值的（只打印不计入流程）—— P30 记过这个坑：
+  // 用 if (!s.check(...)) 会让「失败分支」恒被选中。判断用局部布尔。
+  const railEnough = dList.length >= 3
+  s.check('前置：发现流至少 3 篇（P51 素材）', railEnough, `n=${dList.length}`)
+  if (!railEnough) throw new Error('discover 素材不足')
+  const [railA, railB, railC] = dList
+  const railPosOf = (id) => dList.findIndex((n) => n.id === id)
+
+  await s.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false })
+  await s.goto(`${BASE}/#/note/${railA.id}`)
+  // ⚠️ 等「可见」不只等 DOM：display:none 的 rail 里 50 个节点照样在 DOM 里
+  // （P30 同款坑，本轮注入验证当场抓过一次）。量 rect 面积才算真的可见。
+  await s.waitFor(
+    `!!document.querySelector('[data-test=detail-rail-item]')
+      && document.querySelector('[data-test=detail-rail]').getBoundingClientRect().width > 100`,
+    'rail 瀑布可见', 20000)
+  await s.waitFor("!!document.querySelector('[data-test=note-detail-content]')", '面板正文', 20000)
+
+  const railShape = await s.evaluate(`(() => {
+    const rail = document.querySelector('[data-test=detail-rail]');
+    const card = document.querySelector('article.card');
+    const items = document.querySelectorAll('[data-test=detail-rail-item]');
+    const r = rail.getBoundingClientRect(), c = card.getBoundingClientRect();
+    const cur = document.querySelector('[data-rail-cur]');
+    const cb = cur?.getBoundingClientRect();
+    const nav = document.querySelector('[data-test=detail-pane-nav]');
+    const nb = nav?.getBoundingClientRect();
+    return JSON.stringify({
+      items: items.length,
+      railW: Math.round(r.width), railH: Math.round(r.height),
+      railLeft: Math.round(r.left), railRight: Math.round(r.right),
+      cardLeft: Math.round(c.left),
+      railLeftOfCard: r.right < c.left,
+      curFound: !!cur,
+      curAria: cur?.getAttribute('aria-current') ?? null,
+      curHref: cur?.getAttribute('href') ?? null,
+      curW: Math.round(cb?.width ?? 0), curH: Math.round(cb?.height ?? 0),
+      navW: Math.round(nb?.width ?? 0), navH: Math.round(nb?.height ?? 0),
+      count: document.querySelector('[data-test=detail-pane-count]')?.textContent?.trim() ?? null,
+    });
+  })()`)
+  const railS = JSON.parse(railShape)
+  s.check('rail 渲染出瀑布卡片且真的可见（宽高 > 100px）',
+    railS.items === dList.length && railS.railW > 100 && railS.railH > 100,
+    `items=${railS.items} box=${railS.railW}x${railS.railH} want=${dList.length}`)
+  s.check('rail 占左列、面板在右（rail 右缘 < 卡片左缘）',
+    railS.railLeftOfCard === true && railS.railW > 100,
+    `rail=${railS.railLeft}..${railS.railRight} card=${railS.cardLeft}`)
+  s.check('当前笔记在 rail 里被高亮（可见 + aria-current + 描边锚）',
+    railS.curFound && railS.curAria === 'true' && railS.curW > 0 && railS.curH > 0
+      && railS.curHref?.includes(railA.id),
+    JSON.stringify({ curAria: railS.curAria, curHref: railS.curHref, cur: `${railS.curW}x${railS.curH}` }))
+  s.check('上下篇条可见（计数 + 两个按钮都在面板里）',
+    railS.navW > 100 && railS.navH > 0, `nav=${railS.navW}x${railS.navH}`)
+  s.check('面板计数与发现流位置对齐',
+    railS.count === `${railPosOf(railA.id) + 1} / ${dList.length}`, `count=${railS.count}`)
+
+  // 切换三连：按钮 → 高亮/计数跟随 → 滚动回顶 → 键盘 → rail 点卡
+  await s.evaluate('window.scrollTo(0, 600)')
+  await s.evaluate("document.querySelector('[data-test=detail-pane-next]').click()")
+  await s.waitFor(`location.hash === '#/note/${railB.id}'`, '下篇切换 URL', 20000)
+  await s.waitFor("!!document.querySelector('[data-test=note-detail-content]')", '下篇正文', 20000)
+  const afterNext = await s.evaluate(`(() => {
+    const cur = document.querySelector('[data-rail-cur]');
+    const cb = cur?.getBoundingClientRect();
+    const nb = document.querySelector('[data-test=detail-pane-nav]')?.getBoundingClientRect();
+    return JSON.stringify({
+      curHref: cur?.getAttribute('href') ?? null,
+      curW: Math.round(cb?.width ?? 0), curH: Math.round(cb?.height ?? 0),
+      navW: Math.round(nb?.width ?? 0),
+      count: document.querySelector('[data-test=detail-pane-count]')?.textContent?.trim() ?? null,
+      scrollY: Math.round(window.scrollY),
+    });
+  })()`)
+  const an = JSON.parse(afterNext)
+  s.check('点「下篇」后 rail 高亮与计数跟着走（不重载 rail）',
+    an.curHref?.includes(railB.id) && an.curW > 0 && an.navW > 0
+      && an.count === `${railPosOf(railB.id) + 1} / ${dList.length}`,
+    JSON.stringify(an))
+  s.check('切换后页面回到顶部（面板换内容不保留旧滚动位置）', an.scrollY < 100, `scrollY=${an.scrollY}`)
+
+  await s.evaluate("window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft' }))")
+  await s.waitFor(`location.hash === '#/note/${railA.id}'`, '键盘 ← 切回上篇', 20000)
+  await s.evaluate("window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }))")
+  await s.waitFor(`location.hash === '#/note/${railB.id}'`, '键盘 → 切下篇', 20000)
+  s.check('键盘 ←→ 能切上下篇（与按钮同一条路径）', true)
+
+  await s.evaluate(`[...document.querySelectorAll('[data-test=detail-rail-item]')]
+    .find((e) => e.getAttribute('href')?.includes(${JSON.stringify(railC.id)}))?.click()`)
+  await s.waitFor(`location.hash === '#/note/${railC.id}'`, 'rail 点卡跳转', 20000)
+  const afterC = await s.evaluate(`(() => {
+    const cur = document.querySelector('[data-rail-cur]');
+    const cb = cur?.getBoundingClientRect();
+    return JSON.stringify({
+      curHref: cur?.getAttribute('href') ?? null,
+      curW: Math.round(cb?.width ?? 0), curH: Math.round(cb?.height ?? 0),
+      count: document.querySelector('[data-test=detail-pane-count]')?.textContent?.trim() ?? null,
+    });
+  })()`)
+  const ac = JSON.parse(afterC)
+  s.check('点 rail 任意卡直接跳那一篇（面板内导航）',
+    ac.curHref?.includes(railC.id) && ac.curW > 0
+      && ac.count === `${railPosOf(railC.id) + 1} / ${dList.length}`,
+    JSON.stringify(ac))
+
+  // 移动端：rail 与上下篇都不存在（上滑切换是 P52）
+  await s.send('Emulation.setDeviceMetricsOverride', { width: 430, height: 900, deviceScaleFactor: 1, mobile: true })
+  const mobileRail = await s.evaluate(`(() => {
+    const rail = document.querySelector('[data-test=detail-rail]');
+    const nav = document.querySelector('[data-test=detail-pane-nav]');
+    const cs = rail ? getComputedStyle(rail).display : 'none';
+    return JSON.stringify({
+      railDisplay: cs,
+      railBox: rail ? rail.getBoundingClientRect().width : 0,
+      navShown: !!nav && nav.getBoundingClientRect().width > 0,
+    });
+  })()`)
+  const mr = JSON.parse(mobileRail)
+  s.check('移动端 rail 与上下篇都不可见（桌面专属外壳）',
+    mr.railDisplay === 'none' && mr.railBox === 0 && mr.navShown === false, JSON.stringify(mr))
+  await s.send('Emulation.clearDeviceMetricsOverride')
+  await s.goto(`${BASE}/#/`)
 } catch (e) {
   s.check('用例执行到底', false, String(e.message));
 } finally {

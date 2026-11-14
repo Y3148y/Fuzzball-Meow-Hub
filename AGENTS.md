@@ -9,10 +9,10 @@
 |---|---|
 | 阶段 | **P0 → P53 已完成**（详见第 7 节各阶段小节） |
 | 测试 | 契约 **850** 条（P53 段 5：沉浸卡带 liked/collected + 互动即时反映）· CDP **872** 条（ui-immerse 27→54，P53 扩 +27），全部绿 |
-| prod | `18080`，跑的是 **P50 全链**（2026-11-12 部署：后端 jar 重建 + 前端镜像重建 + nginx 重启；prod 库已 ALTER `note.content` 可空）。**P51/P52/P53 未部署 prod**（P51/P52 纯前端；P53 **后端+前端都改了**，要全链重建） |
+| prod | `18080`，跑的是 **P53 全链**（2026-11-13 部署：后端 jar 重建 + 前端镜像重建 + nginx 重启；**无表结构变更**，prod 库不用 ALTER）。P51/P52/P53 全部上线 |
 | 重建 prod 的坑 | 见第 8 节：8.2 镜像构建三道墙 / 8.5 nginx 缓存旧 IP / 8.6 `--no-deps` |
-| 上一次部署 | P50（**后端+前端**）· prod 真调用：接口 **24/24** + UI **12/12**（草稿全链 + 搜索筛选 + 自清）|
-| 待做 | **P51/P52/P53 部署 prod**（P51/P52 照 8.6 重建前端镜像；P53 还要按 8.2 重建后端 jar——liked/collected 是后端字段） |
+| 上一次部署 | P51/P52/P53（**后端+前端**）· prod 真调用：API **19/19** + UI **21/21**（沉浸卡 liked/collected + 赞/藏切换复位 + 深链 + 详情两入口 + P51 rail/←→ + P52 上滑）|
+| 待做 | （无）—— P51/P52/P53 已于 2026-11-13 全部部署 prod |
 | 重启后 | **跑 `tools\dev-up.cmd`**（见 2.0 节，引擎没起它会自己拉起，33s）· 手工清单留在 2.0 的折叠块里兜底 |
 
 **最近几个阶段做了什么**：P37 长视频实测（172MiB 端到端 43.5s，抓出 nginx 只允许 100m 的三层不一致）·
@@ -5133,10 +5133,7 @@ ALTER TABLE xiaoku_db.note MODIFY COLUMN content VARCHAR(2000) DEFAULT NULL COMM
   不做独立「草稿箱」页 —— 草稿数量级小，一页 24 条足够。
 - **删除草稿是 DELETE /api/note/{id} 原接口**（作者可删自己的任何状态），
   无新端点。
-- **P50 未部署 prod**：后端 + 前端都改了，要按 8.2/8.5/8.6 全链重建
-  （jar 打包 → 临时 Dockerfile → backend `--no-deps` → 前端 build →
-  重启 nginx）；**先 ALTER prod 库 `note.content` 可空再起新 backend**
-  （顺序错了详情/列表全列 SELECT 会炸 —— P48 的 video_qualities 前科）。
+- **P50 已部署 prod**（2026-11-12，部署记录见下一节）。
 - 编辑已有「已下架」笔记后保存仍走原 `submit()`（不要求正文空豁免 ——
   下架不是草稿，语义边界维持 P10 原状）。
 
@@ -5183,6 +5180,55 @@ sort=latest 命中 / type=99 与 sort 非法都 100001（钉新后端真在跑�
   分文案，收益低 —— 记录在案，不当缺陷追。
 - **探针基建小坑**：`createSession` 是 **async**，忘了 `await` 时 `s.goto` 直接
   `is not a function` —— 与 P20 记的「助手返回形态不一致」同源，抄 API 前先看签名。
+
+### P51/P52/P53 prod 部署与真调用（2026-11-13 完结）
+
+部署链路照 8.2 / 8.5 / 8.6 全部走平：host `mvnw -DskipTests -q package`（JDK17，
+**不带 `-o`**）→ `docker cp` 从旧 prod 容器取 ffmpeg/ffprobe →
+`backend/Dockerfile.localtemp`（temurin:17-jre + app uid 1001 + 两个二进制 chmod
+0755，**不装 curl**=不踩 8.2 墙③）→ `$env:DOCKER_BUILDKIT="0"` classic 构建 →
+backend `up -d --no-deps --force-recreate` → healthy → **`chown -R 1001:999
+/app/uploads`**（P35-c 教训每次重建后都跑）→ 前端 `docker build` + `--no-deps
+--force-recreate` + **`docker restart xiaoku-prod-frontend-1`**（8.5，本轮
+nginx 直接 200 没踩 502）→ **无表结构变更，prod 库零 ALTER**。
+
+**API 真调用 19/19**（`_p53api.mjs` 用完即删，观察者 `xk_ui_admin2`）：
+沉浸卡**带 liked/collected 字段且是布尔**（字段存在性 = 新 jar 的判别位——旧
+P50 jar 里整 key 缺失）· 发现流与沉浸流第一页**同序**（P34 口径）·
+点赞 → `liked=true` 且 likeCount **+1**（Redis 权威即时可见）→ 取消复位 ·
+收藏同型 · 复位后回到未赞未藏 · P50 搜索 type=1&sort=latest / type=2 仍
+code=0、type=99 仍 100001 · `sw.js` 200 + JS content-type（P27）、
+`manifest.json` 200（P24）——前端重建**没有把旧产物带掉**。
+
+**UI 真调用 21/21**（`_p53ui.mjs` CDP 走 18080 真界面，用完即删）：
+prod 登录页 `prod-hint-*` 一键填表登录（P35-d）· 首页琥珀入口 440×44、
+`color(srgb)` alpha=0.12、fw=600（P53 升格）· 沉浸卡赞/藏按钮 ≥40 热区、
+aria-pressed、计数 +1 回弹（**净零**，赞的撤回走 P21 通知撤回）· 键盘
+ArrowDown/Up 切卡往返 · 深链 `?note=<id>` 停第 3 张 · 桌面 1280：P51 rail
+340×809 可见、pane-nav 可见、P53 桌面沉浸链接带深链、移动小图标隐藏 ·
+←→ 切篇往返 · 移动 430：顶栏小图标 40×40 + 深链、桌面链接隐藏 ·
+P52 上滑切下一条 · 控制台 0 错误。
+
+#### 探针自踩的四个坑（prod 行为与 dev 完全一致，不是产品缺陷）
+
+1. **登录断言自己写错**：`accessToken` 是 **JWT 串**（`eyJ…`），拿 `^\d+$`
+   去验必 FAIL —— 但登录本身 code=0 且后续全部调用都成功。修断言不修产品。
+2. **`s.evaluate` 跑的是 script 不是 module**：把 `(await (await fetch…))`
+   写在顶层 → `missing ) after argument list`。`ui-cdp.mjs` 的 evaluate 自带
+   `awaitPromise:true`，所以**包一层 async IIFE** 就能直接 await 页面里的
+   Promise —— 写法：`(async () => (await fetch(...)).json()…)()`。
+3. **P52 上滑的 raw 位移算错**：`commit` 条件是 `peek = over×0.4 ≥ 90`
+   → **raw ≥ 225px**。第一版滑 160px（peek 64）必然不触发，这不是「手势
+   失效」，是阈值换算没做。dev ui-note 第 20 段当时用的位移同样满足 ≥225
+   （读代码确认的，不是凭印象）。
+4. **部署中途 Docker 引擎整个掉线一次**（`dockerDesktopLinuxEngine` 管道
+   消失、18080 拒连）——Docker Desktop 进程还在，轮询 ~1 分钟引擎自己
+   回来了，六个容器全部 `restart: unless-stopped` 自动拉起、backend 重新
+   healthy。**引擎断线 ≠ 部署失败，先轮询再决定要不要重跑步骤**。
+
+收尾：`.dockerignore` 已 `git checkout --` 还原、`Dockerfile.localtemp` 与
+`build-tmp/` 已删、探针脚本已删，prod 库无新残留（赞/藏在探针里全部复位，
+通知由 P21 撤回机制清理）。
 
 ### P51 PC 弹出面板（本 commit）
 
@@ -5267,8 +5313,7 @@ pane-nav 都不可见。纯浏览**不造数据、无需自清**。
 
 **验收**：typecheck ✓ · ui-note **193/193** · ui-layout **157/157** ·
 ui-immerse **27/27** · ui-interaction **78/78** · ui-smoke **44/44**。
-**P51 未部署 prod**：要按 8.6 重建前端镜像（`docker build -t xiaoku-frontend:latest
-frontend` + `--no-deps --force-recreate frontend`）+ **重启 nginx**（8.5）。
+**P51 已随 2026-11-13 全链部署上线 prod**（见「P51/P52/P53 prod 部署与真调用」段）。
 
 #### 已知取舍
 
@@ -5364,7 +5409,7 @@ ui-note **202/202** · layout **157/157** · interaction **78/78** ·
 immerse **27/27** · search **28/28**（它会点卡片进详情页）· typecheck ✓。
 结构自检 net=0 / twoToOne 增至 270。
 
-**P52 未部署 prod**：纯前端，照 8.6 重建前端镜像 + 重启 nginx。
+**P52 已随 2026-11-13 全链部署上线 prod**（见「P51/P52/P53 prod 部署与真调用」段）。
 
 #### 已知取舍
 
@@ -5455,9 +5500,7 @@ CDP：immerse **54/54**（入口几何 2 · 互动结构 7 · 切换 6 · 键盘
 深链 2 · 详情入口 8）· note **202/202** · layout **157/157** ·
 interaction **78/78** · typecheck ✓。
 
-**P53 未部署 prod**：后端 jar（liked/collected）+ 前端都要重建，
-按 8.2 → backend `--no-deps --force-recreate` → 前端 build → 8.5 重启 nginx；
-无表结构变更，prod 库不用 ALTER。
+**P53 已随 2026-11-13 全链部署上线 prod**（见「P51/P52/P53 prod 部署与真调用」段）。
 
 #### 已知取舍
 

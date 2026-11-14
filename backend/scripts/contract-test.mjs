@@ -1793,6 +1793,13 @@ async function main() {
     codeIs('未登录访问发现流 10005', json, 10005)
   }
   {
+    // P54 回归钉：独立沉浸页（/immerse）连同 /api/feed/immerse 一起删除。
+    // 没有消费端的端点不该活着 —— 留着就是 P47 那种「接口有、界面没入口」的
+    // 反向形状。谁把它加回来而不同时重建页面，这条立刻红。
+    codeIs('P54 /api/feed/immerse 已随独立沉浸页删除（100404 接口不存在）',
+      (await get('/api/feed/immerse?page=1&size=6', { token: auth })).json, 100404)
+  }
+  {
     // 回归：assemble 改成「authorFollowed 实时判断」后，关注流不能被带坏
     const { json } = await get('/api/feed/follow', { token: auth })
     codeIs('改造后关注流仍查询成功', json, 0)
@@ -3369,103 +3376,7 @@ const lastTwo = (hist?.list ?? []).slice(-2)
   }
 
 /* ================================================================
-   * 25. P34 沉浸流：/api/feed/immerse
-   *
-   * 三条设计决定：
-   *
-   * 1. **排序与发现流刻意一致**（后端复用同一个 mapper 方法）。两处排序若不一致，
-   *    用户在首页看到的内容与滑到的内容会对不上，而「首页有但滑不到」极难归因。
-   *
-   * 2. **每条带全部图片**，而 NoteListItemVO 只有封面。沉浸流是「一直往下划」的
-   *    形态，卡内还要轮播 —— 复用封面 VO 就得多打一次详情请求。
-   *
-   * 3. **图片一次 IN 批量取**，不是逐篇查。一页 6 条就是 6 次 vs 1 次往返。
-   *
-   * 本段**不注册新账号**，复用常驻 fixture（同 23/24 段）。
-   * ================================================================ */
-  {
-    const l34 = await post('/api/user/login', { body: { username: 'xk_ui_smoke', password: 'Xk@123456' } })
-    const t34 = `Bearer ${l34.json?.data?.accessToken}`
-    if (check('P34 fixture 能登录', !!t34 && t34 !== 'Bearer undefined', `token=${t34?.slice(0, 24)}`)) {
-      const d34 = await get(`/api/feed/discover?page=1&size=6`, { token: t34 })
-      const i34 = await get(`/api/feed/immerse?page=1&size=6`, { token: t34 })
-      eq('P34 沉浸流 code=0', i34.json?.code, 0)
-      const dIds = (d34.json?.data?.list ?? []).map((x) => x.id)
-      const iCards = i34.json?.data?.list ?? []
-      const iIds = iCards.map((x) => x.id)
-      check('P34 与发现流返回同样条数', dIds.length === iCards.length, `${dIds.length} vs ${iCards.length}`)
-      check('P34 排序与发现流完全一致（复用同一个 mapper）',
-        dIds.length > 0 && JSON.stringify(dIds) === JSON.stringify(iIds),
-        `${dIds.slice(0, 2)} vs ${iIds.slice(0, 2)}`)
-      eq('P34 total 与发现流相同（同一个 count）', i34.json?.data?.total, d34.json?.data?.total)
-
-      check('P34 返回卡片', iCards.length > 0, `n=${iCards.length}`)
-      check('P34 每张卡片有 images 数组', iCards.every((c) => Array.isArray(c.images)),
-        JSON.stringify(iCards.map((c) => (c.images || []).length)))
-      check('P34 图文笔记至少有图（P11 起的规则）',
-        iCards.filter((c) => c.type !== 2).every((c) => (c.images || []).length > 0),
-        JSON.stringify(iCards.map((c) => [c.type, (c.images || []).length])))
-      check('P34 卡片带作者与计数',
-        !!iCards[0]?.authorNickname && typeof iCards[0]?.likeCount === 'number',
-        JSON.stringify([iCards[0]?.authorNickname, iCards[0]?.likeCount]))
-      check('P34 authorFollowed 是布尔（P14 定过：不能靠列表来源推断）',
-        typeof iCards[0]?.authorFollowed === 'boolean', typeof iCards[0]?.authorFollowed)
-      check('P34 contentBrief 有值但限长（不是全文）',
-        iCards[0]?.contentBrief === undefined || String(iCards[0].contentBrief).length <= 121,
-        `len=${String(iCards[0]?.contentBrief ?? '').length}`)
-
-      /* ---------- P53：卡上点赞/收藏（liked/collected，与详情页同口径） ---------- */
-      check('P53 liked/collected 是布尔（卡上互动的开关位）',
-        iCards.every((c) => typeof c.liked === 'boolean' && typeof c.collected === 'boolean'),
-        JSON.stringify(iCards.slice(0, 3).map((c) => [c.liked, c.collected])))
-
-      // 实测切换链路（P15 记过的纪律：复位在前、断言 code===0，别把 30001 当通过）：
-      // 取第一张卡 → 取消收藏复位 → 收藏 → 再拉沉浸流，那张卡 collected=true 且计数 +1。
-      // 计数走 Redis ZCARD，是即时的（落库列才有 30s 滞后），所以这里敢断 +1。
-      const c0 = iCards[0]
-      if (c0) {
-        const nid = String(c0.id)
-        await del(`/api/note/${nid}/collect`, { token: t34 })
-        eq('P53 收藏成功 code=0', (await put(`/api/note/${nid}/collect`, { token: t34 })).json?.code, 0)
-        const iA = await get(`/api/feed/immerse?page=1&size=6`, { token: t34 })
-        const cA = (iA.json?.data?.list ?? []).find((x) => String(x.id) === nid)
-        check('P53 收藏后沉浸卡 collected=true 且收藏数 +1（Redis 权威立即可见）',
-          !!cA && cA.collected === true && cA.collectCount === c0.collectCount + 1,
-          `before=${c0.collected}/${c0.collectCount} after=${cA?.collected}/${cA?.collectCount}`)
-        await del(`/api/note/${nid}/like`, { token: t34 })
-        eq('P53 点赞成功 code=0', (await put(`/api/note/${nid}/like`, { token: t34 })).json?.code, 0)
-        const iA2 = await get(`/api/feed/immerse?page=1&size=6`, { token: t34 })
-        const cA2 = (iA2.json?.data?.list ?? []).find((x) => String(x.id) === nid)
-        check('P53 点赞后沉浸卡 liked=true 且点赞数 +1',
-          !!cA2 && cA2.liked === true && cA2.likeCount === c0.likeCount + 1,
-          `before=${c0.liked}/${c0.likeCount} after=${cA2?.liked}/${cA2?.likeCount}`)
-        // 收尾：取消本次造的互动（幂等），不把 fixture 留在已赞/已藏状态
-        await del(`/api/note/${nid}/like`, { token: t34 })
-        await del(`/api/note/${nid}/collect`, { token: t34 })
-      }
-
-      /* ---------- 分页不重不漏 ---------- */
-      const p1 = await get(`/api/feed/immerse?page=1&size=6`, { token: t34 })
-      const p2 = await get(`/api/feed/immerse?page=2&size=6`, { token: t34 })
-      const p1Ids = (p1.json?.data?.list ?? []).map((x) => x.id)
-      const p2Ids = (p2.json?.data?.list ?? []).map((x) => x.id)
-      check('P34 两页不重叠', p1Ids.every((i) => !p2Ids.includes(i)),
-        p1Ids.filter((i) => p2Ids.includes(i)).join(','))
-      check('P34 第二页非空', p2Ids.length > 0, `n=${p2Ids.length}`)
-
-      /* ---------- 参数夹取 ---------- */
-      const big = await get(`/api/feed/immerse?page=1&size=999`, { token: t34 })
-      check('P34 size 上限夹到 20（一次渲染一屏，多了会同时下载上百张图）',
-        (big.json?.data?.list ?? []).length <= 20,
-        `n=${big.json?.data?.list?.length}`)
-      const zero = await get(`/api/feed/immerse?page=0&size=0`, { token: t34 })
-      check('P34 page=0/size=0 被夹到合法值', zero.json?.code === 0 && (zero.json?.data?.list ?? []).length > 0,
-        `code=${zero.json?.code}`)
-      codeIs('P34 未登录被拒（10005）', (await get('/api/feed/immerse?page=1&size=6')).json, 10005)
-    }
-  }
-/* ================================================================
-   * 26. P39 主页背景图：user.background
+   * 25. P39 主页背景图：user.background
    *
    * 本段钉三件事，每件都有具体的失败方式：
    *
@@ -3563,7 +3474,8 @@ const lastTwo = (hist?.list ?? []).slice(-2)
    *
    * 规则（与用户拍板的一致）：
    *  - 私密账号的笔记**只有关注了 TA 的用户**能看（单向关注也算）
-   *  - 发现流 / 搜索 / 沉浸流里，**只对有权限的人显示**
+   *  - 发现流 / 搜索里，**只对有权限的人显示**
+   *    （P54 起独立沉浸页已删，原「沉浸流」断言由发现流覆盖同一 SQL）
    *
    * ⚠️ 三个角色：
    *  - 私密作者：注册 `ct_priv_<stamp>`（**本段专用**，
@@ -3644,7 +3556,7 @@ const lastTwo = (hist?.list ?? []).slice(-2)
       eq('P44 关注者能看私密笔记的评论列表',
         (await get(`/api/comment/list?noteId=${privNote}&page=1&size=10`, { token: smokeAuth })).json?.code, 0)
 
-      /* ---------- ④ 发现流 / 沉浸流：只对有权限的人显示 ---------- */
+      /* ---------- ④ 发现流：只对有权限的人显示 ---------- */
       // ⚠️ 必须**先给这篇笔记攒点互动**（点赞），否则零互动的新笔记
       //    排在热度分榜的**末尾**（库里 574 篇），第一页里根本看不到它 ——
       //    那时「看不到」和「看得到」都测不出来。
@@ -3663,16 +3575,8 @@ const lastTwo = (hist?.list ?? []).slice(-2)
         !idsUnf.includes(privNote), `第一页 ${idsUnf.length} 条`)
       check('P44 关注者的发现流里**能看到**私密笔记',
         idsFol.includes(privNote), `第一页 ${idsFol.length} 条`)
-
-      // 沉浸流复用同一个 mapper 方法，排序与发现流一致（AGENTS P34）
-      const iUnf = await get('/api/feed/immerse?page=1&size=20', { token: auth })
-      const iFol = await get('/api/feed/immerse?page=1&size=20', { token: smokeAuth })
-      const iIdsUnf = (iUnf.json?.data?.list ?? []).map((n) => n.id)
-      const iIdsFol = (iFol.json?.data?.list ?? []).map((n) => n.id)
-      check('P44 陌生人的沉浸流里看不到私密笔记',
-        !iIdsUnf.includes(privNote), `第一页 ${iIdsUnf.length} 条`)
-      check('P44 关注者的沉浸流里能看到私密笔记',
-        iIdsFol.includes(privNote), `第一页 ${iIdsFol.length} 条`)
+      // （P54 起独立沉浸页已删，/api/feed/immerse 不存在；私密过滤在 pageDiscover
+      //   的 SQL 一层，两条发现流断言已覆盖，不再有第二个消费端可测。）
 
       /* ---------- ⑤ 搜索：只对有权限的人显示 ---------- */
       // ⚠️ 搜索是**异步索引**（Kafka → ES），要轮询等它进索引。

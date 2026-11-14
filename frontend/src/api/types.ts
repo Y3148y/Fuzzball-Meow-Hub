@@ -443,42 +443,6 @@ export interface NoteListItemVO {
   authorFollowed: boolean
 }
 
-/**
- * 沉浸流的一张卡片（P34），对应后端 ImmerseCardVO
- *
- * <p>与 {@link NoteListItemVO} 的差别只有两处：**带全部图片**（卡内轮播）
- * 与**带正文摘要**（限 120 字，服务端截）。刻意不带全文 ——
- * 几百字的正文会让每张卡高度不可控，破坏「一屏一张」的构图。
- */
-export interface ImmerseCardVO {
-  id: SnowflakeId
-  /** 1 图文 2 视频 */
-  type: 1 | 2
-  /** 视频 URL，仅 type=2 */
-  videoUrl?: string
-  /** 视频清晰度档位（P48）；缺省 = 单码率，不渲染清晰度菜单 */
-  videoQualities?: VideoQualityVO[]
-  /** 封面图 URL（视频卡 = 转码抽帧、图文卡 = 第一张图），加载/自动播前的占位画 */
-  cover?: string | null
-  /** 全部图片，按笔记内顺序。图文笔记至少有 1 张（P11 起的规则） */
-  images: string[]
-  title: string
-  /** 正文摘要（限 120 字），不是全文 */
-  contentBrief?: string
-  likeCount: number
-  collectCount: number
-  commentCount: number
-  /** 我是否已点赞（P53 卡上互动）；与详情页同口径，Redis 权威 */
-  liked: boolean
-  /** 我是否已收藏（P53） */
-  collected: boolean
-  createTime: string
-  authorId: SnowflakeId
-  authorNickname: string
-  authorAvatar: string | null
-  authorFollowed: boolean
-}
-
 /** 通知列表项（铃铛 + 通知页） */
 export interface NotificationVO {
   id: SnowflakeId

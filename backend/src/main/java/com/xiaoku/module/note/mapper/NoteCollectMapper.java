@@ -46,19 +46,4 @@ public interface NoteCollectMapper extends BaseMapper<NoteCollectEntity> {
             WHERE c.user_id = #{userId} AND n.status = 1
             """)
     long countCollectedNotes(@Param("userId") Long userId);
-
-    /**
-     * P53：一批笔记里「我已收藏」的 id 集合 —— Redis key 缺失时的 DB 兜底，
-     * 与 {@code NoteLikeMapper#selectLikedIds} 同一个形状（配套
-     * {@code NoteCounterStore.viewerFlags}）。
-     */
-    @Select("""
-            <script>
-            SELECT note_id FROM note_collect
-            WHERE user_id = #{userId}
-              AND note_id IN
-              <foreach collection="noteIds" item="nid" open="(" separator="," close=")">#{nid}</foreach>
-            </script>
-            """)
-    List<Long> selectCollectedIds(@Param("userId") Long userId, @Param("noteIds") List<Long> noteIds);
 }

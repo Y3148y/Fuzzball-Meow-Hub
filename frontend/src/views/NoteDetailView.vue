@@ -1077,21 +1077,6 @@ onBeforeUnmount(() => {
         <van-icon name="share-o" />
       </button>
       <!--
-        P53 沉浸浏览入口（移动端顶栏小图标）：跳 /immerse?note=<id>，
-        沉浸页进来直接停在这张卡上。桌面 ≥1024 隐藏 —— 那边由 pane-nav
-        行的文字入口接管（P51 面板导航区），顶栏再留一个图标就是
-        两个入口抢一件事。
-      -->
-      <RouterLink
-        v-if="note"
-        class="immerse-btn"
-        :to="'/immerse?note=' + note.id"
-        aria-label="沉浸浏览"
-        data-test="detail-immerse"
-      >
-        <van-icon name="photo-o" />
-      </RouterLink>
-      <!--
         「⋯」放顶栏而不是作者区：小红书是笔记**右上角**的「⋯」，
         而作者区那一行已经放了关注/作者本人操作了，再塞两个会重演
         UserView 那个「六个元素挤一行 flex」的坏（AGENTS P21 段）。
@@ -1642,20 +1627,6 @@ ref="contentEl"
       >
         下篇 ›
       </button>
-      <!--
-        P53：桌面端沉浸入口（P51 面板导航区的行尾）。跳 /immerse?note=当前id。
-        pane-nav 本身 <1024 就 display:none，railIdx=-1（自己的/私密的笔记）
-        时整条 nav 不渲染 —— 那两种情况下桌面没有沉浸入口是**如实的**
-        （沉浸流不回显自己的笔记，跳过去起点对不上），不装作有。
-      -->
-      <RouterLink
-        v-if="note"
-        class="pane-immerse"
-        :to="'/immerse?note=' + note.id"
-        data-test="detail-immerse-desktop"
-      >
-        沉浸浏览
-      </RouterLink>
     </nav>
 
     <!--
@@ -2870,49 +2841,6 @@ ref="contentEl"
     font-size: var(--xk-fs-13);
     color: var(--xk-text-3);
     font-variant-numeric: tabular-nums;
-  }
-}
-
-/* ==================== P53：详情页 → 沉浸流入口 ==================== */
-
-/* 移动端顶栏小图标（形状对齐 .back 的热区）。桌面由 pane-immerse 接管 */
-.immerse-btn {
-  min-width: 40px;
-  min-height: 40px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--xk-text-2);
-  font-size: var(--xk-fs-20);
-  -webkit-tap-highlight-color: transparent;
-}
-.immerse-btn:active {
-  color: var(--xk-amber-text);
-}
-
-/* 桌面文字入口默认不渲染；≥1024 才换上来 */
-.pane-immerse {
-  display: none;
-}
-@media (min-width: 1024px) {
-  .immerse-btn {
-    display: none;
-  }
-  .pane-immerse {
-    display: inline-flex;
-    align-items: center;
-    min-height: 40px;
-    padding: 0 var(--xk-space-4);
-    border: var(--xk-stroke-w) solid var(--xk-border);
-    border-radius: 999px;
-    background: var(--xk-surface-2);
-    color: var(--xk-text);
-    font-size: var(--xk-fs-13);
-    -webkit-tap-highlight-color: transparent;
-  }
-  .pane-immerse:hover {
-    border-color: var(--xk-amber);
-    color: var(--xk-amber-text);
   }
 }
 

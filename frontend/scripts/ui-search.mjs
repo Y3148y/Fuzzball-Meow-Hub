@@ -3,6 +3,8 @@
  * → 无结果空态 → 空关键词不发请求 → 带 ?keyword= 直链刷新。
  * P50 追加：筛选器（类型 全部/图文/视频 + 排序 综合/最新）—— 默认态、
  * 切视频出空态（素材是图文）、切回全部/图文素材仍在、最新排序素材仍在。
+ * P47 收欠账：相关用户区块 —— 上线时只有契约层「接口能返回」的断言，
+ * 结果页渲染从没被验过；这里搜 fixture 昵称出用户行、点行落进 TA 的主页。
  *
  * <p>和后端契约测试的分工：契约只验 HTTP 报文，验不到前端封装层
  * （比如把 query 塞进 { params } 这种错，报文测试照样全绿）。这里真机点一遍。
@@ -214,6 +216,36 @@ try {
   await s.waitFor("document.querySelector('[data-test=search-item]')", '直链结果', 20000)
   s.check('直链带 keyword 直接出结果', (await titles('search-item')).includes(FIX_TITLE))
   s.check('直链输入框回显关键词', (await inputValue()) === HIT_KEY)
+
+  /* ============ P47 欠账收口：相关用户区块 ============ */
+  /* 这块上线时只有「接口能返回」的契约断言，结果页真的渲染出来从没验过
+   * （P47/P48 都记了这笔欠账）。搜昵称「关注搭子」：/api/search/user
+   * 昵称与用户名都匹配（P29），常驻 fixture 必然命中；40/min/USER 的桶
+   * 只用 1 次，不会打空。 */
+  await setValue('[data-test=search-input]', PEER.nickname)
+  await click('search-submit')
+  await s.waitFor("document.querySelector('[data-test=search-user]')", '相关用户行', 20000)
+  const userRows = await s.evaluate(
+    "document.querySelectorAll('[data-test=search-user]').length"
+  )
+  s.check('相关用户区块渲染且至少一行', userRows > 0, `rows=${userRows}`)
+  const firstUser = await s.evaluate(
+    `JSON.stringify((() => {
+      const a = document.querySelector('[data-test=search-user] .main')
+      return {
+        nick: a?.querySelector('.name')?.textContent?.trim() ?? '',
+        href: a?.getAttribute('href') ?? ''
+      }
+    })())`
+  )
+  const fu = JSON.parse(firstUser)
+  // 关键词是昵称，匹配到的行昵称必然是它 —— 不依赖排序与重名
+  s.check('相关用户行昵称命中 fixture', fu.nick === PEER.nickname, firstUser)
+  // RouterLink 在 hash 路由下 href 带 # 前缀，别写裸路径
+  s.check('相关用户行链到 /user/{id}', /^#\/user\/\d+$/.test(fu.href), firstUser)
+  await s.evaluate("document.querySelector('[data-test=search-user] .main').click()")
+  await s.waitFor("document.querySelector('[data-test=user-head]')", '落进用户主页', 20000)
+  s.check('点相关用户落在 TA 的主页', (await text('user-nickname')) === PEER.nickname)
 } catch (e) {
   s.check('用例执行到底', false, String(e.message))
 } finally {

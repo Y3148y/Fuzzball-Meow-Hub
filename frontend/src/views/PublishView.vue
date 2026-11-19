@@ -841,7 +841,7 @@ const { markClean } = useUnsavedChanges(
 }
 
 .over {
-  color: #e5484d;
+  color: var(--xk-danger);
   font-weight: 700;
 }
 
@@ -1039,7 +1039,7 @@ const { markClean } = useUnsavedChanges(
 
 .err {
   margin: 12px 0 0;
-  color: #e5484d;
+  color: var(--xk-danger);
   font-size: var(--xk-fs-13);
   line-height: 1.5;
 }

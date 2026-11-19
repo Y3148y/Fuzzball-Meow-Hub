@@ -73,8 +73,26 @@
   --xk-cat: #d7e5fe;
   --xk-sand: #d8c090;
   --xk-steel: #a8b2ce;
-  --xk-danger: #e5484d;
-  --xk-success: #2f9e73;
+  /*
+   * 「危险当文字色」专用 —— 错误提示/删除按钮/举报条/被举报行。
+   * 旧值 #e5484d 压白底只有 3.91:1、压 surface-2 3.68:1，WCAG AA 不过；
+   * #b3262b 压白底 6.50 / surface-2 6.12，且比旧值更沉、语义反而更准。
+   * ⚠️ 它同时给描边与 color-mix(12%) 淡底用；**不许**当实心底色配白字
+   * （白字要过 AA 得压到 L≤0.183，那就是另一个色了 —— 见 --xk-badge-bg）。
+   */
+  --xk-danger: #b3262b;
+  /*
+   * 危险色文字化后，LoginView 的「注册成功」提示也一并过审：
+   * 旧 #2f9e73 压 12% 淡底只有 2.97:1；#1b6f4e 压白底 6.13、压淡底 5.22。
+   */
+  --xk-success: #1b6f4e;
+  /*
+   * 未读角标（通知铃铛/私信/运营待办）专用：**底 + 字成对**。
+   * 白字压 #e5484d 只有 3.91:1（旧实现），所以底色单独一档更深；
+   * 暗色主题反过来用浅红底 + 墨字（见 dark 块），形状压深底也 ≥5:1。
+   */
+  --xk-badge-bg: #c22f34;
+  --xk-badge-ink: #ffffff;
 
   /* 手绘感：刻意不对称的圆角，模拟手绘轮廓 */
   --xk-radius-blob: 22px 26px 20px 28px / 26px 20px 28px 22px;
@@ -182,8 +200,16 @@
   --xk-amber-text: #f5cd7a;
   --xk-sand: #d8c090;
   --xk-steel: #a8b2ce;
-  --xk-danger: #ff6b6f;
-  --xk-success: #4cc79a;
+  /* 压 surface-2 #3d446b = 4.83:1（旧 #ff6b6f 只有 3.39，AA 不过） */
+  --xk-danger: #ffa0a3;
+  /*
+   * 角标反过来：深底上要「底够亮」才看得出形状，字换墨色。
+   * 墨字 #1a1e35 压 #ffa0a3 = 8.44:1；形状压 surface-2 #3d446b = 4.83:1（压 surface 5.67）。
+   */
+  --xk-badge-bg: #ffa0a3;
+  --xk-badge-ink: #1a1e35;
+  /* 旧 #4cc79a 压 surface-2 #3d446b 只有 4.44，差一点；调亮到 4.76 */
+  --xk-success: #55cda3;
 
   /* Vant 自己的 .van-theme-dark 用的是近黑(#000/#1c1c1e)，
      压在我们这个靛蓝底上会脏，所以整套换成靛蓝色阶。
@@ -192,14 +218,21 @@
   --van-background-2: #4e5478;
   --van-background-3: #575e85;
   --van-text-color: #eef2ff;
-  --van-text-color-2: #b6bdda;
-  --van-text-color-3: #8d94b8;
+  /*
+   * 这两级原来写死 #b6bdda / #8d94b8：压 cell 底 #4e5478 只有 3.98 / 2.47，
+   * AA 不过 —— AGENTS 里「meta/label ≈2.5」的真实来源就是这里（xk-text-3
+   * 本体 2026-10-04 已整改过，Vant 这三个写死值没跟着改）。
+   * 现在 text-2 直接绑 xk 同级（#c8cee6 压 #4e5478 = 4.74）；Vant 的第三级
+   * 在本项目只剩 ActionSheet 取消键等零星位置，提到二级灰的亮度不影响观感。
+   */
+  --van-text-color-2: var(--xk-text-2);
+  --van-text-color-3: var(--xk-text-2);
   --van-border-color: #666d99;
   --van-active-color: #3c4266;
   --van-cell-background: #4e5478;
   --van-cell-border-color: #666d99;
   --van-cell-text-color: #eef2ff;
-  --van-cell-value-color: #b6bdda;
+  --van-cell-value-color: var(--xk-text-2);
   --van-notice-bar-background: #d7e5fe;
   --van-notice-bar-text-color: #1a1e35;
   --van-toast-background: #eef2ff;

@@ -85,6 +85,15 @@ import UserAvatar from '@/components/UserAvatar.vue'
 const router = useRouter()
 const userStore = useUserStore()
 
+/*
+ * Vant 的命令式弹窗收的是**具体颜色值**、不是 CSS 变量。写死旧红 #e5484d
+ * 会绕开 --xk-danger 的整改（浅 3.91 / 暗 2.40 都过不了 AA），所以按主题
+ * 从 token 现读。token 恒定义在 :root 上；万一是空串就让 Vant 用自己的默认色。
+ */
+function xkColor(name: string) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+}
+
 /* ---------------- 关注作者 ---------------- */
 
 /**
@@ -255,7 +264,7 @@ async function removeNote() {
       title: '删除这篇笔记？',
       message: '图片、点赞、收藏和评论会一起删除，且不可恢复。',
       confirmButtonText: '删除',
-      confirmButtonColor: '#e5484d',
+      confirmButtonColor: xkColor('--xk-danger'),
     })
   } catch {
     // 用户点了取消，showConfirmDialog 会 reject，直接吞掉
@@ -1774,7 +1783,7 @@ ref="contentEl"
 }
 
 .err {
-  color: #e5484d;
+  color: var(--xk-danger);
 }
 
 .title {
@@ -1868,8 +1877,8 @@ ref="contentEl"
 }
 
 .op.danger {
-  color: #e5484d;
-  border-color: rgba(229, 72, 77, 0.35);
+  color: var(--xk-danger);
+  border-color: color-mix(in srgb, var(--xk-danger) 35%, transparent);
 }
 
 .op:disabled {
@@ -2599,7 +2608,7 @@ ref="contentEl"
 }
 
 .c-at {
-  color: #f5a623;
+  color: var(--xk-amber-text);
 }
 
 .c-content {
@@ -2643,7 +2652,7 @@ ref="contentEl"
 }
 
 .c-op.danger {
-  color: #e5484d;
+  color: var(--xk-danger);
 }
 
 .c-op.like {
@@ -2658,7 +2667,7 @@ ref="contentEl"
 }
 
 .c-op.like.on {
-  color: #f5a623;
+  color: var(--xk-amber-text);
   font-weight: 700;
 }
 

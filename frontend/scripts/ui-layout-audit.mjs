@@ -832,12 +832,14 @@ async function auditContrast(s) {
       return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05)
     }
     const bgs = [v('--xk-surface'), v('--xk-surface-2')]
-    const tiers = [['text', v('--xk-text')], ['text-2', v('--xk-text-2')], ['text-3', v('--xk-text-3')]]
+    const tiers = [['text', v('--xk-text')], ['text-2', v('--xk-text-2')], ['text-3', v('--xk-text-3')], ['danger', v('--xk-danger')]]
     const amber = v('--xk-amber-text')
+    const badgeBg = v('--xk-badge-bg'), badgeInk = v('--xk-badge-ink')
     return JSON.stringify({
       bgs,
       tiers: tiers.map(([n, c]) => [n, c, +Math.min(...bgs.map((b) => cr(c, b))).toFixed(2)]),
       amber: +Math.min(...bgs.map((b) => cr(amber, b))).toFixed(2),
+      badge: [+cr(badgeInk, badgeBg).toFixed(2), +Math.min(...bgs.map((b) => cr(badgeBg, b))).toFixed(2)],
     })
   })()`
 
@@ -852,6 +854,10 @@ async function auditContrast(s) {
     }
     s.check(`${theme} 主题 --xk-amber-text 对底色 ≥4.5:1`,
       m.amber >= 4.5, `${m.amber}:1`)
+    s.check(`${theme} 主题角标 --xk-badge-ink 压 --xk-badge-bg ≥4.5:1（数字要读得清）`,
+      m.badge[0] >= 4.5, `${m.badge[0]}:1`)
+    s.check(`${theme} 主题角标 --xk-badge-bg 对底色 ≥3:1（非文字形状，WCAG 1.4.11）`,
+      m.badge[1] >= 3, `${m.badge[1]}:1`)
   }
   // 量完还原成浅色，别把主题状态留给后面的用例
   await s.evaluate("document.documentElement.dataset.theme = 'light'")

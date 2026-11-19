@@ -97,8 +97,8 @@ const show = computed(() => route.name !== 'login' && route.name !== 'notificati
   align-items: center;
   justify-content: center;
   border-radius: 999px;
-  background: #e5484d;
-  color: #fff;
+  background: var(--xk-badge-bg);
+  color: var(--xk-badge-ink);
   font-size: var(--xk-fs-12);
   line-height: 1;
   font-variant-numeric: tabular-nums;
